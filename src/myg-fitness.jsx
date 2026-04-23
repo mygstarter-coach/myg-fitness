@@ -11,6 +11,135 @@ const COLORS = {
   inactive: "#666666",
 };
 
+/* ── Session Persistence ──────────────────────────────────────────
+   localStorage-backed snapshot of app state. Rehearses the AsyncStorage
+   pattern from Bible §21.7 — when we port to React Native, these
+   getItem/setItem calls become AsyncStorage.getItem/setItem calls with
+   identical shape.
+
+   Write strategy: immediate on every meaningful state change. localStorage
+   is synchronous and small writes are fast enough that we don't need to
+   debounce. The rest timer is an exception — we persist startTs (fixed)
+   and mode, never the ticking elapsed value, so the timer survives a
+   reload without any per-second writes.
+
+   Read strategy: on App mount, hydrateAll() is called once. If a valid
+   snapshot exists and onboardingComplete is true, the app jumps straight
+   to the main tabs with the user on whichever tab they left. Otherwise
+   it starts at welcome.
+
+   What's persisted: onboardingComplete, userName, selectedEquipment,
+   activeTab, activeWorkout (with Date fields serialized), coachChats +
+   currentCoachChatId, workoutHistory.
+
+   What's NOT persisted: isOnline (rebuild from browser on mount),
+   appSubScreen / workoutMinimized / finishedSession / openHistoryId /
+   equipPreset (transient UI state that should always start fresh).
+
+   Artifact note: Claude's artifact sandbox blocks localStorage, so every
+   storage op is wrapped in try/catch. The app still runs in the artifact;
+   persistence just no-ops. Deploying to Vercel / a real browser is where
+   this actually comes to life.
+*/
+
+const STORAGE_KEY = "myg_fitness_v1";
+
+function storageAvailable() {
+  try {
+    if (typeof window === "undefined" || !window.localStorage) return false;
+    const k = "__myg_test__";
+    window.localStorage.setItem(k, "1");
+    window.localStorage.removeItem(k);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Convert an activeWorkout into a plain-JSON-safe shape. The only
+// non-JSON-safe field is startTime (a Date). Everything else — sets
+// with placeholder flags, restTimer with numeric startTs, restDividers,
+// etc — is already serializable.
+function serializeActiveWorkout(w) {
+  if (!w) return null;
+  return {
+    ...w,
+    startTime: w.startTime instanceof Date ? w.startTime.toISOString() : w.startTime,
+  };
+}
+
+function hydrateActiveWorkout(w) {
+  if (!w) return null;
+  return {
+    ...w,
+    startTime: typeof w.startTime === "string" ? new Date(w.startTime) : w.startTime,
+  };
+}
+
+function saveSnapshot(state) {
+  if (!storageAvailable()) return;
+  try {
+    const snapshot = {
+      v: 1,
+      onboardingComplete: state.onboardingComplete,
+      userName: state.userName,
+      // Set → Array for JSON
+      selectedEquipment: Array.from(state.selectedEquipment || []),
+      activeTab: state.activeTab,
+      activeWorkout: serializeActiveWorkout(state.activeWorkout),
+      coachChats: state.coachChats,
+      currentCoachChatId: state.currentCoachChatId,
+      workoutHistory: state.workoutHistory,
+      // Bible §3.4 — user-created exercises live here. Plain array of
+      // objects, JSON-safe as-is.
+      customExercises: state.customExercises || [],
+      // Exercises tab sort preference. { mode: "alpha"|"recent"|"frequency", dir: "asc"|"desc" }
+      exerciseSort: state.exerciseSort || { mode: "alpha", dir: "asc" },
+    };
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot));
+  } catch {
+    // Quota exceeded, serialization error, or private-mode restriction.
+    // Silent fail is correct here — persistence is a nice-to-have for
+    // prototype testing, not a requirement for the app to function.
+  }
+}
+
+function loadSnapshot() {
+  if (!storageAvailable()) return null;
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || parsed.v !== 1) return null;
+    return {
+      onboardingComplete: !!parsed.onboardingComplete,
+      userName: parsed.userName,
+      // Array → Set back to live state shape
+      selectedEquipment: new Set(parsed.selectedEquipment || []),
+      activeTab: parsed.activeTab || "home",
+      activeWorkout: hydrateActiveWorkout(parsed.activeWorkout),
+      coachChats: Array.isArray(parsed.coachChats) ? parsed.coachChats : null,
+      currentCoachChatId: parsed.currentCoachChatId || null,
+      workoutHistory: Array.isArray(parsed.workoutHistory) ? parsed.workoutHistory : null,
+      customExercises: Array.isArray(parsed.customExercises) ? parsed.customExercises : [],
+      exerciseSort: parsed.exerciseSort && typeof parsed.exerciseSort === "object"
+        ? parsed.exerciseSort
+        : { mode: "alpha", dir: "asc" },
+    };
+  } catch {
+    return null;
+  }
+}
+
+function clearSnapshot() {
+  if (!storageAvailable()) return;
+  try {
+    window.localStorage.removeItem(STORAGE_KEY);
+  } catch {
+    // no-op
+  }
+}
+
 /* ── Equipment Data ──────────────────────────────────────────────
    Mirrors Project Bible §7 Master Equipment List exactly. 7 categories,
    in the Bible's order. This is the single source of truth — the
@@ -539,22 +668,6 @@ const EXERCISE_LIBRARY = [
   { id: "ball_slam", name: "Ball Slam", primary: "Full Body", secondary: ["Core", "Shoulders"], type: "Compound", variants: [{ label: "Medicine Ball", equipment: ["medicine_ball"] }]},
 ];
 
-/* Mock "last max" data — keyed by exercise id. Used by the list row display.
-   Resolved to the user's most-recently-logged variant at render time.
-*/
-const MOCK_LAST_MAX = {
-  squat: { weight: 225, reps: 5, unit: "lb" },
-  bench_press: { weight: 185, reps: 6, unit: "lb" },
-  deadlift: { weight: 315, reps: 3, unit: "lb" },
-  overhead_press: { weight: 115, reps: 5, unit: "lb" },
-  bent_over_row: { weight: 165, reps: 8, unit: "lb" },
-  romanian_deadlift: { weight: 205, reps: 8, unit: "lb" },
-  incline_press: { weight: 145, reps: 6, unit: "lb" },
-  bicep_curl: { weight: 75, reps: 10, unit: "lb" },
-  lat_pulldown: { weight: 140, reps: 10, unit: "lb" },
-  leg_press: { weight: 360, reps: 10, unit: "lb" },
-};
-
 /* Variant key helper: deterministic string derived from a variant's equipment
    list. Sorting ensures stability regardless of how the variant was declared.
    Example: { equipment: ["barbell", "flat_bench"] } → "barbell+flat_bench".
@@ -569,163 +682,29 @@ function variantKey(variant) {
   return [...variant.equipment].sort().join("+");
 }
 
-/* Mock session history — now nested by variant. Structure:
-   MOCK_HISTORY[exerciseId][variantKey] = [sessions...]
-
-   Variant keys are generated with variantKey() above. Most exercises have
-   history for just their "main" variant, but a few have a second variant
-   with lighter history so we can demo variant-switching in the UI.
-*/
-const MOCK_HISTORY = {
-  squat: {
-    // Barbell + Squat Rack (main)
-    "barbell+squat_rack": [
-      { date: "2026-02-08", sets: [{ weight: 185, reps: 8 }, { weight: 205, reps: 6 }, { weight: 205, reps: 5 }] },
-      { date: "2026-02-15", sets: [{ weight: 195, reps: 8 }, { weight: 215, reps: 6 }, { weight: 215, reps: 5 }] },
-      { date: "2026-02-22", sets: [{ weight: 205, reps: 8 }, { weight: 215, reps: 6 }, { weight: 215, reps: 6 }] },
-      { date: "2026-03-01", sets: [{ weight: 205, reps: 8 }, { weight: 225, reps: 5 }, { weight: 225, reps: 4 }] },
-      { date: "2026-03-08", sets: [{ weight: 215, reps: 8 }, { weight: 225, reps: 6 }, { weight: 225, reps: 5 }] },
-      { date: "2026-03-15", sets: [{ weight: 215, reps: 8 }, { weight: 235, reps: 4 }, { weight: 225, reps: 5 }] },
-      { date: "2026-03-22", sets: [{ weight: 225, reps: 6 }, { weight: 235, reps: 5 }, { weight: 225, reps: 5 }] },
-      { date: "2026-04-02", sets: [{ weight: 225, reps: 8 }, { weight: 245, reps: 3 }, { weight: 225, reps: 5 }] },
-    ],
-    // Smith Machine (lighter history — demos variant switching)
-    "smith_machine": [
-      { date: "2026-03-05", sets: [{ weight: 225, reps: 8 }, { weight: 245, reps: 6 }] },
-      { date: "2026-03-19", sets: [{ weight: 235, reps: 8 }, { weight: 255, reps: 6 }] },
-    ],
-  },
-  bench_press: {
-    // Barbell + Flat Bench (main)
-    "barbell+flat_bench": [
-      { date: "2026-02-10", sets: [{ weight: 155, reps: 8 }, { weight: 165, reps: 6 }, { weight: 165, reps: 5 }] },
-      { date: "2026-02-17", sets: [{ weight: 165, reps: 8 }, { weight: 175, reps: 6 }, { weight: 165, reps: 6 }] },
-      { date: "2026-02-24", sets: [{ weight: 165, reps: 8 }, { weight: 175, reps: 7 }, { weight: 175, reps: 6 }] },
-      { date: "2026-03-03", sets: [{ weight: 175, reps: 8 }, { weight: 185, reps: 5 }, { weight: 175, reps: 6 }] },
-      { date: "2026-03-10", sets: [{ weight: 175, reps: 8 }, { weight: 185, reps: 6 }, { weight: 185, reps: 5 }] },
-      { date: "2026-03-17", sets: [{ weight: 185, reps: 7 }, { weight: 185, reps: 6 }, { weight: 175, reps: 7 }] },
-      { date: "2026-03-24", sets: [{ weight: 185, reps: 8 }, { weight: 195, reps: 4 }, { weight: 185, reps: 5 }] },
-      { date: "2026-04-03", sets: [{ weight: 185, reps: 8 }, { weight: 185, reps: 6 }, { weight: 175, reps: 8 }] },
-    ],
-    // Dumbbells (secondary, for demoing the switcher)
-    "dumbbells+flat_bench": [
-      { date: "2026-02-14", sets: [{ weight: 65, reps: 10 }, { weight: 70, reps: 8 }, { weight: 70, reps: 7 }] },
-      { date: "2026-03-01", sets: [{ weight: 70, reps: 10 }, { weight: 75, reps: 8 }, { weight: 70, reps: 8 }] },
-      { date: "2026-03-22", sets: [{ weight: 75, reps: 10 }, { weight: 80, reps: 7 }, { weight: 75, reps: 8 }] },
-    ],
-  },
-  deadlift: {
-    "barbell_conventional": [
-      { date: "2026-02-12", sets: [{ weight: 275, reps: 5 }, { weight: 275, reps: 4 }] },
-      { date: "2026-02-19", sets: [{ weight: 285, reps: 5 }, { weight: 285, reps: 3 }] },
-      { date: "2026-02-26", sets: [{ weight: 295, reps: 4 }, { weight: 275, reps: 5 }] },
-      { date: "2026-03-05", sets: [{ weight: 295, reps: 5 }, { weight: 295, reps: 3 }] },
-      { date: "2026-03-12", sets: [{ weight: 305, reps: 4 }, { weight: 285, reps: 5 }] },
-      { date: "2026-03-19", sets: [{ weight: 315, reps: 2 }, { weight: 295, reps: 5 }] },
-      { date: "2026-03-26", sets: [{ weight: 315, reps: 3 }, { weight: 295, reps: 5 }] },
-      { date: "2026-04-05", sets: [{ weight: 315, reps: 3 }, { weight: 295, reps: 6 }] },
-    ],
-    "barbell_sumo": [
-      { date: "2026-03-15", sets: [{ weight: 295, reps: 4 }, { weight: 275, reps: 5 }] },
-      { date: "2026-03-29", sets: [{ weight: 305, reps: 4 }, { weight: 285, reps: 5 }] },
-    ],
-  },
-  overhead_press: {
-    "barbell": [
-      { date: "2026-02-11", sets: [{ weight: 95, reps: 8 }, { weight: 105, reps: 5 }, { weight: 105, reps: 4 }] },
-      { date: "2026-02-18", sets: [{ weight: 95, reps: 8 }, { weight: 105, reps: 6 }, { weight: 105, reps: 5 }] },
-      { date: "2026-02-25", sets: [{ weight: 105, reps: 8 }, { weight: 110, reps: 5 }, { weight: 105, reps: 5 }] },
-      { date: "2026-03-04", sets: [{ weight: 105, reps: 8 }, { weight: 115, reps: 3 }, { weight: 105, reps: 6 }] },
-      { date: "2026-03-11", sets: [{ weight: 105, reps: 8 }, { weight: 115, reps: 4 }, { weight: 110, reps: 5 }] },
-      { date: "2026-03-18", sets: [{ weight: 110, reps: 8 }, { weight: 115, reps: 5 }, { weight: 115, reps: 4 }] },
-      { date: "2026-03-25", sets: [{ weight: 115, reps: 5 }, { weight: 110, reps: 6 }, { weight: 105, reps: 7 }] },
-      { date: "2026-04-04", sets: [{ weight: 115, reps: 5 }, { weight: 115, reps: 4 }, { weight: 105, reps: 7 }] },
-    ],
-  },
-  bent_over_row: {
-    "barbell": [
-      { date: "2026-02-09", sets: [{ weight: 135, reps: 8 }, { weight: 145, reps: 8 }, { weight: 145, reps: 6 }] },
-      { date: "2026-02-16", sets: [{ weight: 145, reps: 8 }, { weight: 155, reps: 6 }, { weight: 145, reps: 8 }] },
-      { date: "2026-02-23", sets: [{ weight: 145, reps: 8 }, { weight: 155, reps: 8 }, { weight: 155, reps: 6 }] },
-      { date: "2026-03-02", sets: [{ weight: 155, reps: 8 }, { weight: 165, reps: 6 }, { weight: 155, reps: 7 }] },
-      { date: "2026-03-09", sets: [{ weight: 155, reps: 8 }, { weight: 165, reps: 7 }, { weight: 155, reps: 8 }] },
-      { date: "2026-03-16", sets: [{ weight: 165, reps: 8 }, { weight: 165, reps: 7 }, { weight: 155, reps: 8 }] },
-      { date: "2026-03-23", sets: [{ weight: 165, reps: 8 }, { weight: 165, reps: 8 }, { weight: 155, reps: 8 }] },
-      { date: "2026-04-01", sets: [{ weight: 165, reps: 8 }, { weight: 175, reps: 6 }, { weight: 165, reps: 7 }] },
-    ],
-  },
-  romanian_deadlift: {
-    "barbell": [
-      { date: "2026-02-13", sets: [{ weight: 165, reps: 10 }, { weight: 185, reps: 8 }, { weight: 185, reps: 8 }] },
-      { date: "2026-02-20", sets: [{ weight: 175, reps: 10 }, { weight: 185, reps: 10 }, { weight: 185, reps: 8 }] },
-      { date: "2026-02-27", sets: [{ weight: 185, reps: 10 }, { weight: 195, reps: 8 }, { weight: 185, reps: 10 }] },
-      { date: "2026-03-06", sets: [{ weight: 185, reps: 10 }, { weight: 205, reps: 6 }, { weight: 195, reps: 8 }] },
-      { date: "2026-03-13", sets: [{ weight: 195, reps: 10 }, { weight: 205, reps: 8 }, { weight: 195, reps: 10 }] },
-      { date: "2026-03-20", sets: [{ weight: 195, reps: 10 }, { weight: 215, reps: 6 }, { weight: 205, reps: 8 }] },
-      { date: "2026-03-27", sets: [{ weight: 205, reps: 8 }, { weight: 215, reps: 7 }, { weight: 205, reps: 8 }] },
-      { date: "2026-04-06", sets: [{ weight: 205, reps: 10 }, { weight: 215, reps: 8 }, { weight: 205, reps: 8 }] },
-    ],
-  },
-  incline_press: {
-    "adjustable_bench+barbell": [
-      { date: "2026-02-11", sets: [{ weight: 115, reps: 8 }, { weight: 125, reps: 6 }, { weight: 125, reps: 5 }] },
-      { date: "2026-02-18", sets: [{ weight: 125, reps: 8 }, { weight: 135, reps: 5 }, { weight: 125, reps: 6 }] },
-      { date: "2026-02-25", sets: [{ weight: 125, reps: 8 }, { weight: 135, reps: 6 }, { weight: 125, reps: 7 }] },
-      { date: "2026-03-04", sets: [{ weight: 135, reps: 7 }, { weight: 135, reps: 6 }, { weight: 125, reps: 7 }] },
-      { date: "2026-03-11", sets: [{ weight: 135, reps: 8 }, { weight: 145, reps: 4 }, { weight: 135, reps: 6 }] },
-      { date: "2026-03-18", sets: [{ weight: 135, reps: 8 }, { weight: 145, reps: 5 }, { weight: 135, reps: 7 }] },
-      { date: "2026-03-25", sets: [{ weight: 145, reps: 5 }, { weight: 135, reps: 7 }, { weight: 135, reps: 6 }] },
-      { date: "2026-04-04", sets: [{ weight: 145, reps: 6 }, { weight: 145, reps: 5 }, { weight: 135, reps: 7 }] },
-    ],
-  },
-  bicep_curl: {
-    "barbell": [
-      { date: "2026-02-14", sets: [{ weight: 55, reps: 12 }, { weight: 65, reps: 10 }, { weight: 65, reps: 8 }] },
-      { date: "2026-02-21", sets: [{ weight: 65, reps: 12 }, { weight: 65, reps: 10 }, { weight: 65, reps: 10 }] },
-      { date: "2026-02-28", sets: [{ weight: 65, reps: 12 }, { weight: 70, reps: 10 }, { weight: 65, reps: 12 }] },
-      { date: "2026-03-07", sets: [{ weight: 70, reps: 12 }, { weight: 70, reps: 10 }, { weight: 65, reps: 12 }] },
-      { date: "2026-03-14", sets: [{ weight: 70, reps: 12 }, { weight: 75, reps: 8 }, { weight: 70, reps: 10 }] },
-      { date: "2026-03-21", sets: [{ weight: 75, reps: 10 }, { weight: 75, reps: 8 }, { weight: 70, reps: 10 }] },
-      { date: "2026-03-28", sets: [{ weight: 75, reps: 10 }, { weight: 75, reps: 9 }, { weight: 70, reps: 12 }] },
-      { date: "2026-04-06", sets: [{ weight: 75, reps: 10 }, { weight: 75, reps: 10 }, { weight: 70, reps: 12 }] },
-    ],
-    "ez_curl_bar": [
-      { date: "2026-03-08", sets: [{ weight: 60, reps: 12 }, { weight: 65, reps: 10 }] },
-    ],
-  },
-  lat_pulldown: {
-    "cable_lat_pulldown": [
-      { date: "2026-02-09", sets: [{ weight: 110, reps: 12 }, { weight: 120, reps: 10 }, { weight: 120, reps: 8 }] },
-      { date: "2026-02-16", sets: [{ weight: 120, reps: 12 }, { weight: 130, reps: 9 }, { weight: 120, reps: 10 }] },
-      { date: "2026-02-23", sets: [{ weight: 120, reps: 12 }, { weight: 130, reps: 10 }, { weight: 130, reps: 8 }] },
-      { date: "2026-03-02", sets: [{ weight: 130, reps: 10 }, { weight: 130, reps: 10 }, { weight: 120, reps: 12 }] },
-      { date: "2026-03-09", sets: [{ weight: 130, reps: 12 }, { weight: 140, reps: 8 }, { weight: 130, reps: 10 }] },
-      { date: "2026-03-16", sets: [{ weight: 130, reps: 12 }, { weight: 140, reps: 9 }, { weight: 130, reps: 12 }] },
-      { date: "2026-03-23", sets: [{ weight: 140, reps: 10 }, { weight: 140, reps: 9 }, { weight: 130, reps: 12 }] },
-      { date: "2026-04-01", sets: [{ weight: 140, reps: 10 }, { weight: 140, reps: 10 }, { weight: 130, reps: 12 }] },
-    ],
-  },
-  leg_press: {
-    "leg_press_machine": [
-      { date: "2026-02-12", sets: [{ weight: 270, reps: 12 }, { weight: 290, reps: 10 }, { weight: 290, reps: 8 }] },
-      { date: "2026-02-19", sets: [{ weight: 290, reps: 12 }, { weight: 310, reps: 10 }, { weight: 290, reps: 10 }] },
-      { date: "2026-02-26", sets: [{ weight: 290, reps: 12 }, { weight: 320, reps: 8 }, { weight: 310, reps: 10 }] },
-      { date: "2026-03-05", sets: [{ weight: 310, reps: 12 }, { weight: 330, reps: 8 }, { weight: 310, reps: 10 }] },
-      { date: "2026-03-12", sets: [{ weight: 320, reps: 10 }, { weight: 340, reps: 8 }, { weight: 320, reps: 10 }] },
-      { date: "2026-03-19", sets: [{ weight: 320, reps: 12 }, { weight: 340, reps: 10 }, { weight: 320, reps: 10 }] },
-      { date: "2026-03-26", sets: [{ weight: 340, reps: 10 }, { weight: 340, reps: 9 }, { weight: 320, reps: 12 }] },
-      { date: "2026-04-05", sets: [{ weight: 360, reps: 10 }, { weight: 340, reps: 10 }, { weight: 320, reps: 12 }] },
-    ],
-  },
-};
 
 /* Build the set of body-part filters, including exercises that appear in
-   two groups via alsoIn. Returns a new array each call, already sorted A-Z. */
-function getExercisesForFilter(filter) {
-  if (filter === "All") return [...EXERCISE_LIBRARY].sort((a, b) => a.name.localeCompare(b.name));
-  return EXERCISE_LIBRARY
+   two groups via alsoIn. Returns a new array each call, already sorted A-Z.
+   Optionally merges in a list of user-created custom exercises. Custom
+   exercises are always included in "All"; for body-part filters, we match
+   on their `primary` field the same way library exercises do. */
+function getExercisesForFilter(filter, customs = []) {
+  const all = [...EXERCISE_LIBRARY, ...customs];
+  if (filter === "All") return all.sort((a, b) => a.name.localeCompare(b.name));
+  return all
     .filter((e) => e.primary === filter || (e.alsoIn && e.alsoIn.includes(filter)))
     .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/* Generic lookup against the combined library + custom exercises. Callers
+   that used to call `EXERCISE_LIBRARY.find(...)` should use this instead so
+   references survive for custom exercises too (active workout that contains
+   a custom exercise, recent-workouts on Home, etc). */
+function findExerciseById(id, customs = []) {
+  return EXERCISE_LIBRARY.find((e) => e.id === id) || customs.find((e) => e.id === id) || null;
+}
+function findExerciseByName(name, customs = []) {
+  return EXERCISE_LIBRARY.find((e) => e.name === name) || customs.find((e) => e.name === name) || null;
 }
 
 /* A variant is "available" if the user has every equipment id it requires.
@@ -746,33 +725,133 @@ function exerciseHasAnyAvailableVariant(ex, userEquip) {
    This lets users search by equipment ("dumbbell"), muscle ("chest"), or
    name ("bench") and get sensible results instead of only name matching.
    Case-insensitive; query is trimmed. */
+/* ── Search alias map ─────────────────────────────────────────────
+   Common lifter shorthand → the actual term the exercise library uses.
+   When a user types an alias, we also match against the expansion. This
+   is additive — the existing name/primary/secondary/variant matches still
+   apply. If a word isn't in the map it's passed through unchanged.
+
+   The alias value is ALSO substring-matched against the same fields as
+   the raw query, so "RDL" expanding to "romanian deadlift" finds the
+   Romanian Deadlift entry; "db" expanding to "dumbbells" finds every
+   exercise with a dumbbell variant.
+
+   Bible §3.1 — add aliases as we see them come up in usage. Start small.
+*/
+const SEARCH_ALIASES = {
+  // Compound lift shorthand
+  "rdl": "romanian deadlift",
+  "sldl": "romanian deadlift",
+  "ohp": "overhead press",
+  "cgbp": "close-grip bench press",
+  "bp": "bench press",
+  "bb": "barbell",
+  "db": "dumbbells",
+  "kb": "kettlebells",
+  "smith": "smith machine",
+  // Muscle / body part shorthand
+  "tris": "arms",
+  "bis": "arms",
+  "delts": "shoulders",
+  "quads": "legs",
+  "hams": "legs",
+  "glutes": "legs",
+  "abs": "core",
+  "lats": "back",
+  "traps": "back",
+  "pecs": "chest",
+  // Movement shorthand
+  "pullup": "pull-up",
+  "pullups": "pull-up",
+  "pushup": "push-up",
+  "pushups": "push-up",
+  "chinup": "chin-up",
+  "chinups": "chin-up",
+};
+
 function exerciseMatchesSearch(ex, query) {
   const q = query.trim().toLowerCase();
   if (!q) return true;
+  // Direct match against name, primary, secondary, variants.
   if (ex.name.toLowerCase().includes(q)) return true;
   if (ex.primary.toLowerCase().includes(q)) return true;
   if (ex.secondary && ex.secondary.some((m) => m.toLowerCase().includes(q))) return true;
   if (ex.variants.some((v) => v.label.toLowerCase().includes(q))) return true;
+  // Alias match — if the query is a known abbreviation, also try its
+  // expansion against the same fields. Avoids false negatives like "rdl"
+  // returning zero results.
+  const alias = SEARCH_ALIASES[q];
+  if (alias) {
+    if (ex.name.toLowerCase().includes(alias)) return true;
+    if (ex.primary.toLowerCase().includes(alias)) return true;
+    if (ex.secondary && ex.secondary.some((m) => m.toLowerCase().includes(alias))) return true;
+    if (ex.variants.some((v) => v.label.toLowerCase().includes(alias))) return true;
+  }
   return false;
 }
-function formatLastMax(id) {
-  const pr = MOCK_LAST_MAX[id];
-  if (!pr) return null;
-  return `${pr.weight} × ${pr.reps}`;
+/* ── Derived history helpers ─────────────────────────────────────
+   History was previously stored in a separate MOCK_HISTORY keyed by
+   exerciseId + variantKey. That's gone. Everything below derives on
+   the fly from workoutHistory (session log) + customExercises.
+
+   A session looks like:
+     { id, name, date, durationSec, exercises: [
+       { name, variantLabel, sets: [{ weight, reps, type }] }, ...
+     ]}
+   We resolve each (name, variantLabel) pair back to (exerciseId, variantKey)
+   against the library + customs so the existing callers stay unchanged.
+
+   A note on deleted customs: once a user deletes a custom exercise, its
+   definition is gone from `customExercises`, so `findExerciseByName` won't
+   resolve it. The session log still contains the exercise's name and sets
+   (history is preserved in the session record itself) — but there's no
+   way to land on a detail sheet for it, because the list won't include it.
+   This is the locked behavior (Bible §15, "Custom exercise edits create
+   deliberate history mismatches"). */
+
+/* Resolve a (session exercise name, variantLabel) pair to (exerciseId, variantKey).
+   Returns null if the exercise can't be resolved (e.g. deleted custom). */
+function resolveSessionExercise(sessionEx, customs = []) {
+  const exDef = findExerciseByName(sessionEx.name, customs);
+  if (!exDef) return null;
+  // Match variant by label. Custom exercises are single-variant so their
+  // single variant wins regardless.
+  const variant =
+    exDef.variants.find((v) => v.label === sessionEx.variantLabel) ||
+    exDef.variants[0];
+  return { exerciseId: exDef.id, vKey: variantKey(variant) };
 }
 
-/* Returns the history array for a (exerciseId, variantKey) pair, or []. */
-function getVariantHistory(exerciseId, vKey) {
-  const ex = MOCK_HISTORY[exerciseId];
-  if (!ex) return [];
-  return ex[vKey] || [];
+/* Returns the session history for a (exerciseId, variantKey) pair, derived
+   from workoutHistory. Sessions are returned chronologically oldest-first
+   to match the shape callers expect (they index [length-1] for most recent).
+   Shape per entry: { date, sets: [{ weight, reps }] }. */
+function getVariantHistory(exerciseId, vKey, workoutHistory = [], customs = []) {
+  const out = [];
+  for (const session of workoutHistory) {
+    for (const ex of session.exercises || []) {
+      const resolved = resolveSessionExercise(ex, customs);
+      if (!resolved) continue;
+      if (resolved.exerciseId === exerciseId && resolved.vKey === vKey) {
+        // Strip the `type` field — downstream code only needs weight/reps
+        // (warmups are kept; sessionTopSet filters them out where needed).
+        out.push({
+          date: session.date,
+          sets: ex.sets.map((s) => ({ weight: s.weight, reps: s.reps, type: s.type })),
+        });
+      }
+    }
+  }
+  // Chronological ascending (oldest first, most recent last).
+  out.sort((a, b) => a.date.localeCompare(b.date));
+  return out;
 }
 
 /* Returns the most recent session date (ISO string) across a variant's
    history, or null if the variant has no history. Used for the smart-default
    variant picker and the dropdown previews. */
-function getVariantLastDate(exerciseId, vKey) {
-  const hist = getVariantHistory(exerciseId, vKey);
+function getVariantLastDate(exerciseId, vKey, workoutHistory = [], customs = []) {
+  const hist = getVariantHistory(exerciseId, vKey, workoutHistory, customs);
   if (hist.length === 0) return null;
   return hist[hist.length - 1].date;
 }
@@ -782,12 +861,12 @@ function getVariantLastDate(exerciseId, vKey) {
    2. Otherwise, the first variant whose equipment the user has
    3. Otherwise, the first variant in the list (so the sheet never crashes)
 */
-function pickDefaultVariant(exercise, userEquipment) {
+function pickDefaultVariant(exercise, userEquipment, workoutHistory = [], customs = []) {
   // (1) most recently logged
   let best = null;
   let bestDate = null;
   for (const v of exercise.variants) {
-    const d = getVariantLastDate(exercise.id, variantKey(v));
+    const d = getVariantLastDate(exercise.id, variantKey(v), workoutHistory, customs);
     if (d && (!bestDate || d > bestDate)) {
       best = v;
       bestDate = d;
@@ -804,34 +883,33 @@ function pickDefaultVariant(exercise, userEquipment) {
 }
 
 /* For the list row display: last max of the user's most-recently-logged
-   variant of this exercise. Returns { value, date } or null.
-   - value: formatted string like "225 × 5"
-   - date: ISO date string of the session
+   variant of this exercise. Returns { value, date, variantLabel } or null.
    Falls back to null for exercises with no logged history at all. */
-function getRowLastMax(exerciseId, exercise) {
-  const allVariants = MOCK_HISTORY[exerciseId];
-  if (!allVariants) return null;
-
-  // Find most recently logged variant
+function getRowLastMax(exerciseId, exercise, workoutHistory = [], customs = []) {
+  // Walk the whole history once, tracking the latest session for every
+  // variant of this exercise. Cheaper than calling getVariantHistory for
+  // each variant, since the list uses this on every row.
   let latestDate = null;
   let latestVKey = null;
-  for (const [vKey, sessions] of Object.entries(allVariants)) {
-    if (sessions.length === 0) continue;
-    const d = sessions[sessions.length - 1].date;
-    if (!latestDate || d > latestDate) {
-      latestDate = d;
-      latestVKey = vKey;
+  let latestSets = null;
+
+  for (const session of workoutHistory) {
+    for (const ex of session.exercises || []) {
+      const resolved = resolveSessionExercise(ex, customs);
+      if (!resolved || resolved.exerciseId !== exerciseId) continue;
+      if (!latestDate || session.date > latestDate) {
+        latestDate = session.date;
+        latestVKey = resolved.vKey;
+        latestSets = ex.sets;
+      }
     }
   }
-  if (!latestVKey) return null;
+  if (!latestDate) return null;
 
-  // Most recent session of that variant → top set of that session
-  const sessions = allVariants[latestVKey];
-  const topSet = sessionTopSet(sessions[sessions.length - 1].sets);
+  const topSet = sessionTopSet(latestSets);
 
-  // Resolve the variant label by matching the latestVKey against the
-  // exercise's library variants. Used for the small subtitle on the row
-  // so the user knows which variant the max number is from.
+  // Resolve variant label from the library so the display matches the
+  // canonical variant name (not the session's possibly-stale label).
   let variantLabel = null;
   if (exercise) {
     const matchedVariant = exercise.variants.find((v) => variantKey(v) === latestVKey);
@@ -902,9 +980,6 @@ function formatShortDate(isoDate) {
 /* ── Shared Components ───────────────────────────────────────── */
 
 function PhoneFrame({ children }) {
-  // Detect if we're on a real mobile device (narrow viewport).
-  // On real phones: fill the screen, no fake frame, no fake status bar.
-  // On desktop: keep the iPhone-style mockup view for design review.
   const [isMobile, setIsMobile] = useState(
     typeof window !== "undefined" && window.innerWidth < 500
   );
@@ -1013,19 +1088,11 @@ function GoldButton({ children, onClick, style: s = {} }) {
 
 function ProgressBar({ current, total }) {
   return (
-    <div style={{ padding: "0 24px", marginBottom: 4, flexShrink: 0 }}>
-      <div style={{ height: 3, background: COLORS.border, borderRadius: 2 }}>
-        <div style={{ height: "100%", width: `${(current / total) * 100}%`, background: COLORS.gold, borderRadius: 2, transition: "width 0.4s ease" }} />
+    <div style={{ padding: "0 24px", marginBottom: 14, flexShrink: 0 }}>
+      <div style={{ height: 6, background: COLORS.border, borderRadius: 3 }}>
+        <div style={{ height: "100%", width: `${(current / total) * 100}%`, background: COLORS.gold, borderRadius: 3, transition: "width 0.4s ease" }} />
       </div>
     </div>
-  );
-}
-
-function PrivacyLine() {
-  return (
-    <p style={{ fontSize: 12, color: COLORS.textSecondary, textAlign: "center", lineHeight: 1.5, margin: "16px 0 0", fontStyle: "italic" }}>
-      Your data is only used to personalize your experience.<br />Never sold, never shared.
-    </p>
   );
 }
 
@@ -1101,7 +1168,7 @@ function WelcomeScreen({ onGetStarted, onSignIn }) {
         <h1 style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 92, fontWeight: 700, color: COLORS.gold, margin: 0, letterSpacing: 8 }}>MYG</h1>
       </div>
       <div style={{ position: "absolute", bottom: 40, left: 32, right: 32, opacity: contentV ? 1 : 0, transform: contentV ? "translateY(0)" : "translateY(16px)", transition: "all 0.6s ease" }}>
-        <p style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 22, color: COLORS.text, textAlign: "center", margin: "0 0 4px", fontWeight: 400 }}>Your AI fitness coach</p>
+        <p style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 22, color: COLORS.text, textAlign: "center", margin: "0 0 4px", fontWeight: 400 }}>Your AI fitness coach to help</p>
         <p style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 18, color: COLORS.gold, textAlign: "center", margin: "0 0 28px", fontWeight: 400, fontStyle: "italic" }}>Meet Your Goals</p>
         <GoldButton onClick={onGetStarted}>Get Started</GoldButton>
         <button onClick={onSignIn} style={{ width: "100%", padding: 14, background: "none", border: "none", color: COLORS.textSecondary, fontSize: 14, cursor: "pointer", marginTop: 8 }}>
@@ -1139,9 +1206,9 @@ function GoalsScreen({ onNext, onBack, onSkip }) {
   const [selected, setSelected] = useState(null);
   const goals = ["Lose Weight", "Build Muscle", "Gain Strength", "Get Lean"];
   return (
-    <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
+    <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
       <TopBar onBack={onBack} onSkip={onSkip} />
-      <div style={{ flex: 1, padding: "0 24px", overflowY: "auto" }}>
+      <div style={{ flex: 1, minHeight: 0, padding: "0 24px", overflowY: "auto", WebkitOverflowScrolling: "touch" }}>
         <h2 style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 28, color: COLORS.text, margin: "12px 0 8px", fontWeight: 400 }}>
           What is your <span style={{ color: COLORS.gold }}>primary fitness goal</span>?
         </h2>
@@ -1149,8 +1216,10 @@ function GoalsScreen({ onNext, onBack, onSkip }) {
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           {goals.map((g) => <SelectableChip key={g} label={g} selected={selected === g} onClick={() => setSelected(g)} />)}
         </div>
-        <PrivacyLine />
-        <div style={{ marginTop: 28, paddingBottom: 20 }}><GoldButton onClick={onNext}>Continue</GoldButton></div>
+        <div style={{ height: 16 }} />
+      </div>
+      <div style={{ padding: "12px 24px 16px", flexShrink: 0, borderTop: `1px solid ${COLORS.border}`, background: COLORS.bg }}>
+        <GoldButton onClick={onNext}>Continue</GoldButton>
       </div>
     </div>
   );
@@ -1164,9 +1233,9 @@ function FitnessLevelScreen({ onNext, onBack, onSkip }) {
     { id: "advanced", label: "Advanced", desc: "Years of structured training experience" },
   ];
   return (
-    <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
+    <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
       <TopBar onBack={onBack} onSkip={onSkip} />
-      <div style={{ flex: 1, padding: "0 24px", overflowY: "auto" }}>
+      <div style={{ flex: 1, minHeight: 0, padding: "0 24px", overflowY: "auto", WebkitOverflowScrolling: "touch" }}>
         <h2 style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 28, color: COLORS.text, margin: "12px 0 8px", fontWeight: 400 }}>Your fitness level</h2>
         <p style={{ color: COLORS.textSecondary, fontSize: 15, margin: "0 0 28px" }}>Be honest — your Coach adjusts to you.</p>
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -1177,8 +1246,10 @@ function FitnessLevelScreen({ onNext, onBack, onSkip }) {
             </button>
           ))}
         </div>
-        <PrivacyLine />
-        <div style={{ marginTop: 28, paddingBottom: 20 }}><GoldButton onClick={onNext}>Continue</GoldButton></div>
+        <div style={{ height: 16 }} />
+      </div>
+      <div style={{ padding: "12px 24px 16px", flexShrink: 0, borderTop: `1px solid ${COLORS.border}`, background: COLORS.bg }}>
+        <GoldButton onClick={onNext}>Continue</GoldButton>
       </div>
     </div>
   );
@@ -1189,9 +1260,9 @@ function AboutYouScreen({ onNext, onBack, onSkip }) {
   const [ageRange, setAgeRange] = useState(null);
   const genders = ["Male", "Female", "Prefer not to say"];
   return (
-    <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
+    <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
       <TopBar onBack={onBack} onSkip={onSkip} />
-      <div style={{ flex: 1, padding: "0 24px", overflowY: "auto" }}>
+      <div style={{ flex: 1, minHeight: 0, padding: "0 24px", overflowY: "auto", WebkitOverflowScrolling: "touch" }}>
         <h2 style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 28, color: COLORS.text, margin: "12px 0 8px", fontWeight: 400 }}>A bit about you</h2>
         <p style={{ color: COLORS.textSecondary, fontSize: 15, margin: "0 0 28px" }}>Helps your Coach tailor recommendations.</p>
         <p style={{ color: COLORS.textSecondary, fontSize: 12, margin: "0 0 10px", letterSpacing: 1, textTransform: "uppercase", fontWeight: 500 }}>Gender</p>
@@ -1205,8 +1276,10 @@ function AboutYouScreen({ onNext, onBack, onSkip }) {
         <div style={{ display: "flex", gap: 8, justifyContent: "center" }}>
           {["45–54", "55+"].map((a) => <SelectableChip key={a} label={a} selected={ageRange === a} onClick={() => setAgeRange(a)} style={{ flex: 1, maxWidth: "calc(33.33% - 3px)", padding: "12px 8px", fontSize: 14 }} />)}
         </div>
-        <PrivacyLine />
-        <div style={{ marginTop: 28, paddingBottom: 20 }}><GoldButton onClick={onNext}>Continue</GoldButton></div>
+        <div style={{ height: 16 }} />
+      </div>
+      <div style={{ padding: "12px 24px 16px", flexShrink: 0, borderTop: `1px solid ${COLORS.border}`, background: COLORS.bg }}>
+        <GoldButton onClick={onNext}>Continue</GoldButton>
       </div>
     </div>
   );
@@ -1215,12 +1288,12 @@ function AboutYouScreen({ onNext, onBack, onSkip }) {
 function DaysScreen({ onNext, onBack, onSkip }) {
   const [days, setDays] = useState(3);
   return (
-    <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
+    <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
       <TopBar onBack={onBack} onSkip={onSkip} />
-      <div style={{ flex: 1, padding: "0 24px", display: "flex", flexDirection: "column" }}>
+      <div style={{ flex: 1, minHeight: 0, padding: "0 24px", display: "flex", flexDirection: "column", overflowY: "auto", WebkitOverflowScrolling: "touch" }}>
         <h2 style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 28, color: COLORS.text, margin: "12px 0 8px", fontWeight: 400 }}>How many days per week?</h2>
         <p style={{ color: COLORS.textSecondary, fontSize: 15, margin: 0 }}>Your Coach will plan around your schedule.</p>
-        <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: 280 }}>
           <div style={{ fontSize: 80, fontFamily: "Georgia, 'Times New Roman', serif", color: COLORS.gold, fontWeight: 700, marginBottom: 4 }}>{days}</div>
           <div style={{ color: COLORS.textSecondary, fontSize: 16, marginBottom: 40 }}>{days === 1 ? "day" : "days"} per week</div>
           <div style={{ width: "100%", padding: "0 8px" }}>
@@ -1230,8 +1303,10 @@ function DaysScreen({ onNext, onBack, onSkip }) {
             </div>
           </div>
         </div>
-        <PrivacyLine />
-        <div style={{ marginTop: 16, paddingBottom: 20 }}><GoldButton onClick={onNext}>Continue</GoldButton></div>
+        <div style={{ height: 16 }} />
+      </div>
+      <div style={{ padding: "12px 24px 16px", flexShrink: 0, borderTop: `1px solid ${COLORS.border}`, background: COLORS.bg }}>
+        <GoldButton onClick={onNext}>Continue</GoldButton>
       </div>
     </div>
   );
@@ -1243,10 +1318,36 @@ function EquipmentPresetScreen({ onBack, onSkip, selectedEquipment, onPickPreset
   const count = selectedEquipment.size;
   const hasSelection = count > 0;
 
+  // Simple on-brand icons (gold stroke) replacing the old emoji treatment.
+  // Barbell, house, and flexed-arm metaphors kept but now in-style.
+  const iconFull = (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={COLORS.gold} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="2" y="9" width="2" height="6" />
+      <rect x="5" y="7" width="2" height="10" />
+      <rect x="17" y="7" width="2" height="10" />
+      <rect x="20" y="9" width="2" height="6" />
+      <line x1="7" y1="12" x2="17" y2="12" />
+    </svg>
+  );
+  const iconHome = (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={COLORS.gold} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z" />
+      <polyline points="9 22 9 12 15 12 15 22" />
+    </svg>
+  );
+  const iconBody = (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={COLORS.gold} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="5" r="2.5" />
+      <path d="M12 8v5" />
+      <path d="M8 12l4 2 4-2" />
+      <path d="M9 21l3-8 3 8" />
+    </svg>
+  );
+
   const opts = [
-    { id: "full", label: "Full Gym", icon: "🏋️", desc: "Commercial gym — all equipment" },
-    { id: "home", label: "Home Gym", icon: "🏠", desc: "Dumbbells, bench, maybe a rack" },
-    { id: "bodyweight", label: "Bodyweight Only", icon: "💪", desc: "No equipment needed" },
+    { id: "full", label: "Full Gym", icon: iconFull, desc: "Commercial gym — all equipment" },
+    { id: "home", label: "Home Gym", icon: iconHome, desc: "Dumbbells, bench, maybe a rack" },
+    { id: "bodyweight", label: "Bodyweight Only", icon: iconBody, desc: "No equipment needed" },
   ];
 
   return (
@@ -1254,9 +1355,14 @@ function EquipmentPresetScreen({ onBack, onSkip, selectedEquipment, onPickPreset
       <TopBar onBack={onBack} onSkip={onSkip} />
       <div style={{ flex: 1, minHeight: 0, padding: "0 24px", overflowY: "auto", WebkitOverflowScrolling: "touch" }}>
         <h2 style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 28, color: COLORS.text, margin: "12px 0 8px", fontWeight: 400 }}>Your equipment</h2>
-        <p style={{ color: COLORS.textSecondary, fontSize: 15, margin: "0 0 24px" }}>
-          {hasSelection ? "Your equipment is saved. Tap to change or continue." : "Select a starting point to customize."}
+        <p style={{ color: COLORS.textSecondary, fontSize: 14, margin: "0 0 24px", fontStyle: "italic" }}>
+          Coach will only suggest exercises using equipment you select.
         </p>
+        {!hasSelection && (
+          <p style={{ color: COLORS.textSecondary, fontSize: 15, margin: "0 0 24px" }}>
+            Select a starting point to customize.
+          </p>
+        )}
 
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           {opts.map((o) => (
@@ -1272,7 +1378,9 @@ function EquipmentPresetScreen({ onBack, onSkip, selectedEquipment, onPickPreset
                 transition: "all 0.15s ease",
               }}
             >
-              <span style={{ fontSize: 26 }}>{o.icon}</span>
+              <div style={{ width: 40, height: 40, borderRadius: 8, background: "rgba(255,215,0,0.08)", border: `1px solid rgba(255,215,0,0.2)`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                {o.icon}
+              </div>
               <div style={{ flex: 1 }}>
                 <div style={{ color: COLORS.text, fontSize: 16, fontWeight: 600, marginBottom: 3 }}>{o.label}</div>
                 <div style={{ color: COLORS.textSecondary, fontSize: 13 }}>{o.desc}</div>
@@ -1296,7 +1404,6 @@ function EquipmentPresetScreen({ onBack, onSkip, selectedEquipment, onPickPreset
           </div>
         )}
 
-        <PrivacyLine />
         <div style={{ height: 16 }} />
       </div>
 
@@ -1310,7 +1417,68 @@ function EquipmentPresetScreen({ onBack, onSkip, selectedEquipment, onPickPreset
   );
 }
 
-/* ── Equipment Detail Screen (Fitbod-style) ──────────────────── */
+/* ── Equipment Detail Screen — Accordion (Strong-style) ─────────
+
+   Collapsed-by-default accordion. Each category row shows a thumbnail,
+   the category name, a chevron, and a category-level checkbox that
+   selects/deselects every item inside. Tapping the row (anywhere
+   except the checkbox) expands to reveal individual items, each with
+   their own thumbnail and checkbox.
+
+   Partial selection shows an "X selected" subtitle under the category
+   name. Full selection hides the subtitle. See Bible §2.4 (via April
+   2026 change log).
+
+   📝 Thumbnails are MYG-monogram placeholders for now. The real
+   equipment photography / licensed illustration set is a pre-launch
+   asset task. The <EquipThumb> component is the single seam to swap
+   when that pipeline lands.
+*/
+
+function EquipThumb({ size = 40, small = false }) {
+  // Monogram placeholder. Smaller variant (32px) used for item rows,
+  // larger (40px) for category headers.
+  return (
+    <div style={{
+      width: size, height: size, borderRadius: 8,
+      background: COLORS.card, border: `1px solid ${COLORS.border}`,
+      display: "flex", alignItems: "center", justifyContent: "center",
+      flexShrink: 0,
+    }}>
+      <span style={{
+        fontFamily: "Georgia, 'Times New Roman', serif",
+        fontWeight: 700, color: COLORS.gold,
+        fontSize: small ? 10 : 12, letterSpacing: 0.5,
+      }}>MYG</span>
+    </div>
+  );
+}
+
+function EquipCheckbox({ state, size = 22 }) {
+  // Three visual states: "empty" (unchecked), "partial" (dash), "full" (check).
+  // Category rows use all three; item rows use empty/full only.
+  const isFull = state === "full";
+  const isPartial = state === "partial";
+  const isActive = isFull || isPartial;
+  return (
+    <div style={{
+      width: size, height: size, borderRadius: 6,
+      border: `1.5px solid ${isActive ? COLORS.gold : COLORS.border}`,
+      background: isActive ? COLORS.gold : "transparent",
+      display: "flex", alignItems: "center", justifyContent: "center",
+      flexShrink: 0, transition: "all 0.15s ease",
+    }}>
+      {isFull && (
+        <svg width={size * 0.62} height={size * 0.62} viewBox="0 0 24 24" fill="none" stroke={COLORS.bg} strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round">
+          <polyline points="20 6 9 17 4 12" />
+        </svg>
+      )}
+      {isPartial && (
+        <div style={{ width: size * 0.5, height: 2.5, background: COLORS.bg, borderRadius: 1 }} />
+      )}
+    </div>
+  );
+}
 
 function EquipmentDetailScreen({ presetId, existingSelection, onDone, onBack }) {
   const [selected, setSelected] = useState(() => {
@@ -1320,9 +1488,13 @@ function EquipmentDetailScreen({ presetId, existingSelection, onDone, onBack }) 
     return new Set(PRESETS[presetId] || []);
   });
 
-  const [collapsed, setCollapsed] = useState(new Set());
+  // Accordion: all collapsed by default per Bible §2.4. We track which
+  // categories are EXPANDED (opposite of the old `collapsed` set) to
+  // make the default state obvious from the code.
+  const [expanded, setExpanded] = useState(new Set());
 
-  const toggle = (id) => {
+  const toggleItem = (id, e) => {
+    if (e) e.stopPropagation();
     setSelected((prev) => {
       const n = new Set(prev);
       if (n.has(id)) n.delete(id); else n.add(id);
@@ -1331,13 +1503,16 @@ function EquipmentDetailScreen({ presetId, existingSelection, onDone, onBack }) 
   };
 
   const toggleSection = (catId) => {
-    setCollapsed((prev) => {
+    setExpanded((prev) => {
       const n = new Set(prev);
       if (n.has(catId)) n.delete(catId); else n.add(catId);
       return n;
     });
   };
 
+  // Tapping the category checkbox selects ALL if none or some are selected,
+  // and deselects ALL if everything in the category is already selected.
+  // Does NOT toggle the expand/collapse state.
   const toggleAllInCat = (cat, e) => {
     e.stopPropagation();
     const ids = cat.items.map((i) => i.id);
@@ -1362,83 +1537,82 @@ function EquipmentDetailScreen({ presetId, existingSelection, onDone, onBack }) 
         </span>
       </div>
 
-      <div style={{ padding: "0 24px 10px", flexShrink: 0 }}>
-        <h2 style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 24, color: COLORS.text, margin: "4px 0 0", fontWeight: 400 }}>Available Equipment</h2>
+      <div style={{ padding: "0 24px 14px", flexShrink: 0 }}>
+        <h2 style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 24, color: COLORS.text, margin: "4px 0 4px", fontWeight: 400 }}>Available Equipment</h2>
+        <p style={{ color: COLORS.textSecondary, fontSize: 13, margin: 0, fontStyle: "italic" }}>
+          Coach will only suggest exercises using equipment you select.
+        </p>
       </div>
 
       {/* Scrollable equipment list */}
       <div style={{ flex: 1, minHeight: 0, overflowY: "auto", WebkitOverflowScrolling: "touch" }}>
         {EQUIPMENT_CATEGORIES.map((cat) => {
-          const isOpen = !collapsed.has(cat.id);
+          const isOpen = expanded.has(cat.id);
           const catCount = cat.items.filter((i) => selected.has(i.id)).length;
-          const allIn = catCount === cat.items.length;
+          const total = cat.items.length;
+          const catState = catCount === 0 ? "empty" : (catCount === total ? "full" : "partial");
 
           return (
-            <div key={cat.id}>
+            <div key={cat.id} style={{ borderBottom: `1px solid ${COLORS.border}` }}>
               {/* Category header row */}
               <button
                 onClick={() => toggleSection(cat.id)}
                 style={{
-                  width: "100%", padding: "13px 24px",
-                  background: "rgba(255,255,255,0.03)",
-                  border: "none", borderBottom: `1px solid ${COLORS.border}`,
-                  cursor: "pointer", display: "flex", alignItems: "center",
+                  width: "100%", padding: "12px 24px",
+                  background: "transparent",
+                  border: "none",
+                  cursor: "pointer", display: "flex", alignItems: "center", gap: 14,
                 }}
               >
+                <EquipThumb size={40} />
+                <div style={{ flex: 1, textAlign: "left", minWidth: 0 }}>
+                  <div style={{ color: COLORS.text, fontSize: 15, fontWeight: 500 }}>{cat.label}</div>
+                  {catState === "partial" && (
+                    <div style={{ color: COLORS.textSecondary, fontSize: 12, marginTop: 2 }}>
+                      {catCount} selected
+                    </div>
+                  )}
+                </div>
                 <svg
-                  width="12" height="12" viewBox="0 0 24 24" fill="none"
+                  width="14" height="14" viewBox="0 0 24 24" fill="none"
                   stroke={COLORS.textSecondary} strokeWidth="2.5"
                   strokeLinecap="round" strokeLinejoin="round"
-                  style={{ transition: "transform 0.2s ease", transform: isOpen ? "rotate(90deg)" : "rotate(0deg)", marginRight: 12, flexShrink: 0 }}
+                  style={{ transition: "transform 0.2s ease", transform: isOpen ? "rotate(90deg)" : "rotate(0deg)", flexShrink: 0 }}
                 >
                   <polyline points="9 6 15 12 9 18" />
                 </svg>
-                <span style={{ flex: 1, textAlign: "left", color: COLORS.text, fontSize: 13, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.8 }}>
-                  {cat.label}
-                </span>
-                <button
-                  onClick={(e) => toggleAllInCat(cat, e)}
-                  style={{ background: "none", border: "none", color: COLORS.gold, fontSize: 12, cursor: "pointer", padding: "2px 0", fontWeight: 500 }}
-                >
-                  {allIn ? "None" : "All"}
-                </button>
+                <div onClick={(e) => toggleAllInCat(cat, e)} style={{ display: "flex", alignItems: "center", marginLeft: 4 }}>
+                  <EquipCheckbox state={catState} size={22} />
+                </div>
               </button>
 
               {/* Individual items */}
-              {isOpen &&
-                cat.items.map((item, idx) => {
-                  const isSel = selected.has(item.id);
-                  return (
-                    <button
-                      key={item.id}
-                      onClick={() => toggle(item.id)}
-                      style={{
-                        width: "100%", padding: "14px 24px 14px 48px",
-                        background: "transparent",
-                        border: "none",
-                        borderBottom: `1px solid rgba(51,51,51,${idx < cat.items.length - 1 ? "0.5" : "1"})`,
-                        cursor: "pointer", display: "flex", alignItems: "center",
-                      }}
-                    >
-                      <span
-                        style={{
-                          flex: 1, textAlign: "left",
-                          color: isSel ? COLORS.text : COLORS.inactive,
-                          fontSize: 15, fontWeight: isSel ? 500 : 400,
-                        }}
-                      >
-                        {item.label}
-                      </span>
-                      <div style={{ width: 28, height: 28, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                        {isSel && (
-                          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={COLORS.gold} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                            <polyline points="20 6 9 17 4 12" />
-                          </svg>
-                        )}
-                      </div>
-                    </button>
-                  );
-                })}
+              {isOpen && cat.items.map((item, idx) => {
+                const isSel = selected.has(item.id);
+                return (
+                  <button
+                    key={item.id}
+                    onClick={(e) => toggleItem(item.id, e)}
+                    style={{
+                      width: "100%", padding: "10px 24px 10px 48px",
+                      background: "rgba(255,255,255,0.02)",
+                      border: "none",
+                      borderTop: idx === 0 ? `1px solid ${COLORS.border}` : "none",
+                      cursor: "pointer", display: "flex", alignItems: "center", gap: 12,
+                    }}
+                  >
+                    <EquipThumb size={32} small />
+                    <span style={{
+                      flex: 1, textAlign: "left",
+                      color: isSel ? COLORS.text : COLORS.textSecondary,
+                      fontSize: 14, fontWeight: isSel ? 500 : 400,
+                    }}>
+                      {item.label}
+                    </span>
+                    <EquipCheckbox state={isSel ? "full" : "empty"} size={20} />
+                  </button>
+                );
+              })}
             </div>
           );
         })}
@@ -1459,9 +1633,9 @@ function CreateAccountScreen({ onNext, onBack }) {
   const [email, setEmail] = useState("");
   const [pw, setPw] = useState("");
   return (
-    <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
+    <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
       <TopBar onBack={onBack} showSkip={false} />
-      <div style={{ flex: 1, padding: "0 24px", overflowY: "auto" }}>
+      <div style={{ flex: 1, minHeight: 0, padding: "0 24px", overflowY: "auto", WebkitOverflowScrolling: "touch" }}>
         <div style={{ marginTop: 8, marginBottom: 32 }}><MYGLogo size={36} /></div>
         <h2 style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 28, color: COLORS.text, margin: "0 0 8px", fontWeight: 400 }}>Create your account</h2>
         <p style={{ color: COLORS.textSecondary, fontSize: 15, margin: "0 0 28px" }}>One last step before you meet your Coach.</p>
@@ -1469,9 +1643,12 @@ function CreateAccountScreen({ onNext, onBack }) {
           <TextInput placeholder="Email" value={email} onChange={setEmail} type="email" />
           <TextInput placeholder="Password" value={pw} onChange={setPw} type="password" />
         </div>
-        <div style={{ marginTop: 24 }}><GoldButton onClick={onNext}>Create Account</GoldButton></div>
         <Divider />
-        <div style={{ paddingBottom: 20 }}><SocialButtons /></div>
+        <SocialButtons />
+        <div style={{ height: 16 }} />
+      </div>
+      <div style={{ padding: "12px 24px 16px", flexShrink: 0, borderTop: `1px solid ${COLORS.border}`, background: COLORS.bg }}>
+        <GoldButton onClick={onNext}>Create Account</GoldButton>
       </div>
     </div>
   );
@@ -1479,15 +1656,21 @@ function CreateAccountScreen({ onNext, onBack }) {
 
 function NameScreen({ onNext, onBack }) {
   const [name, setName] = useState("");
+  const handleNext = () => {
+    const trimmed = name.trim();
+    onNext(trimmed || "Tyler");
+  };
   return (
-    <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
+    <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
       <TopBar onBack={onBack} showSkip={false} />
-      <div style={{ flex: 1, padding: "0 24px", display: "flex", flexDirection: "column" }}>
+      <div style={{ flex: 1, minHeight: 0, padding: "0 24px", display: "flex", flexDirection: "column", overflowY: "auto", WebkitOverflowScrolling: "touch" }}>
         <h2 style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 28, color: COLORS.text, margin: "12px 0 8px", fontWeight: 400 }}>What should we call you?</h2>
         <p style={{ color: COLORS.textSecondary, fontSize: 15, margin: "0 0 28px" }}>Your Coach will use this name.</p>
         <TextInput placeholder="First name" value={name} onChange={setName} />
-        <div style={{ flex: 1 }} />
-        <div style={{ paddingBottom: 20 }}><GoldButton onClick={onNext}>Continue</GoldButton></div>
+        <div style={{ flex: 1, minHeight: 40 }} />
+      </div>
+      <div style={{ padding: "12px 24px 16px", flexShrink: 0, borderTop: `1px solid ${COLORS.border}`, background: COLORS.bg }}>
+        <GoldButton onClick={handleNext}>Continue</GoldButton>
       </div>
     </div>
   );
@@ -1510,21 +1693,50 @@ function CompletionScreen({ onEnter }) {
 
 /* ── MAIN TABS ───────────────────────────────────────────────── */
 
-function HomeTab({ onTabChange }) {
-  const rw = [
-    { name: "Upper Body Push", date: "Today", muscles: "Chest, Shoulders, Triceps" },
-    { name: "Lower Body", date: "Yesterday", muscles: "Quads, Hamstrings, Glutes" },
-    { name: "Pull Day", date: "Mar 28", muscles: "Back, Biceps" },
-  ];
+function HomeTab({ onTabChange, userName, history }) {
+  // Recent workouts: pull from the real history (most recent 3) rather
+  // than a hardcoded list. Falls back to a friendly empty state below
+  // if the user has no workouts yet.
+  const recent = (history || []).slice(0, 3);
+
+  // Streak derivation — Bible §7.1. Count consecutive days (anchored
+  // to the most recent workout) on which at least one workout was
+  // logged. A session logged "today" extends the streak; a gap of
+  // more than one day breaks it. Today counts even if no workout
+  // logged yet (most recent workout = yesterday is still a 1-day
+  // streak that the user can extend by training today).
+  const streak = computeStreak(history);
+
+  // Total workouts — simple count from history.
+  const totalWorkouts = (history || []).length;
+
+  const initial = (userName || "").trim().charAt(0).toUpperCase() || "?";
+
   return (
     <div style={{ flex: 1, padding: "20px 24px", overflowY: "auto" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
-        <div>
-          <h2 style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 22, color: COLORS.text, margin: "0 0 2px", fontWeight: 400 }}>Good morning, Alex</h2>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <h2 style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 22, color: COLORS.text, margin: "0 0 2px", fontWeight: 400 }}>Good morning, {userName}</h2>
           <p style={{ color: COLORS.textSecondary, fontSize: 13, margin: 0 }}>Level 2 · Grinder</p>
         </div>
-        <div style={{ width: 40, height: 40, borderRadius: 20, background: COLORS.card, border: `2px solid ${COLORS.gold}`, display: "flex", alignItems: "center", justifyContent: "center" }}>
-          <span style={{ color: COLORS.gold, fontFamily: "Georgia, 'Times New Roman', serif", fontWeight: 700, fontSize: 16 }}>A</span>
+
+        {/* Corner streak pill — subtle, only visible when streak > 0.
+            Bible §7.1: "quiet motivator — never intrusive." */}
+        {streak > 0 && (
+          <div style={{
+            display: "flex", alignItems: "center", gap: 4,
+            padding: "4px 10px", borderRadius: 12,
+            background: "rgba(255,215,0,0.08)",
+            border: `1px solid rgba(255,215,0,0.2)`,
+            marginRight: 10, flexShrink: 0,
+          }}>
+            <span style={{ fontSize: 13 }}>🔥</span>
+            <span style={{ color: COLORS.gold, fontSize: 13, fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>{streak}</span>
+          </div>
+        )}
+
+        <div style={{ width: 40, height: 40, borderRadius: 20, background: COLORS.card, border: `2px solid ${COLORS.gold}`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+          <span style={{ color: COLORS.gold, fontFamily: "Georgia, 'Times New Roman', serif", fontWeight: 700, fontSize: 16 }}>{initial}</span>
         </div>
       </div>
       <button onClick={() => onTabChange("coach")} style={{ width: "100%", padding: 20, background: COLORS.goldHighlight, border: `1.5px solid ${COLORS.gold}`, borderRadius: 12, cursor: "pointer", textAlign: "left", marginBottom: 16 }}>
@@ -1539,7 +1751,11 @@ function HomeTab({ onTabChange }) {
         </div>
       </button>
       <div style={{ display: "flex", gap: 10, marginBottom: 16 }}>
-        {[{ l: "Streak", v: "3", u: "days", c: COLORS.gold }, { l: "XP", v: "750", u: "/ 1,500", c: COLORS.gold }, { l: "Workouts", v: "12", u: "total", c: COLORS.text }].map((s, i) => (
+        {[
+          { l: "Streak", v: String(streak), u: streak === 1 ? "day" : "days", c: COLORS.gold },
+          { l: "XP", v: "750", u: "/ 1,500", c: COLORS.gold },
+          { l: "Workouts", v: String(totalWorkouts), u: "total", c: COLORS.text },
+        ].map((s, i) => (
           <div key={i} style={{ flex: 1, background: COLORS.card, borderRadius: 10, padding: 16, border: `1px solid ${COLORS.border}` }}>
             <div style={{ color: COLORS.textSecondary, fontSize: 11, marginBottom: 4, textTransform: "uppercase", letterSpacing: 0.5 }}>{s.l}</div>
             <div style={{ display: "flex", alignItems: "baseline", gap: 4 }}>
@@ -1550,14 +1766,60 @@ function HomeTab({ onTabChange }) {
         ))}
       </div>
       <p style={{ color: COLORS.textSecondary, fontSize: 12, margin: "0 0 10px", textTransform: "uppercase", letterSpacing: 1, fontWeight: 500 }}>Recent Workouts</p>
-      {rw.map((w, i) => (
-        <div key={i} style={{ background: COLORS.card, borderRadius: 10, padding: 16, marginBottom: 8, border: `1px solid ${COLORS.border}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <div><div style={{ color: COLORS.text, fontSize: 15, fontWeight: 500, marginBottom: 2 }}>{w.name}</div><div style={{ color: COLORS.textSecondary, fontSize: 12 }}>{w.muscles}</div></div>
-          <span style={{ color: COLORS.textSecondary, fontSize: 12 }}>{w.date}</span>
+      {recent.length === 0 ? (
+        <div style={{ background: COLORS.card, borderRadius: 10, padding: 20, border: `1px solid ${COLORS.border}`, textAlign: "center" }}>
+          <div style={{ color: COLORS.textSecondary, fontSize: 13, fontStyle: "italic" }}>
+            No workouts yet. Log one to start your streak.
+          </div>
         </div>
-      ))}
+      ) : (
+        recent.map((w, i) => {
+          // Build a muscle-group summary from the session's exercises.
+          const groups = [...new Set(
+            (w.exercises || []).map((ex) => {
+              const lib = EXERCISE_LIBRARY.find((x) => x.name === ex.name);
+              return lib ? lib.primary : null;
+            }).filter(Boolean)
+          )].slice(0, 3).join(", ");
+          return (
+            <div key={w.id || i} style={{ background: COLORS.card, borderRadius: 10, padding: 16, marginBottom: 8, border: `1px solid ${COLORS.border}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div>
+                <div style={{ color: COLORS.text, fontSize: 15, fontWeight: 500, marginBottom: 2 }}>{w.name}</div>
+                <div style={{ color: COLORS.textSecondary, fontSize: 12 }}>{groups || "—"}</div>
+              </div>
+              <span style={{ color: COLORS.textSecondary, fontSize: 12 }}>{formatRelativeDate(w.date)}</span>
+            </div>
+          );
+        })
+      )}
     </div>
   );
+}
+
+// Consecutive-day streak walking backward from the most recent workout.
+// Today counts as extending the streak even if today has no workout yet
+// (most recent session yesterday → streak 1, trainable today).
+function computeStreak(history) {
+  if (!history || history.length === 0) return 0;
+  const dates = new Set(history.map((w) => w.date));
+  // Walk backward from today. If today has no workout, start at yesterday.
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  let cursor = new Date(today);
+  if (!dates.has(toISODate(cursor))) {
+    cursor.setDate(cursor.getDate() - 1);
+    if (!dates.has(toISODate(cursor))) return 0;
+  }
+  let streak = 0;
+  while (dates.has(toISODate(cursor))) {
+    streak += 1;
+    cursor.setDate(cursor.getDate() - 1);
+  }
+  return streak;
+}
+
+function toISODate(d) {
+  return d.toISOString().slice(0, 10);
 }
 
 /* ── Workout Tab ─────────────────────────────────────────────────
@@ -1593,84 +1855,827 @@ const SET_TYPES = [
 const MOCK_WORKOUT_HISTORY = [
   {
     id: "h1",
-    name: "Upper Body Push",
-    date: "2026-04-06",
-    durationSec: 52 * 60,
+    name: "Full Body",
+    date: "2026-04-18",
+    durationSec: 3480,
     exercises: [
+      { name: "Squat", variantLabel: "Barbell + Squat Rack", sets: [
+        { weight: 130, reps: 10, type: "warmup" },
+        { weight: 235, reps: 7, type: "working" },
+        { weight: 245, reps: 6, type: "working" },
+        { weight: 255, reps: 5, type: "working" },
+      ]},
       { name: "Bench Press", variantLabel: "Barbell + Flat Bench", sets: [
-        { weight: 135, reps: 10, type: "warmup" },
-        { weight: 185, reps: 8,  type: "working" },
-        { weight: 205, reps: 6,  type: "working" },
-        { weight: 215, reps: 5,  type: "working" },
-        { weight: 195, reps: 6,  type: "working" },
+        { weight: 95, reps: 10, type: "warmup" },
+        { weight: 170, reps: 7, type: "working" },
+        { weight: 180, reps: 6, type: "working" },
+        { weight: 190, reps: 5, type: "working" },
       ]},
-      { name: "Overhead Press", variantLabel: "Barbell", sets: [
-        { weight: 95,  reps: 8, type: "working" },
-        { weight: 105, reps: 6, type: "working" },
-        { weight: 105, reps: 5, type: "working" },
+      { name: "Bent-Over Row", variantLabel: "Barbell", sets: [
+        { weight: 85, reps: 10, type: "warmup" },
+        { weight: 150, reps: 9, type: "working" },
+        { weight: 160, reps: 8, type: "working" },
+        { weight: 170, reps: 7, type: "working" },
       ]},
-      { name: "Incline Press", variantLabel: "Dumbbells + Adjustable Bench", sets: [
-        { weight: 50, reps: 10, type: "working" },
-        { weight: 55, reps: 8,  type: "working" },
-        { weight: 55, reps: 8,  type: "working" },
+      { name: "Bulgarian Split Squat", variantLabel: "Dumbbells", sets: [
+        { weight: 35, reps: 10, type: "working" },
+        { weight: 35, reps: 10, type: "working" },
+        { weight: 35, reps: 8, type: "working" },
       ]},
-      { name: "Lateral Raise", variantLabel: "Dumbbells", sets: [
-        { weight: 15, reps: 12, type: "working" },
-        { weight: 15, reps: 12, type: "working" },
-        { weight: 20, reps: 10, type: "working" },
+      { name: "Bicep Curl", variantLabel: "Dumbbells", sets: [
+        { weight: 30, reps: 10, type: "working" },
+        { weight: 30, reps: 10, type: "working" },
+        { weight: 30, reps: 8, type: "working" },
+      ]},
+      { name: "Tricep Pushdown", variantLabel: "Cable (High Pulley)", sets: [
+        { weight: 75, reps: 12, type: "working" },
+        { weight: 75, reps: 11, type: "working" },
+        { weight: 75, reps: 10, type: "working" },
+      ]},
+      { name: "Standing Calf Raise", variantLabel: "Standing Calf Raise Machine", sets: [
+        { weight: 205, reps: 12, type: "working" },
+        { weight: 205, reps: 11, type: "working" },
+        { weight: 205, reps: 10, type: "working" },
       ]},
     ],
   },
   {
     id: "h2",
-    name: "Leg Day",
-    date: "2026-04-04",
-    durationSec: 48 * 60,
+    name: "Full Body",
+    date: "2026-04-15",
+    durationSec: 3420,
     exercises: [
-      { name: "Squat", variantLabel: "Barbell + Squat Rack", sets: [
-        { weight: 135, reps: 10, type: "warmup" },
-        { weight: 225, reps: 8,  type: "working" },
-        { weight: 245, reps: 5,  type: "working" },
-        { weight: 245, reps: 5,  type: "working" },
+      { name: "Deadlift", variantLabel: "Barbell", sets: [
+        { weight: 165, reps: 10, type: "warmup" },
+        { weight: 305, reps: 6, type: "working" },
+        { weight: 325, reps: 5, type: "working" },
       ]},
-      { name: "Romanian Deadlift", variantLabel: "Barbell", sets: [
-        { weight: 185, reps: 10, type: "working" },
-        { weight: 205, reps: 8,  type: "working" },
-        { weight: 205, reps: 8,  type: "working" },
+      { name: "Incline Press", variantLabel: "Dumbbells + Adjustable Bench", sets: [
+        { weight: 60, reps: 8, type: "working" },
+        { weight: 60, reps: 7, type: "working" },
+        { weight: 60, reps: 6, type: "working" },
       ]},
-      { name: "Leg Press", variantLabel: "Leg Press (45°)", sets: [
-        { weight: 360, reps: 12, type: "working" },
-        { weight: 410, reps: 10, type: "working" },
-        { weight: 410, reps: 10, type: "working" },
+      { name: "Incline Row", variantLabel: "Dumbbells + Adjustable Bench", sets: [
+        { weight: 60, reps: 10, type: "working" },
+        { weight: 60, reps: 9, type: "working" },
+        { weight: 60, reps: 8, type: "working" },
+      ]},
+      { name: "Front Squat", variantLabel: "Barbell + Squat Rack", sets: [
+        { weight: 90, reps: 10, type: "warmup" },
+        { weight: 160, reps: 6, type: "working" },
+        { weight: 170, reps: 5, type: "working" },
+        { weight: 180, reps: 4, type: "working" },
+      ]},
+      { name: "Seated Row", variantLabel: "Seated Cable Row", sets: [
+        { weight: 135, reps: 10, type: "working" },
+        { weight: 135, reps: 9, type: "working" },
+        { weight: 135, reps: 8, type: "working" },
+      ]},
+      { name: "Lateral Raise", variantLabel: "Dumbbells", sets: [
+        { weight: 15, reps: 12, type: "working" },
+        { weight: 15, reps: 12, type: "working" },
+        { weight: 15, reps: 10, type: "working" },
+      ]},
+      { name: "Hanging Leg Raise", variantLabel: "Pull-Up Bar", sets: [
+        { weight: 0, reps: 12, type: "working" },
+        { weight: 0, reps: 11, type: "working" },
+        { weight: 0, reps: 9, type: "working" },
       ]},
     ],
   },
   {
     id: "h3",
-    name: "Pull Day",
-    date: "2026-04-02",
-    durationSec: 44 * 60,
+    name: "Full Body",
+    date: "2026-04-13",
+    durationSec: 3360,
+    exercises: [
+      { name: "Squat", variantLabel: "Barbell + Squat Rack", sets: [
+        { weight: 130, reps: 10, type: "warmup" },
+        { weight: 235, reps: 7, type: "working" },
+        { weight: 245, reps: 6, type: "working" },
+        { weight: 255, reps: 5, type: "working" },
+      ]},
+      { name: "Bench Press", variantLabel: "Barbell + Flat Bench", sets: [
+        { weight: 95, reps: 10, type: "warmup" },
+        { weight: 170, reps: 7, type: "working" },
+        { weight: 180, reps: 6, type: "working" },
+        { weight: 190, reps: 5, type: "working" },
+      ]},
+      { name: "Bent-Over Row", variantLabel: "Barbell", sets: [
+        { weight: 85, reps: 10, type: "warmup" },
+        { weight: 150, reps: 9, type: "working" },
+        { weight: 160, reps: 8, type: "working" },
+        { weight: 170, reps: 7, type: "working" },
+      ]},
+      { name: "Romanian Deadlift", variantLabel: "Barbell", sets: [
+        { weight: 210, reps: 8, type: "working" },
+        { weight: 210, reps: 7, type: "working" },
+        { weight: 210, reps: 6, type: "working" },
+      ]},
+      { name: "Overhead Press", variantLabel: "Barbell", sets: [
+        { weight: 60, reps: 10, type: "warmup" },
+        { weight: 100, reps: 6, type: "working" },
+        { weight: 110, reps: 5, type: "working" },
+        { weight: 120, reps: 4, type: "working" },
+      ]},
+      { name: "Lat Pulldown", variantLabel: "Cable Lat Pulldown", sets: [
+        { weight: 145, reps: 10, type: "working" },
+        { weight: 145, reps: 9, type: "working" },
+        { weight: 145, reps: 8, type: "working" },
+      ]},
+      { name: "Standing Calf Raise", variantLabel: "Standing Calf Raise Machine", sets: [
+        { weight: 205, reps: 12, type: "working" },
+        { weight: 205, reps: 11, type: "working" },
+        { weight: 205, reps: 10, type: "working" },
+      ]},
+    ],
+  },
+  {
+    id: "h4",
+    name: "Full Body",
+    date: "2026-04-11",
+    durationSec: 3480,
+    exercises: [
+      { name: "Squat", variantLabel: "Barbell + Squat Rack", sets: [
+        { weight: 125, reps: 10, type: "warmup" },
+        { weight: 230, reps: 8, type: "working" },
+        { weight: 240, reps: 7, type: "working" },
+        { weight: 250, reps: 6, type: "working" },
+      ]},
+      { name: "Bench Press", variantLabel: "Barbell + Flat Bench", sets: [
+        { weight: 95, reps: 10, type: "warmup" },
+        { weight: 170, reps: 8, type: "working" },
+        { weight: 180, reps: 7, type: "working" },
+        { weight: 190, reps: 6, type: "working" },
+      ]},
+      { name: "Bent-Over Row", variantLabel: "Barbell", sets: [
+        { weight: 85, reps: 10, type: "warmup" },
+        { weight: 145, reps: 10, type: "working" },
+        { weight: 155, reps: 9, type: "working" },
+        { weight: 165, reps: 8, type: "working" },
+      ]},
+      { name: "Bulgarian Split Squat", variantLabel: "Dumbbells", sets: [
+        { weight: 35, reps: 10, type: "working" },
+        { weight: 35, reps: 10, type: "working" },
+        { weight: 35, reps: 8, type: "working" },
+      ]},
+      { name: "Bicep Curl", variantLabel: "Dumbbells", sets: [
+        { weight: 30, reps: 10, type: "working" },
+        { weight: 30, reps: 10, type: "working" },
+        { weight: 30, reps: 8, type: "working" },
+      ]},
+      { name: "Tricep Pushdown", variantLabel: "Cable (High Pulley)", sets: [
+        { weight: 70, reps: 12, type: "working" },
+        { weight: 70, reps: 11, type: "working" },
+        { weight: 70, reps: 10, type: "working" },
+      ]},
+      { name: "Standing Calf Raise", variantLabel: "Standing Calf Raise Machine", sets: [
+        { weight: 200, reps: 12, type: "working" },
+        { weight: 200, reps: 11, type: "working" },
+        { weight: 200, reps: 10, type: "working" },
+      ]},
+    ],
+  },
+  {
+    id: "h5",
+    name: "Full Body",
+    date: "2026-04-08",
+    durationSec: 3420,
     exercises: [
       { name: "Deadlift", variantLabel: "Barbell", sets: [
-        { weight: 225, reps: 5, type: "warmup" },
-        { weight: 275, reps: 5, type: "working" },
-        { weight: 315, reps: 3, type: "working" },
-        { weight: 315, reps: 3, type: "working" },
+        { weight: 160, reps: 10, type: "warmup" },
+        { weight: 295, reps: 6, type: "working" },
+        { weight: 315, reps: 5, type: "working" },
       ]},
-      { name: "Pull-Up", variantLabel: "Pull-Up Bar", sets: [
-        { weight: 0, reps: 8, type: "working" },
-        { weight: 0, reps: 7, type: "working" },
-        { weight: 0, reps: 6, type: "working" },
+      { name: "Incline Press", variantLabel: "Dumbbells + Adjustable Bench", sets: [
+        { weight: 60, reps: 8, type: "working" },
+        { weight: 60, reps: 7, type: "working" },
+        { weight: 60, reps: 6, type: "working" },
+      ]},
+      { name: "Incline Row", variantLabel: "Dumbbells + Adjustable Bench", sets: [
+        { weight: 60, reps: 10, type: "working" },
+        { weight: 60, reps: 9, type: "working" },
+        { weight: 60, reps: 8, type: "working" },
+      ]},
+      { name: "Front Squat", variantLabel: "Barbell + Squat Rack", sets: [
+        { weight: 90, reps: 10, type: "warmup" },
+        { weight: 155, reps: 7, type: "working" },
+        { weight: 165, reps: 6, type: "working" },
+        { weight: 175, reps: 5, type: "working" },
       ]},
       { name: "Seated Row", variantLabel: "Seated Cable Row", sets: [
         { weight: 130, reps: 10, type: "working" },
-        { weight: 145, reps: 8,  type: "working" },
-        { weight: 145, reps: 8,  type: "working" },
+        { weight: 130, reps: 9, type: "working" },
+        { weight: 130, reps: 8, type: "working" },
+      ]},
+      { name: "Lateral Raise", variantLabel: "Dumbbells", sets: [
+        { weight: 15, reps: 12, type: "working" },
+        { weight: 15, reps: 12, type: "working" },
+        { weight: 15, reps: 10, type: "working" },
+      ]},
+      { name: "Hanging Leg Raise", variantLabel: "Pull-Up Bar", sets: [
+        { weight: 0, reps: 12, type: "working" },
+        { weight: 0, reps: 11, type: "working" },
+        { weight: 0, reps: 9, type: "working" },
+      ]},
+    ],
+  },
+  {
+    id: "h6",
+    name: "Full Body",
+    date: "2026-04-06",
+    durationSec: 3360,
+    exercises: [
+      { name: "Squat", variantLabel: "Barbell + Squat Rack", sets: [
+        { weight: 125, reps: 10, type: "warmup" },
+        { weight: 225, reps: 8, type: "working" },
+        { weight: 235, reps: 7, type: "working" },
+        { weight: 245, reps: 6, type: "working" },
+      ]},
+      { name: "Bench Press", variantLabel: "Barbell + Flat Bench", sets: [
+        { weight: 95, reps: 10, type: "warmup" },
+        { weight: 165, reps: 8, type: "working" },
+        { weight: 175, reps: 7, type: "working" },
+        { weight: 185, reps: 6, type: "working" },
+      ]},
+      { name: "Bent-Over Row", variantLabel: "Barbell", sets: [
+        { weight: 85, reps: 10, type: "warmup" },
+        { weight: 145, reps: 10, type: "working" },
+        { weight: 155, reps: 9, type: "working" },
+        { weight: 165, reps: 8, type: "working" },
+      ]},
+      { name: "Romanian Deadlift", variantLabel: "Barbell", sets: [
+        { weight: 205, reps: 8, type: "working" },
+        { weight: 205, reps: 7, type: "working" },
+        { weight: 205, reps: 6, type: "working" },
+      ]},
+      { name: "Overhead Press", variantLabel: "Barbell", sets: [
+        { weight: 60, reps: 10, type: "warmup" },
+        { weight: 95, reps: 7, type: "working" },
+        { weight: 105, reps: 6, type: "working" },
+        { weight: 115, reps: 5, type: "working" },
+      ]},
+      { name: "Lat Pulldown", variantLabel: "Cable Lat Pulldown", sets: [
+        { weight: 140, reps: 10, type: "working" },
+        { weight: 140, reps: 9, type: "working" },
+        { weight: 140, reps: 8, type: "working" },
+      ]},
+      { name: "Standing Calf Raise", variantLabel: "Standing Calf Raise Machine", sets: [
+        { weight: 200, reps: 12, type: "working" },
+        { weight: 200, reps: 11, type: "working" },
+        { weight: 200, reps: 10, type: "working" },
+      ]},
+    ],
+  },
+  {
+    id: "h7",
+    name: "Full Body",
+    date: "2026-04-04",
+    durationSec: 2880,
+    exercises: [
+      { name: "Squat", variantLabel: "Barbell + Squat Rack", sets: [
+        { weight: 100, reps: 10, type: "warmup" },
+        { weight: 180, reps: 10, type: "working" },
+        { weight: 190, reps: 9, type: "working" },
+        { weight: 200, reps: 8, type: "working" },
+      ]},
+      { name: "Bench Press", variantLabel: "Barbell + Flat Bench", sets: [
+        { weight: 80, reps: 10, type: "warmup" },
+        { weight: 135, reps: 10, type: "working" },
+        { weight: 145, reps: 9, type: "working" },
+        { weight: 155, reps: 8, type: "working" },
+      ]},
+      { name: "Bent-Over Row", variantLabel: "Barbell", sets: [
+        { weight: 70, reps: 10, type: "warmup" },
+        { weight: 115, reps: 12, type: "working" },
+        { weight: 125, reps: 11, type: "working" },
+        { weight: 135, reps: 10, type: "working" },
+      ]},
+      { name: "Bulgarian Split Squat", variantLabel: "Dumbbells", sets: [
+        { weight: 30, reps: 12, type: "working" },
+        { weight: 30, reps: 12, type: "working" },
+        { weight: 30, reps: 10, type: "working" },
+      ]},
+      { name: "Bicep Curl", variantLabel: "Dumbbells", sets: [
+        { weight: 25, reps: 12, type: "working" },
+        { weight: 25, reps: 12, type: "working" },
+        { weight: 25, reps: 10, type: "working" },
+      ]},
+      { name: "Tricep Pushdown", variantLabel: "Cable (High Pulley)", sets: [
+        { weight: 55, reps: 14, type: "working" },
+        { weight: 55, reps: 13, type: "working" },
+        { weight: 55, reps: 12, type: "working" },
+      ]},
+      { name: "Standing Calf Raise", variantLabel: "Standing Calf Raise Machine", sets: [
+        { weight: 165, reps: 14, type: "working" },
+        { weight: 165, reps: 13, type: "working" },
+        { weight: 165, reps: 12, type: "working" },
+      ]},
+    ],
+  },
+  {
+    id: "h8",
+    name: "Full Body",
+    date: "2026-04-01",
+    durationSec: 2820,
+    exercises: [
+      { name: "Deadlift", variantLabel: "Barbell", sets: [
+        { weight: 130, reps: 10, type: "warmup" },
+        { weight: 240, reps: 8, type: "working" },
+        { weight: 260, reps: 7, type: "working" },
+      ]},
+      { name: "Incline Press", variantLabel: "Dumbbells + Adjustable Bench", sets: [
+        { weight: 45, reps: 10, type: "working" },
+        { weight: 45, reps: 9, type: "working" },
+        { weight: 45, reps: 8, type: "working" },
+      ]},
+      { name: "Incline Row", variantLabel: "Dumbbells + Adjustable Bench", sets: [
+        { weight: 45, reps: 12, type: "working" },
+        { weight: 45, reps: 11, type: "working" },
+        { weight: 45, reps: 10, type: "working" },
+      ]},
+      { name: "Front Squat", variantLabel: "Barbell + Squat Rack", sets: [
+        { weight: 75, reps: 10, type: "warmup" },
+        { weight: 125, reps: 9, type: "working" },
+        { weight: 135, reps: 8, type: "working" },
+        { weight: 145, reps: 7, type: "working" },
+      ]},
+      { name: "Seated Row", variantLabel: "Seated Cable Row", sets: [
+        { weight: 110, reps: 12, type: "working" },
+        { weight: 110, reps: 11, type: "working" },
+        { weight: 110, reps: 10, type: "working" },
+      ]},
+      { name: "Lateral Raise", variantLabel: "Dumbbells", sets: [
+        { weight: 15, reps: 14, type: "working" },
+        { weight: 15, reps: 14, type: "working" },
+        { weight: 15, reps: 12, type: "working" },
+      ]},
+      { name: "Hanging Leg Raise", variantLabel: "Pull-Up Bar", sets: [
+        { weight: 0, reps: 11, type: "working" },
+        { weight: 0, reps: 10, type: "working" },
+        { weight: 0, reps: 8, type: "working" },
+      ]},
+    ],
+  },
+  {
+    id: "h9",
+    name: "Full Body",
+    date: "2026-03-30",
+    durationSec: 2760,
+    exercises: [
+      { name: "Squat", variantLabel: "Barbell + Squat Rack", sets: [
+        { weight: 100, reps: 10, type: "warmup" },
+        { weight: 180, reps: 10, type: "working" },
+        { weight: 190, reps: 9, type: "working" },
+        { weight: 200, reps: 8, type: "working" },
+      ]},
+      { name: "Bench Press", variantLabel: "Barbell + Flat Bench", sets: [
+        { weight: 80, reps: 10, type: "warmup" },
+        { weight: 135, reps: 10, type: "working" },
+        { weight: 145, reps: 9, type: "working" },
+        { weight: 155, reps: 8, type: "working" },
+      ]},
+      { name: "Bent-Over Row", variantLabel: "Barbell", sets: [
+        { weight: 70, reps: 10, type: "warmup" },
+        { weight: 115, reps: 12, type: "working" },
+        { weight: 125, reps: 11, type: "working" },
+        { weight: 135, reps: 10, type: "working" },
+      ]},
+      { name: "Romanian Deadlift", variantLabel: "Barbell", sets: [
+        { weight: 170, reps: 10, type: "working" },
+        { weight: 170, reps: 9, type: "working" },
+        { weight: 170, reps: 8, type: "working" },
+      ]},
+      { name: "Overhead Press", variantLabel: "Barbell", sets: [
+        { weight: 50, reps: 10, type: "warmup" },
+        { weight: 75, reps: 9, type: "working" },
+        { weight: 85, reps: 8, type: "working" },
+        { weight: 95, reps: 7, type: "working" },
+      ]},
+      { name: "Lat Pulldown", variantLabel: "Cable Lat Pulldown", sets: [
+        { weight: 120, reps: 12, type: "working" },
+        { weight: 120, reps: 11, type: "working" },
+        { weight: 120, reps: 10, type: "working" },
+      ]},
+      { name: "Standing Calf Raise", variantLabel: "Standing Calf Raise Machine", sets: [
+        { weight: 165, reps: 14, type: "working" },
+        { weight: 165, reps: 13, type: "working" },
+        { weight: 165, reps: 12, type: "working" },
+      ]},
+    ],
+  },
+  {
+    id: "h10",
+    name: "Full Body",
+    date: "2026-03-28",
+    durationSec: 3480,
+    exercises: [
+      { name: "Squat", variantLabel: "Barbell + Squat Rack", sets: [
+        { weight: 115, reps: 10, type: "warmup" },
+        { weight: 205, reps: 8, type: "working" },
+        { weight: 215, reps: 7, type: "working" },
+        { weight: 225, reps: 6, type: "working" },
+      ]},
+      { name: "Bench Press", variantLabel: "Barbell + Flat Bench", sets: [
+        { weight: 90, reps: 10, type: "warmup" },
+        { weight: 155, reps: 8, type: "working" },
+        { weight: 165, reps: 7, type: "working" },
+        { weight: 175, reps: 6, type: "working" },
+      ]},
+      { name: "Bent-Over Row", variantLabel: "Barbell", sets: [
+        { weight: 80, reps: 10, type: "warmup" },
+        { weight: 135, reps: 10, type: "working" },
+        { weight: 145, reps: 9, type: "working" },
+        { weight: 155, reps: 8, type: "working" },
+      ]},
+      { name: "Bulgarian Split Squat", variantLabel: "Dumbbells", sets: [
+        { weight: 30, reps: 10, type: "working" },
+        { weight: 30, reps: 10, type: "working" },
+        { weight: 30, reps: 8, type: "working" },
+      ]},
+      { name: "Bicep Curl", variantLabel: "Dumbbells", sets: [
+        { weight: 25, reps: 10, type: "working" },
+        { weight: 25, reps: 10, type: "working" },
+        { weight: 25, reps: 8, type: "working" },
+      ]},
+      { name: "Tricep Pushdown", variantLabel: "Cable (High Pulley)", sets: [
+        { weight: 60, reps: 12, type: "working" },
+        { weight: 60, reps: 11, type: "working" },
+        { weight: 60, reps: 10, type: "working" },
+      ]},
+      { name: "Standing Calf Raise", variantLabel: "Standing Calf Raise Machine", sets: [
+        { weight: 190, reps: 12, type: "working" },
+        { weight: 190, reps: 11, type: "working" },
+        { weight: 190, reps: 10, type: "working" },
+      ]},
+    ],
+  },
+  {
+    id: "h11",
+    name: "Full Body",
+    date: "2026-03-25",
+    durationSec: 3420,
+    exercises: [
+      { name: "Deadlift", variantLabel: "Barbell", sets: [
+        { weight: 150, reps: 10, type: "warmup" },
+        { weight: 275, reps: 6, type: "working" },
+        { weight: 285, reps: 4, type: "working" },
+      ]},
+      { name: "Incline Press", variantLabel: "Dumbbells + Adjustable Bench", sets: [
+        { weight: 55, reps: 8, type: "working" },
+        { weight: 55, reps: 7, type: "working" },
+        { weight: 55, reps: 6, type: "working" },
+      ]},
+      { name: "Incline Row", variantLabel: "Dumbbells + Adjustable Bench", sets: [
+        { weight: 55, reps: 10, type: "working" },
+        { weight: 55, reps: 9, type: "working" },
+        { weight: 55, reps: 8, type: "working" },
+      ]},
+      { name: "Front Squat", variantLabel: "Barbell + Squat Rack", sets: [
+        { weight: 85, reps: 10, type: "warmup" },
+        { weight: 145, reps: 7, type: "working" },
+        { weight: 155, reps: 6, type: "working" },
+        { weight: 160, reps: 4, type: "working" },
+      ]},
+      { name: "Seated Row", variantLabel: "Seated Cable Row", sets: [
+        { weight: 125, reps: 10, type: "working" },
+        { weight: 125, reps: 9, type: "working" },
+        { weight: 125, reps: 8, type: "working" },
+      ]},
+      { name: "Lateral Raise", variantLabel: "Dumbbells", sets: [
+        { weight: 15, reps: 12, type: "working" },
+        { weight: 15, reps: 12, type: "working" },
+        { weight: 15, reps: 10, type: "working" },
+      ]},
+      { name: "Hanging Leg Raise", variantLabel: "Pull-Up Bar", sets: [
+        { weight: 0, reps: 11, type: "working" },
+        { weight: 0, reps: 10, type: "working" },
+        { weight: 0, reps: 8, type: "working" },
+      ]},
+    ],
+  },
+  {
+    id: "h12",
+    name: "Full Body",
+    date: "2026-03-23",
+    durationSec: 3360,
+    exercises: [
+      { name: "Squat", variantLabel: "Barbell + Squat Rack", sets: [
+        { weight: 115, reps: 10, type: "warmup" },
+        { weight: 205, reps: 8, type: "working" },
+        { weight: 215, reps: 7, type: "working" },
+        { weight: 225, reps: 6, type: "working" },
+      ]},
+      { name: "Bench Press", variantLabel: "Barbell + Flat Bench", sets: [
+        { weight: 90, reps: 10, type: "warmup" },
+        { weight: 155, reps: 8, type: "working" },
+        { weight: 165, reps: 7, type: "working" },
+        { weight: 175, reps: 6, type: "working" },
+      ]},
+      { name: "Bent-Over Row", variantLabel: "Barbell", sets: [
+        { weight: 80, reps: 10, type: "warmup" },
+        { weight: 135, reps: 10, type: "working" },
+        { weight: 145, reps: 9, type: "working" },
+        { weight: 155, reps: 8, type: "working" },
+      ]},
+      { name: "Romanian Deadlift", variantLabel: "Barbell", sets: [
+        { weight: 195, reps: 8, type: "working" },
+        { weight: 195, reps: 7, type: "working" },
+        { weight: 195, reps: 6, type: "working" },
+      ]},
+      { name: "Overhead Press", variantLabel: "Barbell", sets: [
+        { weight: 55, reps: 10, type: "warmup" },
+        { weight: 85, reps: 7, type: "working" },
+        { weight: 95, reps: 6, type: "working" },
+        { weight: 105, reps: 5, type: "working" },
+      ]},
+      { name: "Lat Pulldown", variantLabel: "Cable Lat Pulldown", sets: [
+        { weight: 135, reps: 10, type: "working" },
+        { weight: 135, reps: 9, type: "working" },
+        { weight: 135, reps: 8, type: "working" },
+      ]},
+      { name: "Standing Calf Raise", variantLabel: "Standing Calf Raise Machine", sets: [
+        { weight: 190, reps: 12, type: "working" },
+        { weight: 190, reps: 11, type: "working" },
+        { weight: 190, reps: 10, type: "working" },
+      ]},
+    ],
+  },
+  {
+    id: "h13",
+    name: "Full Body",
+    date: "2026-03-21",
+    durationSec: 3480,
+    exercises: [
+      { name: "Squat", variantLabel: "Barbell + Squat Rack", sets: [
+        { weight: 110, reps: 10, type: "warmup" },
+        { weight: 195, reps: 8, type: "working" },
+        { weight: 205, reps: 7, type: "working" },
+        { weight: 215, reps: 6, type: "working" },
+      ]},
+      { name: "Bench Press", variantLabel: "Barbell + Flat Bench", sets: [
+        { weight: 85, reps: 10, type: "warmup" },
+        { weight: 150, reps: 8, type: "working" },
+        { weight: 160, reps: 7, type: "working" },
+        { weight: 170, reps: 6, type: "working" },
+      ]},
+      { name: "Bent-Over Row", variantLabel: "Barbell", sets: [
+        { weight: 75, reps: 10, type: "warmup" },
+        { weight: 130, reps: 10, type: "working" },
+        { weight: 140, reps: 9, type: "working" },
+        { weight: 150, reps: 8, type: "working" },
+      ]},
+      { name: "Bulgarian Split Squat", variantLabel: "Dumbbells", sets: [
+        { weight: 30, reps: 10, type: "working" },
+        { weight: 30, reps: 10, type: "working" },
+        { weight: 30, reps: 8, type: "working" },
+      ]},
+      { name: "Bicep Curl", variantLabel: "Dumbbells", sets: [
+        { weight: 25, reps: 10, type: "working" },
+        { weight: 25, reps: 10, type: "working" },
+        { weight: 25, reps: 8, type: "working" },
+      ]},
+      { name: "Tricep Pushdown", variantLabel: "Cable (High Pulley)", sets: [
+        { weight: 55, reps: 12, type: "working" },
+        { weight: 55, reps: 11, type: "working" },
+        { weight: 55, reps: 10, type: "working" },
+      ]},
+      { name: "Standing Calf Raise", variantLabel: "Standing Calf Raise Machine", sets: [
+        { weight: 185, reps: 12, type: "working" },
+        { weight: 185, reps: 11, type: "working" },
+        { weight: 185, reps: 10, type: "working" },
+      ]},
+    ],
+  },
+  {
+    id: "h14",
+    name: "Full Body",
+    date: "2026-03-18",
+    durationSec: 3420,
+    exercises: [
+      { name: "Deadlift", variantLabel: "Barbell", sets: [
+        { weight: 145, reps: 10, type: "warmup" },
+        { weight: 265, reps: 6, type: "working" },
+        { weight: 285, reps: 5, type: "working" },
+      ]},
+      { name: "Incline Press", variantLabel: "Dumbbells + Adjustable Bench", sets: [
+        { weight: 50, reps: 8, type: "working" },
+        { weight: 50, reps: 7, type: "working" },
+        { weight: 50, reps: 6, type: "working" },
+      ]},
+      { name: "Incline Row", variantLabel: "Dumbbells + Adjustable Bench", sets: [
+        { weight: 50, reps: 10, type: "working" },
+        { weight: 50, reps: 9, type: "working" },
+        { weight: 50, reps: 8, type: "working" },
+      ]},
+      { name: "Front Squat", variantLabel: "Barbell + Squat Rack", sets: [
+        { weight: 80, reps: 10, type: "warmup" },
+        { weight: 140, reps: 7, type: "working" },
+        { weight: 150, reps: 6, type: "working" },
+        { weight: 160, reps: 5, type: "working" },
+      ]},
+      { name: "Seated Row", variantLabel: "Seated Cable Row", sets: [
+        { weight: 125, reps: 10, type: "working" },
+        { weight: 125, reps: 9, type: "working" },
+        { weight: 125, reps: 8, type: "working" },
+      ]},
+      { name: "Lateral Raise", variantLabel: "Dumbbells", sets: [
+        { weight: 15, reps: 12, type: "working" },
+        { weight: 15, reps: 12, type: "working" },
+        { weight: 15, reps: 10, type: "working" },
+      ]},
+      { name: "Hanging Leg Raise", variantLabel: "Pull-Up Bar", sets: [
+        { weight: 0, reps: 10, type: "working" },
+        { weight: 0, reps: 9, type: "working" },
+        { weight: 0, reps: 7, type: "working" },
+      ]},
+    ],
+  },
+  {
+    id: "h15",
+    name: "Full Body",
+    date: "2026-03-16",
+    durationSec: 3360,
+    exercises: [
+      { name: "Squat", variantLabel: "Barbell + Squat Rack", sets: [
+        { weight: 110, reps: 10, type: "warmup" },
+        { weight: 195, reps: 8, type: "working" },
+        { weight: 205, reps: 7, type: "working" },
+        { weight: 215, reps: 6, type: "working" },
+      ]},
+      { name: "Bench Press", variantLabel: "Barbell + Flat Bench", sets: [
+        { weight: 85, reps: 10, type: "warmup" },
+        { weight: 150, reps: 8, type: "working" },
+        { weight: 160, reps: 7, type: "working" },
+        { weight: 170, reps: 6, type: "working" },
+      ]},
+      { name: "Bent-Over Row", variantLabel: "Barbell", sets: [
+        { weight: 75, reps: 10, type: "warmup" },
+        { weight: 130, reps: 10, type: "working" },
+        { weight: 140, reps: 9, type: "working" },
+        { weight: 150, reps: 8, type: "working" },
+      ]},
+      { name: "Romanian Deadlift", variantLabel: "Barbell", sets: [
+        { weight: 190, reps: 8, type: "working" },
+        { weight: 190, reps: 7, type: "working" },
+        { weight: 190, reps: 6, type: "working" },
+      ]},
+      { name: "Overhead Press", variantLabel: "Barbell", sets: [
+        { weight: 50, reps: 10, type: "warmup" },
+        { weight: 80, reps: 7, type: "working" },
+        { weight: 90, reps: 6, type: "working" },
+        { weight: 100, reps: 5, type: "working" },
+      ]},
+      { name: "Lat Pulldown", variantLabel: "Cable Lat Pulldown", sets: [
+        { weight: 135, reps: 10, type: "working" },
+        { weight: 135, reps: 9, type: "working" },
+        { weight: 135, reps: 8, type: "working" },
+      ]},
+      { name: "Standing Calf Raise", variantLabel: "Standing Calf Raise Machine", sets: [
+        { weight: 185, reps: 12, type: "working" },
+        { weight: 185, reps: 11, type: "working" },
+        { weight: 185, reps: 10, type: "working" },
+      ]},
+    ],
+  },
+  {
+    id: "h16",
+    name: "Full Body",
+    date: "2026-03-14",
+    durationSec: 3360,
+    exercises: [
+      { name: "Squat", variantLabel: "Barbell + Squat Rack", sets: [
+        { weight: 105, reps: 10, type: "warmup" },
+        { weight: 185, reps: 8, type: "working" },
+        { weight: 195, reps: 7, type: "working" },
+        { weight: 205, reps: 6, type: "working" },
+      ]},
+      { name: "Bench Press", variantLabel: "Barbell + Flat Bench", sets: [
+        { weight: 85, reps: 10, type: "warmup" },
+        { weight: 145, reps: 8, type: "working" },
+        { weight: 155, reps: 7, type: "working" },
+        { weight: 165, reps: 6, type: "working" },
+      ]},
+      { name: "Bent-Over Row", variantLabel: "Barbell", sets: [
+        { weight: 75, reps: 10, type: "warmup" },
+        { weight: 125, reps: 10, type: "working" },
+        { weight: 135, reps: 9, type: "working" },
+        { weight: 145, reps: 8, type: "working" },
+      ]},
+      { name: "Bulgarian Split Squat", variantLabel: "Dumbbells", sets: [
+        { weight: 30, reps: 10, type: "working" },
+        { weight: 30, reps: 10, type: "working" },
+        { weight: 30, reps: 8, type: "working" },
+      ]},
+      { name: "Bicep Curl", variantLabel: "Dumbbells", sets: [
+        { weight: 25, reps: 10, type: "working" },
+        { weight: 25, reps: 10, type: "working" },
+        { weight: 25, reps: 8, type: "working" },
+      ]},
+      { name: "Tricep Pushdown", variantLabel: "Cable (High Pulley)", sets: [
+        { weight: 50, reps: 12, type: "working" },
+        { weight: 50, reps: 11, type: "working" },
+        { weight: 50, reps: 10, type: "working" },
+      ]},
+      { name: "Standing Calf Raise", variantLabel: "Standing Calf Raise Machine", sets: [
+        { weight: 180, reps: 12, type: "working" },
+        { weight: 180, reps: 11, type: "working" },
+        { weight: 180, reps: 10, type: "working" },
+      ]},
+    ],
+  },
+  {
+    id: "h17",
+    name: "Full Body",
+    date: "2026-03-11",
+    durationSec: 3300,
+    exercises: [
+      { name: "Deadlift", variantLabel: "Barbell", sets: [
+        { weight: 140, reps: 10, type: "warmup" },
+        { weight: 255, reps: 6, type: "working" },
+        { weight: 275, reps: 5, type: "working" },
+      ]},
+      { name: "Incline Press", variantLabel: "Dumbbells + Adjustable Bench", sets: [
+        { weight: 50, reps: 8, type: "working" },
+        { weight: 50, reps: 7, type: "working" },
+        { weight: 50, reps: 6, type: "working" },
+      ]},
+      { name: "Incline Row", variantLabel: "Dumbbells + Adjustable Bench", sets: [
+        { weight: 50, reps: 10, type: "working" },
+        { weight: 50, reps: 9, type: "working" },
+        { weight: 50, reps: 8, type: "working" },
+      ]},
+      { name: "Front Squat", variantLabel: "Barbell + Squat Rack", sets: [
+        { weight: 80, reps: 10, type: "warmup" },
+        { weight: 135, reps: 7, type: "working" },
+        { weight: 145, reps: 6, type: "working" },
+        { weight: 155, reps: 5, type: "working" },
+      ]},
+      { name: "Seated Row", variantLabel: "Seated Cable Row", sets: [
+        { weight: 120, reps: 10, type: "working" },
+        { weight: 120, reps: 9, type: "working" },
+        { weight: 120, reps: 8, type: "working" },
+      ]},
+      { name: "Lateral Raise", variantLabel: "Dumbbells", sets: [
+        { weight: 15, reps: 12, type: "working" },
+        { weight: 15, reps: 12, type: "working" },
+        { weight: 15, reps: 10, type: "working" },
+      ]},
+      { name: "Hanging Leg Raise", variantLabel: "Pull-Up Bar", sets: [
+        { weight: 0, reps: 10, type: "working" },
+        { weight: 0, reps: 9, type: "working" },
+        { weight: 0, reps: 7, type: "working" },
+      ]},
+    ],
+  },
+  {
+    id: "h18",
+    name: "Full Body",
+    date: "2026-03-09",
+    durationSec: 3240,
+    exercises: [
+      { name: "Squat", variantLabel: "Barbell + Squat Rack", sets: [
+        { weight: 105, reps: 10, type: "warmup" },
+        { weight: 185, reps: 8, type: "working" },
+        { weight: 195, reps: 7, type: "working" },
+        { weight: 205, reps: 6, type: "working" },
+      ]},
+      { name: "Bench Press", variantLabel: "Barbell + Flat Bench", sets: [
+        { weight: 85, reps: 10, type: "warmup" },
+        { weight: 145, reps: 8, type: "working" },
+        { weight: 155, reps: 7, type: "working" },
+        { weight: 165, reps: 6, type: "working" },
+      ]},
+      { name: "Bent-Over Row", variantLabel: "Barbell", sets: [
+        { weight: 75, reps: 10, type: "warmup" },
+        { weight: 125, reps: 10, type: "working" },
+        { weight: 135, reps: 9, type: "working" },
+        { weight: 145, reps: 8, type: "working" },
+      ]},
+      { name: "Romanian Deadlift", variantLabel: "Barbell", sets: [
+        { weight: 185, reps: 8, type: "working" },
+        { weight: 185, reps: 7, type: "working" },
+        { weight: 185, reps: 6, type: "working" },
+      ]},
+      { name: "Overhead Press", variantLabel: "Barbell", sets: [
+        { weight: 50, reps: 10, type: "warmup" },
+        { weight: 75, reps: 7, type: "working" },
+        { weight: 85, reps: 6, type: "working" },
+        { weight: 95, reps: 5, type: "working" },
+      ]},
+      { name: "Lat Pulldown", variantLabel: "Cable Lat Pulldown", sets: [
+        { weight: 130, reps: 10, type: "working" },
+        { weight: 130, reps: 9, type: "working" },
+        { weight: 130, reps: 8, type: "working" },
+      ]},
+      { name: "Standing Calf Raise", variantLabel: "Standing Calf Raise Machine", sets: [
+        { weight: 180, reps: 12, type: "working" },
+        { weight: 180, reps: 11, type: "working" },
+        { weight: 180, reps: 10, type: "working" },
       ]},
     ],
   },
 ];
-
 /* Auto-naming logic per spec: derived from primary muscle groups of
    exercises in the session. Empty session → date + time-of-day fallback.
 
@@ -1722,7 +2727,7 @@ function totalVolumeFromExercises(exercises) {
    that floats above the TabBar globally. */
 function WorkoutTab({
   userEquipment, workout, minimized, history, openHistoryId, setOpenHistoryId,
-  finishedSession,
+  finishedSession, customExercises = [],
   onStartEmpty, onUpdateWorkout, onMinimize, onCancel, onFinish,
   onCommitFinished, onDiscardFinished,
 }) {
@@ -1746,6 +2751,8 @@ function WorkoutTab({
         workout={workout}
         onUpdateWorkout={onUpdateWorkout}
         userEquipment={userEquipment}
+        customExercises={customExercises}
+        workoutHistory={history}
         onMinimize={onMinimize}
         onCancel={onCancel}
         onFinish={onFinish}
@@ -1754,80 +2761,92 @@ function WorkoutTab({
   }
 
   // Idle (or minimized active workout — same idle view, the SessionBar
-  // takes care of letting them get back into it)
+  // takes care of letting them get back into it).
+  //
+  // Structure: outer `position: relative` container DOES NOT scroll.
+  // Inner div holds all the tab content (title, CTA, history list) and
+  // is the scrollable surface. Sheet sits at the outer level so it
+  // anchors to the tab viewport rather than the scroll content — same
+  // pattern as ExercisesTab. Fixes the bug where the sheet used to
+  // scroll with the history list behind it.
   return (
-    <div style={{ flex: 1, padding: "20px 24px", overflowY: "auto", position: "relative" }}>
-      <h2 style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 22, color: COLORS.text, margin: "0 0 20px", fontWeight: 400 }}>Workout</h2>
+    <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, position: "relative" }}>
+      <div style={{ flex: 1, padding: "8px 24px 20px", overflowY: "auto" }}>
+        <h2 style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 22, color: COLORS.text, margin: "0 0 12px", fontWeight: 400 }}>Workout</h2>
 
-      {/* Empty CTA — Situation B only. Situation A (Coach-queued workout)
-          will live above this when Coach generation lands.
-          If a workout is currently active but minimized, hide this CTA so
-          the user isn't tempted to start a second one. */}
-      {!workout && (
-        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", paddingTop: 30, paddingBottom: 12 }}>
-          <div style={{ width: 64, height: 64, borderRadius: 32, background: COLORS.card, border: `1px solid ${COLORS.border}`, display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 18 }}>
-            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke={COLORS.gold} strokeWidth="1.8"><path d="M3 12h4l3-9 4 18 3-9h4" /></svg>
+        {/* Empty CTA — Situation B only. Situation A (Coach-queued workout)
+            will live above this when Coach generation lands.
+            If a workout is currently active but minimized, hide this CTA so
+            the user isn't tempted to start a second one. */}
+        {!workout && (
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", paddingTop: 30, paddingBottom: 12 }}>
+            <div style={{ width: 64, height: 64, borderRadius: 32, background: COLORS.card, border: `1px solid ${COLORS.border}`, display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 18 }}>
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke={COLORS.gold} strokeWidth="1.8"><path d="M3 12h4l3-9 4 18 3-9h4" /></svg>
+            </div>
+            <p style={{ color: COLORS.text, fontSize: 17, fontWeight: 500, margin: "0 0 4px" }}>No active workout</p>
+            <p style={{ color: COLORS.textSecondary, fontSize: 13, margin: "0 0 22px", textAlign: "center" }}>Start an empty session or ask Coach to build one</p>
+            <GoldButton onClick={onStartEmpty} style={{ width: "auto", padding: "14px 36px", fontSize: 15 }}>Start Empty Workout</GoldButton>
+            <button
+              /* Coach CTA — wired to nothing for now; will route to Coach
+                 tab when that's threaded through. */
+              style={{
+                marginTop: 14, padding: "10px 20px", background: "transparent",
+                border: `1px solid ${COLORS.border}`, borderRadius: 22,
+                color: COLORS.textSecondary, fontSize: 13, cursor: "pointer",
+                display: "flex", alignItems: "center", gap: 6,
+              }}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={COLORS.gold} strokeWidth="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z" /></svg>
+              Ask Coach to build one
+            </button>
           </div>
-          <p style={{ color: COLORS.text, fontSize: 17, fontWeight: 500, margin: "0 0 4px" }}>No active workout</p>
-          <p style={{ color: COLORS.textSecondary, fontSize: 13, margin: "0 0 22px", textAlign: "center" }}>Start an empty session or ask Coach to build one</p>
-          <GoldButton onClick={onStartEmpty} style={{ width: "auto", padding: "14px 36px", fontSize: 15 }}>Start Empty Workout</GoldButton>
-          <button
-            /* Coach CTA — wired to nothing for now; will route to Coach
-               tab when that's threaded through. */
-            style={{
-              marginTop: 14, padding: "10px 20px", background: "transparent",
-              border: `1px solid ${COLORS.border}`, borderRadius: 22,
-              color: COLORS.textSecondary, fontSize: 13, cursor: "pointer",
-              display: "flex", alignItems: "center", gap: 6,
-            }}
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={COLORS.gold} strokeWidth="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z" /></svg>
-            Ask Coach to build one
-          </button>
-        </div>
-      )}
+        )}
 
-      {/* History list — full-detail cards per spec */}
-      <p style={{ color: COLORS.textSecondary, fontSize: 12, margin: workout ? "0 0 10px" : "32px 0 10px", textTransform: "uppercase", letterSpacing: 1, fontWeight: 500 }}>History</p>
-      {history.map((w) => {
-        const volume = totalVolumeFromExercises(w.exercises);
-        return (
-          <button
-            key={w.id}
-            onClick={() => setOpenHistoryId(w.id)}
-            style={{
-              width: "100%", textAlign: "left",
-              background: COLORS.card, borderRadius: 10, padding: "14px 16px",
-              marginBottom: 10, border: `1px solid ${COLORS.border}`, cursor: "pointer",
-            }}
-          >
-            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
-              <span style={{ color: COLORS.text, fontSize: 15, fontWeight: 600 }}>{w.name}</span>
-              <span style={{ color: COLORS.textSecondary, fontSize: 12 }}>{formatShortDate(w.date)}</span>
-            </div>
-            <div style={{ color: COLORS.textSecondary, fontSize: 12, marginBottom: 10, fontVariantNumeric: "tabular-nums" }}>
-              {Math.round(w.durationSec / 60)} min · {volume.toLocaleString()} lbs
-            </div>
-            {/* Per-exercise rows: name (variant), sets count, max set */}
-            {w.exercises.map((ex, i) => {
-              const working = ex.sets.filter((s) => s.type !== "warmup");
-              const top = sessionTopSet(working.length > 0 ? working : ex.sets);
-              return (
-                <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", fontSize: 12 }}>
-                  <span style={{ color: COLORS.text, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {ex.name} <span style={{ color: COLORS.textSecondary }}>({ex.variantLabel})</span>
-                  </span>
-                  <span style={{ color: COLORS.textSecondary, marginLeft: 8, flexShrink: 0, fontVariantNumeric: "tabular-nums" }}>
-                    {ex.sets.length} sets · Max: {top.weight}×{top.reps}
-                  </span>
-                </div>
-              );
-            })}
-          </button>
-        );
-      })}
+        {/* History list — full-detail cards per spec */}
+        <p style={{ color: COLORS.textSecondary, fontSize: 12, margin: workout ? "0 0 10px" : "32px 0 10px", textTransform: "uppercase", letterSpacing: 1, fontWeight: 500 }}>History</p>
+        {history.map((w) => {
+          const volume = totalVolumeFromExercises(w.exercises);
+          return (
+            <button
+              key={w.id}
+              onClick={() => setOpenHistoryId(w.id)}
+              style={{
+                width: "100%", textAlign: "left",
+                background: COLORS.card, borderRadius: 10, padding: "14px 16px",
+                marginBottom: 10, border: `1px solid ${COLORS.border}`, cursor: "pointer",
+              }}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                <span style={{ color: COLORS.text, fontSize: 15, fontWeight: 600 }}>{w.name}</span>
+                <span style={{ color: COLORS.textSecondary, fontSize: 12 }}>{formatShortDate(w.date)}</span>
+              </div>
+              <div style={{ color: COLORS.textSecondary, fontSize: 12, marginBottom: 10, fontVariantNumeric: "tabular-nums" }}>
+                {Math.round(w.durationSec / 60)} min · {volume.toLocaleString()} lbs
+              </div>
+              {/* Per-exercise rows: name (variant), sets count, max set */}
+              {w.exercises.map((ex, i) => {
+                const working = ex.sets.filter((s) => s.type !== "warmup");
+                const top = sessionTopSet(working.length > 0 ? working : ex.sets);
+                return (
+                  <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", fontSize: 12 }}>
+                    <span style={{ color: COLORS.text, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {ex.name} <span style={{ color: COLORS.textSecondary }}>({ex.variantLabel})</span>
+                    </span>
+                    <span style={{ color: COLORS.textSecondary, marginLeft: 8, flexShrink: 0, fontVariantNumeric: "tabular-nums" }}>
+                      {ex.sets.length} sets · Max: {top.weight}×{top.reps}
+                    </span>
+                  </div>
+                );
+              })}
+            </button>
+          );
+        })}
+      </div>
 
-      {/* History recap bottom sheet */}
+      {/* History recap bottom sheet — rendered at the outer (non-scrolling)
+          level so it always anchors to the tab viewport bottom. Backdrop
+          covers the full tab and blocks interaction with the scroll list
+          behind. */}
       {openHistoryId && (
         <HistoryRecapSheet
           session={history.find((w) => w.id === openHistoryId)}
@@ -1845,7 +2864,7 @@ function WorkoutTab({
    Add Exercise picker visibility, swipe-action state per exercise.
 */
 function ActiveLogger({
-  workout, onUpdateWorkout, userEquipment, onMinimize, onCancel, onFinish,
+  workout, onUpdateWorkout, userEquipment, customExercises = [], workoutHistory = [], onMinimize, onCancel, onFinish,
 }) {
   // Pull session state out of the workout prop. We mutate via onUpdateWorkout
   // (which writes through to App-level state, so it survives tab switches).
@@ -1946,7 +2965,7 @@ function ActiveLogger({
   const addExercise = (libraryEx, variant) => {
     // Pre-fill the first set as a placeholder from the previous workout's
     // first set, if any history exists for this variant.
-    const hist = getVariantHistory(libraryEx.id, variantKey(variant));
+    const hist = getVariantHistory(libraryEx.id, variantKey(variant), workoutHistory, customExercises);
     const lastSession = hist[hist.length - 1];
     const prevFirstSet = lastSession && lastSession.sets[0];
     const hasPrev = prevFirstSet != null;
@@ -1994,8 +3013,33 @@ function ActiveLogger({
         // When a value is typed into a field, that field's placeholder
         // flag clears. The OTHER field's flag stays — placeholders are
         // independent per field now.
-        if ("weight" in patch) next.weightIsPlaceholder = false;
-        if ("reps" in patch) next.repsIsPlaceholder = false;
+        //
+        // Exception: if the patch CLEARS the field (sets it to "") AND
+        // we have a stored placeholder value to restore, flip the flag
+        // back on. This means "delete everything" reverts the field to
+        // its suggested-value state rather than going truly blank, which
+        // matches user expectation and also prevents empty-string content
+        // from collapsing the input's height.
+        //
+        // Callers can force a specific flag value by including it in
+        // the patch explicitly (the focus handler uses this to clear
+        // the placeholder on tap regardless of what's there).
+        if ("weight" in patch && !("weightIsPlaceholder" in patch)) {
+          const cleared = patch.weight === "" || patch.weight == null;
+          if (cleared && next.placeholderWeight !== "" && next.placeholderWeight != null) {
+            next.weightIsPlaceholder = true;
+          } else {
+            next.weightIsPlaceholder = false;
+          }
+        }
+        if ("reps" in patch && !("repsIsPlaceholder" in patch)) {
+          const cleared = patch.reps === "" || patch.reps == null;
+          if (cleared && next.placeholderReps !== "" && next.placeholderReps != null) {
+            next.repsIsPlaceholder = true;
+          } else {
+            next.repsIsPlaceholder = false;
+          }
+        }
         return next;
       });
 
@@ -2141,7 +3185,7 @@ function ActiveLogger({
 
       // Fall back to prev workout if no current-session values exist
       if (!hasPlaceholder) {
-        const hist = getVariantHistory(ex.exerciseId, variantKey(ex.variant));
+        const hist = getVariantHistory(ex.exerciseId, variantKey(ex.variant), workoutHistory, customExercises);
         const lastSession = hist[hist.length - 1];
         if (lastSession) {
           const prevSet = lastSession.sets[Math.min(newIdx, lastSession.sets.length - 1)];
@@ -2201,12 +3245,22 @@ function ActiveLogger({
     if (!activeField) return;
     // Auto-check fires only when leaving via the reps field. Routed through
     // toggleSetDone (not raw updateSet) so the rest timer recording +
-    // promotion logic actually fires.
+    // promotion logic actually fires. Skipped if either field is empty —
+    // the user can still manually tap the checkbox, which surfaces the
+    // shake feedback for the empty field(s).
     if (activeField.field === "reps") {
       const ex = exercisesRef.current.find((e) => e.uid === activeField.exerciseUid);
       const set = ex && ex.sets[activeField.setIdx];
       if (set && !set.done) {
-        toggleSetDone(activeField.exerciseUid, activeField.setIdx);
+        const weightReady =
+          (set.weight !== "" && set.weight != null) ||
+          (set.weightIsPlaceholder && set.placeholderWeight !== "" && set.placeholderWeight != null);
+        const repsReady =
+          (set.reps !== "" && set.reps != null) ||
+          (set.repsIsPlaceholder && set.placeholderReps !== "" && set.placeholderReps != null);
+        if (weightReady && repsReady) {
+          toggleSetDone(activeField.exerciseUid, activeField.setIdx);
+        }
       }
     }
     const next = nextField(activeField);
@@ -2492,6 +3546,8 @@ function ActiveLogger({
             activeField={activeField}
             caretPos={caretPos}
             setCaretPos={setCaretPos}
+            workoutHistory={workoutHistory}
+            customExercises={customExercises}
             onUpdateSet={(setIdx, patch) => updateSet(ex.uid, setIdx, patch)}
             onToggleSetDone={(setIdx) => toggleSetDone(ex.uid, setIdx)}
             onAddSet={() => addSet(ex.uid)}
@@ -2502,24 +3558,10 @@ function ActiveLogger({
             onOpenSetTypePopover={(setIdx) => setTypePopover({ uid: ex.uid, setIdx })}
             onOpenVariantMenu={() => setVariantMenuFor(ex.uid)}
             onFocusField={(setIdx, field) => {
-              // Focusing a placeholder field just clears that ONE field's
-              // placeholder so the user can type fresh. The other field
-              // stays as a placeholder (gray) until the user touches it
-              // too OR commits the whole set with the checkbox.
-              const target = ex.sets[setIdx];
-              if (target) {
-                if (field === "weight" && target.weightIsPlaceholder) {
-                  updateSet(ex.uid, setIdx, {
-                    weight: "",
-                    weightIsPlaceholder: false,
-                  });
-                } else if (field === "reps" && target.repsIsPlaceholder) {
-                  updateSet(ex.uid, setIdx, {
-                    reps: "",
-                    repsIsPlaceholder: false,
-                  });
-                }
-              }
+              // Tapping a field just activates it — the placeholder (if any)
+              // stays visible in gray so the user can see the suggested
+              // value. When they start typing, handleKeypadDigit replaces
+              // the placeholder with the real value (and clears the flag).
               setActiveField({ exerciseUid: ex.uid, setIdx, field });
             }}
             registerSetRef={(setIdx, node) => { setRowRefs.current[`${ex.uid}_${setIdx}`] = node; }}
@@ -2742,6 +3784,8 @@ function ActiveLogger({
       {pickerOpen && (
         <AddExerciseSheet
           userEquipment={userEquipment}
+          customExercises={customExercises}
+          workoutHistory={workoutHistory}
           onClose={() => setPickerOpen(false)}
           onAdd={addExercise}
         />
@@ -2757,6 +3801,7 @@ function ActiveLogger({
 */
 function ExerciseCard({
   exercise, isLast, restTimerMode, restTimer, activeField, caretPos, setCaretPos,
+  workoutHistory = [], customExercises = [],
   onUpdateSet, onToggleSetDone, onAddSet, onRemoveSet, onClearRestTimer,
   onRemove, onToggleCollapsed,
   onOpenSetTypePopover, onOpenVariantMenu,
@@ -2788,6 +3833,24 @@ function ExerciseCard({
   };
   const closeSwipe = () => { setRevealed(false); setDrag(0); };
 
+  // Shake state for invalid-checkbox-tap feedback. Keyed by `${setIdx}:${field}`.
+  // A truthy value in the map means that field is currently shaking; it's
+  // cleared after the animation duration. Used to flag empty weight/reps
+  // when the user tries to check a set off without entering values.
+  const [shakeFields, setShakeFields] = useState({});
+  const triggerShake = (setIdx, fields) => {
+    const additions = {};
+    for (const f of fields) additions[`${setIdx}:${f}`] = true;
+    setShakeFields((prev) => ({ ...prev, ...additions }));
+    setTimeout(() => {
+      setShakeFields((prev) => {
+        const next = { ...prev };
+        for (const f of fields) delete next[`${setIdx}:${f}`];
+        return next;
+      });
+    }, 500);
+  };
+
   // Look up the library entry to know whether the variant chip should show
   const libEx = EXERCISE_LIBRARY.find((l) => l.id === exercise.exerciseId);
   const hasMultipleVariants = libEx && libEx.variants.length > 1;
@@ -2798,7 +3861,7 @@ function ExerciseCard({
   // Last-session reference for the Prev column. Re-derives when the
   // variant changes so the column automatically refreshes after a
   // mid-workout variant switch.
-  const variantHist = getVariantHistory(exercise.exerciseId, variantKey(exercise.variant));
+  const variantHist = getVariantHistory(exercise.exerciseId, variantKey(exercise.variant), workoutHistory, customExercises);
   const lastSession = variantHist[variantHist.length - 1];
 
   const setNumberDisplay = (set, workingIndexCounter) => {
@@ -3021,16 +4084,18 @@ function ExerciseCard({
                 const repsActive = fieldIsActive(idx, "reps");
 
                 // Display values: per-field placeholder logic. If the
-                // field is a placeholder, show the placeholder value in
-                // gray. Otherwise show the real value (or empty/0 fallback).
+                // field has a real value, show it. Otherwise if the field
+                // is a placeholder, show the placeholder value in gray.
+                // If neither (no history, nothing typed), show an em-dash
+                // so the field has content and doesn't collapse visually.
                 const displayWeight =
                   set.weight !== "" && set.weight != null ? String(set.weight) :
-                  set.weightIsPlaceholder && set.placeholderWeight !== "" ? String(set.placeholderWeight) :
-                  prevSet ? String(prevSet.weight) : "0";
+                  set.weightIsPlaceholder && set.placeholderWeight !== "" && set.placeholderWeight != null ? String(set.placeholderWeight) :
+                  "—";
                 const displayReps =
                   set.reps !== "" && set.reps != null ? String(set.reps) :
-                  set.repsIsPlaceholder && set.placeholderReps !== "" ? String(set.placeholderReps) :
-                  prevSet ? String(prevSet.reps) : "0";
+                  set.repsIsPlaceholder && set.placeholderReps !== "" && set.placeholderReps != null ? String(set.placeholderReps) :
+                  "—";
 
                 const weightIsRealValue = set.weight !== "" && set.weight != null;
                 const repsIsRealValue = set.reps !== "" && set.reps != null;
@@ -3140,14 +4205,16 @@ function ExerciseCard({
                           onPointerDown={(e) => e.stopPropagation()}
                           onPointerMove={onFieldPointerMove(idx, "weight", String(set.weight ?? ""))}
                           style={{
-                            width: 56, padding: "6px 0", textAlign: "center",
+                            width: 56, minHeight: 28, padding: "6px 0", textAlign: "center",
                             background: weightActive
                               ? (caretPos === -1 ? COLORS.gold : "#1A1A1A")
                               : (set.done ? "transparent" : "#1A1A1A"),
                             border: `1.5px solid ${
-                              weightActive
-                                ? COLORS.gold
-                                : (set.done ? "transparent" : "#252525")
+                              shakeFields[`${idx}:weight`]
+                                ? "#B0302E"
+                                : weightActive
+                                  ? COLORS.gold
+                                  : (set.done ? "transparent" : "#252525")
                             }`,
                             borderRadius: 7, cursor: "pointer",
                             color: weightActive && caretPos === -1
@@ -3156,6 +4223,7 @@ function ExerciseCard({
                             fontSize: 14, fontWeight: 500,
                             fontVariantNumeric: "tabular-nums",
                             position: "relative", touchAction: "none",
+                            animation: shakeFields[`${idx}:weight`] ? "shakeField 0.5s" : "none",
                           }}
                         >
                           {displayWeight}
@@ -3213,14 +4281,16 @@ function ExerciseCard({
                           onPointerDown={(e) => e.stopPropagation()}
                           onPointerMove={onFieldPointerMove(idx, "reps", String(set.reps ?? ""))}
                           style={{
-                            width: 56, padding: "6px 0", textAlign: "center",
+                            width: 56, minHeight: 28, padding: "6px 0", textAlign: "center",
                             background: repsActive
                               ? (caretPos === -1 ? COLORS.gold : "#1A1A1A")
                               : (set.done ? "transparent" : "#1A1A1A"),
                             border: `1.5px solid ${
-                              repsActive
-                                ? COLORS.gold
-                                : (set.done ? "transparent" : "#252525")
+                              shakeFields[`${idx}:reps`]
+                                ? "#B0302E"
+                                : repsActive
+                                  ? COLORS.gold
+                                  : (set.done ? "transparent" : "#252525")
                             }`,
                             borderRadius: 7, cursor: "pointer",
                             color: repsActive && caretPos === -1
@@ -3229,6 +4299,7 @@ function ExerciseCard({
                             fontSize: 14, fontWeight: 500,
                             fontVariantNumeric: "tabular-nums",
                             position: "relative", touchAction: "none",
+                            animation: shakeFields[`${idx}:reps`] ? "shakeField 0.5s" : "none",
                           }}
                         >
                           {displayReps}
@@ -3259,10 +4330,31 @@ function ExerciseCard({
                         </button>
                       </div>
 
-                      {/* Done checkbox */}
+                      {/* Done checkbox. Gated: tapping with empty weight
+                          or reps shakes the empty field(s) instead of
+                          toggling. A field counts as empty if it has
+                          neither a real value nor a placeholder value. */}
                       <div style={{ width: 32, display: "flex", justifyContent: "center" }}>
                         <button
-                          onClick={(e) => { e.stopPropagation(); onToggleSetDone(idx); }}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            // Allow un-checking a set regardless of field state
+                            if (set.done) { onToggleSetDone(idx); return; }
+                            const weightReady =
+                              (set.weight !== "" && set.weight != null) ||
+                              (set.weightIsPlaceholder && set.placeholderWeight !== "" && set.placeholderWeight != null);
+                            const repsReady =
+                              (set.reps !== "" && set.reps != null) ||
+                              (set.repsIsPlaceholder && set.placeholderReps !== "" && set.placeholderReps != null);
+                            if (!weightReady || !repsReady) {
+                              const empties = [];
+                              if (!weightReady) empties.push("weight");
+                              if (!repsReady) empties.push("reps");
+                              triggerShake(idx, empties);
+                              return;
+                            }
+                            onToggleSetDone(idx);
+                          }}
                           onPointerDown={(e) => e.stopPropagation()}
                           style={{
                             width: 26, height: 26, borderRadius: 6,
@@ -3814,7 +4906,7 @@ function SessionBar({ workout, onTap }) {
    "+ Add Exercise" button. Two stages: list (search + filter + my-equipment)
    and variant confirm. Mirrors the patterns from ExercisesTab and
    ExerciseDetailSheet so it feels familiar, but ends in addExercise(). */
-function AddExerciseSheet({ userEquipment, onClose, onAdd }) {
+function AddExerciseSheet({ userEquipment, customExercises = [], workoutHistory = [], onClose, onAdd }) {
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("All");
   const [onlyMine, setOnlyMine] = useState(false);
@@ -3822,15 +4914,15 @@ function AddExerciseSheet({ userEquipment, onClose, onAdd }) {
 
   // Stage 2: variant confirm
   const [pendingExId, setPendingExId] = useState(null);
-  const pendingEx = pendingExId ? EXERCISE_LIBRARY.find((e) => e.id === pendingExId) : null;
+  const pendingEx = pendingExId ? findExerciseById(pendingExId, customExercises) : null;
   const [pendingVariant, setPendingVariant] = useState(null);
   useEffect(() => {
-    if (pendingEx) setPendingVariant(pickDefaultVariant(pendingEx, userEquipment));
+    if (pendingEx) setPendingVariant(pickDefaultVariant(pendingEx, userEquipment, workoutHistory, customExercises));
   }, [pendingExId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const groups = ["All", "Chest", "Back", "Shoulders", "Arms", "Legs", "Core", "Full Body", "Cardio"];
 
-  const base = getExercisesForFilter(filter);
+  const base = getExercisesForFilter(filter, customExercises);
   const filtered = base.filter((e) => {
     if (search && !exerciseMatchesSearch(e, search)) return false;
     if (onlyMine && !exerciseHasAnyAvailableVariant(e, userEquipment)) return false;
@@ -3963,7 +5055,7 @@ function AddExerciseSheet({ userEquipment, onClose, onAdd }) {
               </div>
             </div>
 
-            <div style={{ flex: 1, padding: "4px 20px 16px", overflowY: "auto", minHeight: 0 }}>
+            <div style={{ flex: 1, padding: "4px 20px 16px", overflowY: "auto", overscrollBehavior: "contain", minHeight: 0 }}>
               {filtered.length === 0 && (
                 <div style={{ textAlign: "center", color: COLORS.textSecondary, fontSize: 13, padding: "32px 20px" }}>
                   No exercises found.
@@ -3981,7 +5073,7 @@ function AddExerciseSheet({ userEquipment, onClose, onAdd }) {
                     cursor: "pointer", textAlign: "left",
                   }}
                 >
-                  <ExerciseThumbnail size={44} />
+                  <ExerciseThumbnail size={44} monogram={e.isCustom ? e.name.charAt(0) : undefined} />
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ color: COLORS.text, fontSize: 14, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{e.name}</div>
                     <div style={{ color: COLORS.textSecondary, fontSize: 11, marginTop: 2 }}>{e.primary}</div>
@@ -4007,7 +5099,10 @@ function AddExerciseSheet({ userEquipment, onClose, onAdd }) {
                     return (
                       <button
                         key={g}
-                        onClick={() => { setFilter(g); setMenuOpen(false); }}
+                        onClick={() => {
+                          setFilter(isActive && g !== "All" ? "All" : g);
+                          setMenuOpen(false);
+                        }}
                         style={{
                           width: "100%", padding: "10px 12px", borderRadius: 8,
                           background: isActive ? COLORS.goldHighlight : "transparent",
@@ -4062,7 +5157,7 @@ function HistoryRecapSheet({ session, onClose }) {
             {formatShortDate(session.date)} · {Math.round(session.durationSec / 60)} min · {volume.toLocaleString()} lbs
           </div>
         </div>
-        <div style={{ flex: 1, overflowY: "auto", padding: "0 20px 16px" }}>
+        <div style={{ flex: 1, overflowY: "auto", overscrollBehavior: "contain", padding: "0 20px 16px" }}>
           {session.exercises.map((ex, i) => (
             <div key={i} style={{ marginBottom: 18 }}>
               <div style={{ color: COLORS.text, fontSize: 14, fontWeight: 600, marginBottom: 2 }}>{ex.name}</div>
@@ -4202,30 +5297,597 @@ function FinishSummaryScreen({ session, onDone, onDiscard }) {
   );
 }
 
-function CoachTab() {
-  const [messages, setMessages] = useState([{ role: "coach", text: "Hey Alex! I'm your Coach. I see you're focused on building muscle with 3 days per week at a full gym. Want me to build you a workout for today, or do you have a question?" }]);
+// Derive a human-readable default name for a chat from its createdAt
+// timestamp. Format: "Apr 19 · 3:42 PM". Used when customName is not set.
+function formatChatDefaultName(ts) {
+  const d = new Date(ts);
+  const month = d.toLocaleDateString("en-US", { month: "short" });
+  const day = d.getDate();
+  const time = d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+  return `${month} ${day} · ${time}`;
+}
+
+// Resolve the display name for a chat: customName if set, else derived.
+function getChatDisplayName(chat) {
+  if (!chat) return "";
+  if (chat.customName && chat.customName.length > 0) return chat.customName;
+  return formatChatDefaultName(chat.createdAt);
+}
+
+function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFocused, onAppendMessage, onNewChat, onSwitchChat, onDeleteChat, onRenameChat }) {
+  // Bible §4.7: hard cap on user message length. Keeps one chat message
+  // within a single API call's budget and prevents runaway prompts. The
+  // counter only appears in the last 100 chars so it doesn't distract
+  // during normal use.
+  const MAX_MESSAGE_CHARS = 1000;
+  const COUNTER_SHOW_AT_REMAINING = 100;
+
   const [input, setInput] = useState("");
+  // Bible §4.4 — "Coach is thinking..." indicator. Text-based, gold accent,
+  // no spinner. Fires when a user message is sent and clears when the
+  // simulated Coach reply arrives. In the real build this will be driven
+  // by the streaming API response (shown until the first token streams).
+  const [isThinking, setIsThinking] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  // Per-row 3-dot menu: id of the chat whose menu is open, or null.
+  const [openMenuId, setOpenMenuId] = useState(null);
+  // Rename target: { id, draft } or null.
+  const [renameTarget, setRenameTarget] = useState(null);
+  // Delete confirm target: chat object or null.
+  const [deleteTarget, setDeleteTarget] = useState(null);
   const bottomRef = useRef(null);
-  const send = () => { if (!input.trim()) return; const u = input.trim(); setInput(""); setMessages((m) => [...m, { role: "user", text: u }]); setTimeout(() => { setMessages((m) => [...m, { role: "coach", text: "Here's what I'd suggest for today — a Push day focused on chest and shoulders. Want me to build it out with sets and reps?" }]); }, 800); };
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
+  // Textarea ref for auto-grow. We measure scrollHeight on every input
+  // change and resize up to a max. Past the max it scrolls internally.
+  const textareaRef = useRef(null);
+  // Textarea auto-grow bounds.
+  //  - MIN_ROWS_HEIGHT: 40px matches the single-line input size we had
+  //    before, so the idle state looks identical.
+  //  - MAX_TEXTAREA_HEIGHT: ~5 lines at our font size/line-height. Past
+  //    this, the textarea stops growing and starts scrolling inside.
+  const MIN_TEXTAREA_HEIGHT = 40;
+  const MAX_TEXTAREA_HEIGHT = 140;
+
+  // Auto-grow: reset height to auto so scrollHeight re-measures from
+  // scratch, then clamp to the max. Runs whenever the input value
+  // changes (including programmatic clears after send).
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    const next = Math.min(MAX_TEXTAREA_HEIGHT, Math.max(MIN_TEXTAREA_HEIGHT, el.scrollHeight));
+    el.style.height = `${next}px`;
+  }, [input]);
+
+  // Cold-start message is derived at render time if the current chat
+  // has no messages yet. Bible §4.5 — real copy is deferred.
+  const coldStart = `Hey ${userName}! I'm your Coach. I see you're focused on building muscle with 3 days per week at a full gym. Want me to build you a workout for today, or do you have a question?`;
+  const messages = chat && chat.messages.length > 0
+    ? chat.messages
+    : [{ role: "coach", text: coldStart }];
+
+  const currentIsEmpty = !chat || chat.messages.length === 0;
+  const canSend = isOnline && input.trim().length > 0 && input.length <= MAX_MESSAGE_CHARS;
+  const remaining = MAX_MESSAGE_CHARS - input.length;
+  const showCounter = remaining <= COUNTER_SHOW_AT_REMAINING;
+
+  const send = () => {
+    if (!canSend) return;
+    const u = input.trim();
+    setInput("");
+    // Seed the cold-start on first user message so the persisted chat
+    // history reads coherently when reopened.
+    if (chat.messages.length === 0) {
+      onAppendMessage({ role: "coach", text: coldStart });
+    }
+    onAppendMessage({ role: "user", text: u });
+    setIsThinking(true);
+    setTimeout(() => {
+      setIsThinking(false);
+      onAppendMessage({ role: "coach", text: "Here's what I'd suggest for today — a Push day focused on chest and shoulders. Want me to build it out with sets and reps?" });
+    }, 800);
+  };
+
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages.length, isThinking]);
+
+  const chatRelative = (c) => formatRelativeDate(new Date(c.createdAt).toISOString().slice(0, 10));
+
+  // Close any open per-row menu when the drawer closes
+  useEffect(() => { if (!historyOpen) setOpenMenuId(null); }, [historyOpen]);
+
+  // Clear stale thinking indicator on chat switch — otherwise if the user
+  // sends a message, switches chats before the fake reply lands, the new
+  // chat would show a "Coach is thinking..." that isn't really theirs.
+  useEffect(() => { setIsThinking(false); }, [chat?.id]);
+
+  // Safety: on unmount, make sure the App-level focus flag is cleared so
+  // the TabBar can't be "stuck hidden" if we ever get torn down while
+  // focused. In normal use onBlur covers this, but this guards against
+  // edge cases (e.g. navigating away via a non-input-blurring path).
+  useEffect(() => {
+    return () => {
+      if (onSetInputFocused) onSetInputFocused(false);
+    };
+  }, [onSetInputFocused]);
+
   return (
-    <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
-      <div style={{ padding: "12px 24px", borderBottom: `1px solid ${COLORS.border}`, flexShrink: 0 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <div style={{ width: 36, height: 36, borderRadius: 18, background: COLORS.gold, display: "flex", alignItems: "center", justifyContent: "center" }}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={COLORS.bg} strokeWidth="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z" /></svg></div>
-          <div><div style={{ color: COLORS.text, fontSize: 16, fontWeight: 600 }}>Coach AI</div><div style={{ color: COLORS.gold, fontSize: 11 }}>Online</div></div>
+    <div style={{ flex: 1, display: "flex", flexDirection: "column", position: "relative" }}>
+      {/* Header — hidden while composing a message, so the chat area feels
+          full-height and the focus is entirely on the conversation. Matches
+          the pattern in Claude / iMessage / every major chat app. Restores
+          on blur. */}
+      {!inputFocused && (
+      <div style={{ padding: "12px 16px 12px 24px", borderBottom: `1px solid ${COLORS.border}`, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0, flex: 1 }}>
+          <div style={{ width: 36, height: 36, borderRadius: 18, background: "transparent", border: `2px solid ${COLORS.gold}`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+            <span style={{ fontFamily: "Georgia, 'Times New Roman', serif", color: COLORS.gold, fontSize: 16, fontWeight: 700, fontStyle: "italic" }}>C</span>
+          </div>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ color: COLORS.text, fontSize: 16, fontWeight: 600 }}>Coach</div>
+            {/* Real connectivity indicator */}
+            <div style={{ display: "flex", alignItems: "center", gap: 5, marginTop: 1 }}>
+              <div style={{
+                width: 7, height: 7, borderRadius: 4,
+                background: isOnline ? COLORS.gold : COLORS.inactive,
+              }} />
+              <div style={{ color: isOnline ? COLORS.gold : COLORS.textSecondary, fontSize: 11 }}>
+                {isOnline ? "Online" : "Offline"}
+              </div>
+            </div>
+          </div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
+          {/* History button */}
+          <button
+            onClick={() => setHistoryOpen(true)}
+            title="Chat history"
+            style={{ background: "transparent", border: "none", cursor: "pointer", padding: 8, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 8 }}
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={COLORS.textSecondary} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="9" />
+              <polyline points="12 7 12 12 15 15" />
+            </svg>
+          </button>
+          {/* New chat button — gold plus-in-circle. Dimmed when
+              current chat is empty (spam prevention visual). */}
+          <button
+            onClick={onNewChat}
+            disabled={currentIsEmpty}
+            title={currentIsEmpty ? "You're already in a new chat" : "New chat"}
+            style={{
+              background: "transparent", border: "none",
+              cursor: currentIsEmpty ? "default" : "pointer",
+              padding: 6, display: "flex", alignItems: "center", justifyContent: "center",
+              borderRadius: 8,
+              opacity: currentIsEmpty ? 0.35 : 1,
+              transition: "opacity 0.15s ease",
+            }}
+          >
+            <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke={COLORS.gold} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="10" />
+              <line x1="12" y1="8" x2="12" y2="16" />
+              <line x1="8" y1="12" x2="16" y2="12" />
+            </svg>
+          </button>
         </div>
       </div>
+      )}
+
+      {/* Messages */}
       <div style={{ flex: 1, padding: "16px 24px", overflowY: "auto" }}>
-        {messages.map((m, i) => (<div key={i} style={{ marginBottom: 12, display: "flex", justifyContent: m.role === "user" ? "flex-end" : "flex-start" }}><div style={{ maxWidth: "80%", padding: "12px 16px", borderRadius: 16, background: m.role === "user" ? COLORS.gold : COLORS.card, color: m.role === "user" ? COLORS.bg : COLORS.text, fontSize: 14, lineHeight: 1.5, borderBottomRightRadius: m.role === "user" ? 4 : 16, borderBottomLeftRadius: m.role === "coach" ? 4 : 16 }}>{m.text}</div></div>))}
+        {messages.map((m, i) => (
+          <div key={i} style={{ marginBottom: 12, display: "flex", justifyContent: m.role === "user" ? "flex-end" : "flex-start" }}>
+            <div style={{
+              maxWidth: "80%", padding: "12px 16px", borderRadius: 16,
+              background: m.role === "user" ? COLORS.gold : COLORS.card,
+              color: m.role === "user" ? COLORS.bg : COLORS.text,
+              fontSize: 14, lineHeight: 1.5,
+              borderBottomRightRadius: m.role === "user" ? 4 : 16,
+              borderBottomLeftRadius: m.role === "coach" ? 4 : 16,
+            }}>
+              {m.text}
+            </div>
+          </div>
+        ))}
+        {/* Thinking indicator — Bible §4.4. Text-based (no spinner), gold
+            accent, slides in where the next Coach message will appear. The
+            three dots animate in sequence. Removed the moment a real Coach
+            message is appended. */}
+        {isThinking && (
+          <div style={{ marginBottom: 12, display: "flex", justifyContent: "flex-start" }}>
+            <div style={{
+              padding: "10px 14px",
+              color: COLORS.gold,
+              fontSize: 13,
+              fontStyle: "italic",
+              fontFamily: "Georgia, 'Times New Roman', serif",
+              display: "flex", alignItems: "center", gap: 2,
+            }}>
+              Coach is thinking
+              <span style={{ display: "inline-flex", gap: 2, marginLeft: 4 }}>
+                <span style={{ animation: "coachDot 1.4s infinite", animationDelay: "0s" }}>.</span>
+                <span style={{ animation: "coachDot 1.4s infinite", animationDelay: "0.2s" }}>.</span>
+                <span style={{ animation: "coachDot 1.4s infinite", animationDelay: "0.4s" }}>.</span>
+              </span>
+            </div>
+          </div>
+        )}
         <div ref={bottomRef} />
       </div>
+
+      {/* Offline banner — sits directly above the input. Subtle,
+          not intrusive. Only renders when offline. */}
+      {!isOnline && (
+        <div style={{
+          padding: "8px 24px",
+          background: "rgba(255,255,255,0.02)",
+          borderTop: `1px solid ${COLORS.border}`,
+          color: COLORS.textSecondary, fontSize: 12,
+          textAlign: "center", fontStyle: "italic",
+          flexShrink: 0,
+        }}>
+          Coach is offline. Reconnect to chat — past chats remain readable.
+        </div>
+      )}
+
+      {/* Input */}
       <div style={{ padding: "12px 24px", borderTop: `1px solid ${COLORS.border}`, flexShrink: 0 }}>
-        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-          <input value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send()} placeholder="Ask your Coach..." style={{ flex: 1, padding: "12px 16px", background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 24, color: COLORS.text, fontSize: 14, outline: "none" }} />
-          <button onClick={send} style={{ width: 40, height: 40, borderRadius: 20, background: COLORS.gold, border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={COLORS.bg} strokeWidth="2.5"><line x1="22" y1="2" x2="11" y2="13" /><polygon points="22 2 15 22 11 13 2 9 22 2" /></svg></button>
+        {/* Char counter — only appears in the final stretch (last 100 chars).
+            Fades red once the user actually hits the cap. Tiny, right-aligned,
+            above the input so it doesn't steal layout when absent. */}
+        {showCounter && (
+          <div style={{
+            textAlign: "right",
+            fontSize: 11,
+            color: remaining <= 0 ? "#D14343" : COLORS.textSecondary,
+            fontVariantNumeric: "tabular-nums",
+            marginBottom: 4,
+            fontStyle: "italic",
+          }}>
+            {remaining} {remaining === 1 ? "character" : "characters"} left
+          </div>
+        )}
+        <div style={{ display: "flex", gap: 10, alignItems: "flex-end" }}>
+          <textarea
+            ref={textareaRef}
+            value={input}
+            onChange={(e) => {
+              // Hard cap — never let state exceed MAX_MESSAGE_CHARS.
+              // The browser's maxLength attribute also enforces this on
+              // typing, but we belt-and-suspender it here so programmatic
+              // setInput calls can't bypass the cap either.
+              const next = e.target.value;
+              if (next.length > MAX_MESSAGE_CHARS) {
+                setInput(next.slice(0, MAX_MESSAGE_CHARS));
+              } else {
+                setInput(next);
+              }
+            }}
+            maxLength={MAX_MESSAGE_CHARS}
+            onFocus={() => onSetInputFocused && onSetInputFocused(true)}
+            onBlur={() => onSetInputFocused && onSetInputFocused(false)}
+            onKeyDown={(e) => {
+              // Desktop convention: Enter sends, Shift+Enter inserts newline.
+              // On mobile there's no "Enter" affordance on the soft keyboard —
+              // the Return key inserts a newline (default textarea behavior)
+              // and the send button is the only way to send. Matches Slack,
+              // Discord, Claude web, every modern chat app.
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                send();
+              }
+            }}
+            disabled={!isOnline}
+            rows={1}
+            placeholder={isOnline ? "Ask your Coach..." : "Coach is offline"}
+            style={{
+              flex: 1,
+              padding: "10px 16px",
+              background: COLORS.card,
+              border: `1px solid ${COLORS.border}`,
+              borderRadius: 20,
+              color: isOnline ? COLORS.text : COLORS.textSecondary,
+              fontSize: 14,
+              lineHeight: 1.4,
+              outline: "none",
+              opacity: isOnline ? 1 : 0.6,
+              resize: "none",
+              fontFamily: "inherit",
+              minHeight: MIN_TEXTAREA_HEIGHT,
+              maxHeight: MAX_TEXTAREA_HEIGHT,
+              overflowY: "auto",
+              // Without this, iOS Safari applies a subtle inset shadow
+              // that reads as a bug next to the other dark surfaces.
+              WebkitAppearance: "none",
+            }}
+          />
+          <button
+            onClick={send}
+            disabled={!canSend}
+            style={{
+              width: 40, height: 40, borderRadius: 20,
+              background: canSend ? COLORS.gold : COLORS.card,
+              border: canSend ? "none" : `1px solid ${COLORS.border}`,
+              cursor: canSend ? "pointer" : "default",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              flexShrink: 0,
+              opacity: canSend ? 1 : 0.5,
+              transition: "opacity 0.15s ease",
+            }}
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={canSend ? COLORS.bg : COLORS.textSecondary} strokeWidth="2.5"><line x1="22" y1="2" x2="11" y2="13" /><polygon points="22 2 15 22 11 13 2 9 22 2" /></svg>
+          </button>
         </div>
       </div>
+
+      {/* History drawer */}
+      {historyOpen && (
+        <div
+          onClick={() => setHistoryOpen(false)}
+          style={{
+            position: "absolute", inset: 0,
+            background: "rgba(0,0,0,0.6)",
+            display: "flex", justifyContent: "flex-end",
+            zIndex: 5,
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: "82%", maxWidth: 320, height: "100%",
+              background: COLORS.bg, borderLeft: `1px solid ${COLORS.border}`,
+              display: "flex", flexDirection: "column",
+              position: "relative",
+            }}
+          >
+            <div style={{ padding: "14px 18px", borderBottom: `1px solid ${COLORS.border}`, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <div style={{ color: COLORS.text, fontSize: 16, fontWeight: 600 }}>Chat History</div>
+              <button onClick={() => setHistoryOpen(false)} style={{ background: "none", border: "none", cursor: "pointer", padding: 4, display: "flex" }}>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={COLORS.textSecondary} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </button>
+            </div>
+            <div style={{ flex: 1, overflowY: "auto" }} onClick={() => setOpenMenuId(null)}>
+              {chats.length === 0 ? (
+                <div style={{ padding: 20, color: COLORS.textSecondary, fontSize: 13, textAlign: "center" }}>No past chats.</div>
+              ) : (
+                chats.map((c) => {
+                  const isActive = c.id === chat?.id;
+                  const menuOpen = openMenuId === c.id;
+                  return (
+                    <div
+                      key={c.id}
+                      style={{
+                        position: "relative",
+                        background: isActive ? "rgba(255,215,0,0.05)" : "transparent",
+                        borderLeft: isActive ? `2.5px solid ${COLORS.gold}` : `2.5px solid transparent`,
+                        borderBottom: `1px solid ${COLORS.border}`,
+                        display: "flex", alignItems: "center",
+                      }}
+                    >
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (menuOpen) { setOpenMenuId(null); return; }
+                          onSwitchChat(c.id);
+                          setHistoryOpen(false);
+                        }}
+                        style={{
+                          flex: 1, minWidth: 0,
+                          padding: "12px 8px 12px 18px",
+                          textAlign: "left",
+                          background: "transparent", border: "none",
+                          cursor: "pointer",
+                        }}
+                      >
+                        <div style={{
+                          color: isActive ? COLORS.gold : COLORS.text,
+                          fontSize: 13, fontWeight: 500, marginBottom: 3,
+                          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                        }}>
+                          {getChatDisplayName(c)}
+                        </div>
+                        <div style={{ color: COLORS.textSecondary, fontSize: 11 }}>
+                          {chatRelative(c)} · {c.messages.length} {c.messages.length === 1 ? "message" : "messages"}
+                        </div>
+                      </button>
+                      {/* 3-dot menu trigger */}
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setOpenMenuId(menuOpen ? null : c.id);
+                        }}
+                        style={{
+                          background: "transparent", border: "none",
+                          cursor: "pointer", padding: 10,
+                          display: "flex", alignItems: "center", justifyContent: "center",
+                          flexShrink: 0,
+                        }}
+                      >
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill={COLORS.textSecondary}>
+                          <circle cx="5" cy="12" r="2" />
+                          <circle cx="12" cy="12" r="2" />
+                          <circle cx="19" cy="12" r="2" />
+                        </svg>
+                      </button>
+                      {/* Popup menu */}
+                      {menuOpen && (
+                        <div
+                          onClick={(e) => e.stopPropagation()}
+                          style={{
+                            position: "absolute",
+                            top: "100%", right: 10,
+                            marginTop: -4,
+                            background: COLORS.card,
+                            border: `1px solid ${COLORS.border}`,
+                            borderRadius: 8,
+                            boxShadow: "0 4px 16px rgba(0,0,0,0.5)",
+                            zIndex: 10,
+                            minWidth: 140,
+                            overflow: "hidden",
+                          }}
+                        >
+                          <button
+                            onClick={() => {
+                              setRenameTarget({ id: c.id, draft: getChatDisplayName(c) });
+                              setOpenMenuId(null);
+                            }}
+                            style={{
+                              width: "100%", padding: "10px 14px", textAlign: "left",
+                              background: "transparent", border: "none",
+                              color: COLORS.text, fontSize: 13, cursor: "pointer",
+                              display: "flex", alignItems: "center", gap: 10,
+                            }}
+                          >
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={COLORS.textSecondary} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M12 20h9" />
+                              <path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4z" />
+                            </svg>
+                            Rename
+                          </button>
+                          <button
+                            onClick={() => {
+                              setDeleteTarget(c);
+                              setOpenMenuId(null);
+                            }}
+                            style={{
+                              width: "100%", padding: "10px 14px", textAlign: "left",
+                              background: "transparent", border: "none",
+                              color: "#ff6b6b", fontSize: 13, cursor: "pointer",
+                              display: "flex", alignItems: "center", gap: 10,
+                              borderTop: `1px solid ${COLORS.border}`,
+                            }}
+                          >
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#ff6b6b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <polyline points="3 6 5 6 21 6" />
+                              <path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6" />
+                              <path d="M10 11v6" />
+                              <path d="M14 11v6" />
+                            </svg>
+                            Delete
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Rename modal */}
+      {renameTarget && (
+        <div style={{
+          position: "absolute", inset: 0, zIndex: 20,
+          background: "rgba(0,0,0,0.6)",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          padding: 24,
+        }}>
+          <div style={{
+            background: COLORS.card, borderRadius: 12,
+            border: `1px solid ${COLORS.border}`,
+            padding: 20, width: "100%", maxWidth: 320,
+          }}>
+            <div style={{ color: COLORS.text, fontSize: 15, fontWeight: 600, marginBottom: 12 }}>Rename chat</div>
+            <input
+              autoFocus
+              value={renameTarget.draft}
+              onChange={(e) => setRenameTarget({ ...renameTarget, draft: e.target.value })}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  onRenameChat(renameTarget.id, renameTarget.draft);
+                  setRenameTarget(null);
+                } else if (e.key === "Escape") {
+                  setRenameTarget(null);
+                }
+              }}
+              style={{
+                width: "100%", padding: "10px 12px",
+                background: COLORS.bg, border: `1px solid ${COLORS.border}`,
+                borderRadius: 8, color: COLORS.text, fontSize: 14,
+                outline: "none",
+              }}
+            />
+            <div style={{ display: "flex", gap: 8, marginTop: 14, justifyContent: "flex-end" }}>
+              <button
+                onClick={() => setRenameTarget(null)}
+                style={{
+                  padding: "8px 14px",
+                  background: "transparent", border: `1px solid ${COLORS.border}`,
+                  borderRadius: 8, color: COLORS.textSecondary,
+                  fontSize: 13, fontWeight: 500, cursor: "pointer",
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  onRenameChat(renameTarget.id, renameTarget.draft);
+                  setRenameTarget(null);
+                }}
+                style={{
+                  padding: "8px 14px",
+                  background: COLORS.gold, border: "none",
+                  borderRadius: 8, color: COLORS.bg,
+                  fontSize: 13, fontWeight: 600, cursor: "pointer",
+                }}
+              >
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete confirm */}
+      {deleteTarget && (
+        <div style={{
+          position: "absolute", inset: 0, zIndex: 20,
+          background: "rgba(0,0,0,0.6)",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          padding: 24,
+        }}>
+          <div style={{
+            background: COLORS.card, borderRadius: 12,
+            border: `1px solid ${COLORS.border}`,
+            padding: 20, width: "100%", maxWidth: 320,
+          }}>
+            <div style={{ color: COLORS.text, fontSize: 15, fontWeight: 600, marginBottom: 6 }}>Delete this chat?</div>
+            <div style={{ color: COLORS.textSecondary, fontSize: 13, marginBottom: 18, lineHeight: 1.5 }}>
+              &ldquo;{getChatDisplayName(deleteTarget)}&rdquo; will be removed. This can&rsquo;t be undone.
+            </div>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button
+                onClick={() => setDeleteTarget(null)}
+                style={{
+                  padding: "8px 14px",
+                  background: "transparent", border: `1px solid ${COLORS.border}`,
+                  borderRadius: 8, color: COLORS.textSecondary,
+                  fontSize: 13, fontWeight: 500, cursor: "pointer",
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  onDeleteChat(deleteTarget.id);
+                  setDeleteTarget(null);
+                }}
+                style={{
+                  padding: "8px 14px",
+                  background: "#ff6b6b", border: "none",
+                  borderRadius: 8, color: "#fff",
+                  fontSize: 13, fontWeight: 600, cursor: "pointer",
+                }}
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -4236,8 +5898,13 @@ function CoachTab() {
    Tapping a row opens ExerciseDetailScreen (in-tab sub-screen, no route change).
 */
 
-function ExerciseThumbnail({ size = 56 }) {
-  // Placeholder — swap for real exercise illustrations later.
+function ExerciseThumbnail({ size = 56, monogram }) {
+  // Default placeholder uses the MYG wordmark — swap for real exercise
+  // illustrations later. Custom exercises pass a `monogram` prop, which
+  // is typically the first letter of the exercise name. This distinguishes
+  // user-created exercises visually without introducing a noisy "Custom"
+  // chip. See Bible §3.4 (custom exercises) and §18.
+  const isCustom = !!monogram;
   return (
     <div style={{
       width: size, height: size, borderRadius: 10, background: COLORS.card,
@@ -4246,38 +5913,232 @@ function ExerciseThumbnail({ size = 56 }) {
     }}>
       <span style={{
         fontFamily: "Georgia, 'Times New Roman', serif", fontWeight: 700,
-        color: COLORS.gold, fontSize: size * 0.32, letterSpacing: 0.5,
-      }}>MYG</span>
+        color: COLORS.gold,
+        fontSize: isCustom ? size * 0.5 : size * 0.32,
+        letterSpacing: isCustom ? 0 : 0.5,
+        textTransform: "uppercase",
+      }}>{isCustom ? monogram : "MYG"}</span>
     </div>
   );
 }
 
-function ExercisesTab({ userEquipment, onOpenEquipmentEditor }) {
+function ExercisesTab({
+  userEquipment,
+  onOpenEquipmentEditor,
+  customExercises = [],
+  exerciseSort,
+  onChangeSort,
+  workoutHistory = [],
+  onAddCustom,
+  onUpdateCustom,
+  onDeleteCustom,
+}) {
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("All");
   const [onlyMine, setOnlyMine] = useState(false);
   const [detailId, setDetailId] = useState(null);
   const [menuOpen, setMenuOpen] = useState(false);
+  // Sort popover state — mounted in top right.
+  const [sortMenuOpen, setSortMenuOpen] = useState(false);
+  // Custom-exercise creation form open state. When non-null, also optionally
+  // holds the id of a custom exercise we're editing (null = new exercise).
+  const [createOpen, setCreateOpen] = useState(false);
+  const [editingCustomId, setEditingCustomId] = useState(null);
+  // After creating a custom exercise, we highlight its row in gold and
+  // scroll it into view. The highlight auto-clears on a 3s timer, when
+  // the user taps any row, when they create another one (replacing this
+  // one), or when the tab unmounts.
+  const [recentlyAddedId, setRecentlyAddedId] = useState(null);
+  // Map of exercise id → DOM node for the row. Populated by refs on each
+  // row button so we can scroll a specific row into view after creation.
+  const rowRefs = useRef({});
+  // Timer ref so we can clear it if the highlight is dismissed early.
+  const highlightTimerRef = useRef(null);
 
   // Body-part filter options — ordered top-down by anatomical region, with
   // Full Body and Cardio last. Cleaner than the old order which had Cardio
   // mid-list between Core and Full Body.
   const groups = ["All", "Chest", "Back", "Shoulders", "Arms", "Legs", "Core", "Full Body", "Cardio"];
 
-  const base = getExercisesForFilter(filter);
+  // ── Frequency / recency stats derived from workout history ──
+  // Built once per render (cheap since history is small). Keyed by
+  // exercise NAME because sessions in history only store exercise names,
+  // not ids. Each entry holds { count, latestDate }. Used for both the
+  // sort modes and the row right-side "N sessions" display when Most
+  // Used is active.
+  const freqByName = {};
+  for (const session of workoutHistory) {
+    for (const ex of (session.exercises || [])) {
+      const entry = freqByName[ex.name] || { count: 0, latestDate: null };
+      entry.count += 1;
+      if (!entry.latestDate || session.date > entry.latestDate) {
+        entry.latestDate = session.date;
+      }
+      freqByName[ex.name] = entry;
+    }
+  }
+
+  // Base list: library + customs, filtered by body part and search/equip.
+  const base = getExercisesForFilter(filter, customExercises);
   const filtered = base.filter((e) => {
     if (search && !exerciseMatchesSearch(e, search)) return false;
     if (onlyMine && !exerciseHasAnyAvailableVariant(e, userEquipment)) return false;
     return true;
   });
 
+  // ── Sort pipeline ──
+  // Three modes. Default is alphabetical ascending. For recency/frequency,
+  // exercises with no history drop to the bottom and alphabetize among
+  // themselves (per locked design — otherwise every user would see a wall
+  // of "—" rows at the top the moment they changed sort).
+  const { mode: sortMode, dir: sortDir } = exerciseSort || { mode: "alpha", dir: "asc" };
+  const isDefaultSort = sortMode === "alpha" && sortDir === "asc";
+
+  const sorted = [...filtered].sort((a, b) => {
+    if (sortMode === "alpha") {
+      const cmp = a.name.localeCompare(b.name);
+      return sortDir === "asc" ? cmp : -cmp;
+    }
+    // recent + frequency share the "no history → bottom" rule. We compute
+    // a numeric score where 0 means "no history." For recency score =
+    // timestamp; for frequency score = session count.
+    const aStat = freqByName[a.name];
+    const bStat = freqByName[b.name];
+    const aScore = !aStat ? 0 : (sortMode === "recent" ? Date.parse(aStat.latestDate) || 0 : aStat.count);
+    const bScore = !bStat ? 0 : (sortMode === "recent" ? Date.parse(bStat.latestDate) || 0 : bStat.count);
+    // Zero-score items go to bottom regardless of direction, alphabetized
+    // among themselves.
+    if (aScore === 0 && bScore === 0) return a.name.localeCompare(b.name);
+    if (aScore === 0) return 1;
+    if (bScore === 0) return -1;
+    const cmp = bScore - aScore; // default "desc" for numeric (most first / newest first)
+    return sortDir === "asc" ? -cmp : cmp;
+  });
+
   // Body Part button shows "Any Body Part" for default, current selection otherwise.
   const bodyPartLabel = filter === "All" ? "Any Body Part" : filter;
+
+  // Sort button reads grey for the default, gold for any non-default state.
+  const sortActive = !isDefaultSort;
+  const sortLabels = {
+    alpha: sortDir === "asc" ? "A → Z" : "Z → A",
+    recent: sortDir === "asc" ? "Oldest First" : "Most Recent",
+    frequency: sortDir === "asc" ? "Least Used" : "Most Used",
+  };
+
+  // Tap the same sort mode again → flip direction. Tap a new mode →
+  // set that mode with its sensible default direction. Defaults:
+  // alpha=asc (A→Z), recent=desc (newest first), frequency=desc (most first).
+  const handleSortTap = (mode) => {
+    if (mode === sortMode) {
+      onChangeSort({ mode, dir: sortDir === "asc" ? "desc" : "asc" });
+    } else {
+      onChangeSort({ mode, dir: mode === "alpha" ? "asc" : "desc" });
+    }
+    setSortMenuOpen(false);
+  };
+
+  const openCreateCustom = () => {
+    setEditingCustomId(null);
+    setCreateOpen(true);
+  };
+  const openEditCustom = (id) => {
+    setEditingCustomId(id);
+    setCreateOpen(true);
+    setDetailId(null); // Close the detail sheet so the form has the stage
+  };
+  const closeCreateCustom = () => {
+    setCreateOpen(false);
+    setEditingCustomId(null);
+  };
+
+  // CustomExerciseForm is now a bottom sheet (not a full-screen replacement),
+  // so we don't early-return. It's rendered alongside the detail sheet below.
+  const editingCustom = editingCustomId ? customExercises.find((x) => x.id === editingCustomId) : null;
+
+  // When a custom exercise is newly added, scroll its row into view and
+  // arm a 3s timer to clear the gold highlight. We run this in an effect
+  // so the row is guaranteed to be in the DOM by the time we look it up —
+  // the state flow is: save → setRecentlyAddedId → re-render with new row →
+  // effect fires → scrollIntoView on the fresh node.
+  useEffect(() => {
+    if (!recentlyAddedId) return;
+    // Defer one frame so the row for the new exercise is mounted and
+    // measured before we try to scroll to it.
+    const raf = requestAnimationFrame(() => {
+      const node = rowRefs.current[recentlyAddedId];
+      if (node && typeof node.scrollIntoView === "function") {
+        node.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+    });
+    // 3-second auto-fade
+    if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+    highlightTimerRef.current = setTimeout(() => {
+      setRecentlyAddedId(null);
+      highlightTimerRef.current = null;
+    }, 3000);
+    return () => {
+      cancelAnimationFrame(raf);
+      if (highlightTimerRef.current) {
+        clearTimeout(highlightTimerRef.current);
+        highlightTimerRef.current = null;
+      }
+    };
+  }, [recentlyAddedId]);
+
+  // Clear highlight on unmount (e.g. switching tabs)
+  useEffect(() => {
+    return () => {
+      if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+    };
+  }, []);
 
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, position: "relative" }}>
       <div style={{ padding: "8px 24px 0", flexShrink: 0 }}>
-        <h2 style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 22, color: COLORS.text, margin: "0 0 8px", fontWeight: 400 }}>Exercises</h2>
+        {/* Title row — "Exercises" on the left, sort + add buttons on the right */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+          <h2 style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 22, color: COLORS.text, margin: 0, fontWeight: 400 }}>Exercises</h2>
+          <div style={{ display: "flex", alignItems: "center", gap: 2 }}>
+            {/* Add custom exercise button — left of sort, grey by default.
+                Smaller icon than v1 so it recedes visually; the important
+                affordance in this tab is search, not creation. */}
+            <button
+              onClick={openCreateCustom}
+              title="Create custom exercise"
+              style={{
+                background: "transparent", border: "none", cursor: "pointer",
+                padding: 4, display: "flex", alignItems: "center", justifyContent: "center",
+                borderRadius: 8,
+              }}
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={COLORS.inactive} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="10" />
+                <line x1="12" y1="8" x2="12" y2="16" />
+                <line x1="8" y1="12" x2="16" y2="12" />
+              </svg>
+            </button>
+            {/* Sort button — far top-right. Grey when idle (default alpha asc),
+                gold when any other sort state is active. */}
+            <button
+              onClick={() => setSortMenuOpen((v) => !v)}
+              title="Sort"
+              style={{
+                background: "transparent", border: "none", cursor: "pointer",
+                padding: 4, display: "flex", alignItems: "center", justifyContent: "center",
+                borderRadius: 8,
+              }}
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
+                stroke={sortActive ? COLORS.gold : COLORS.inactive}
+                strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="4" y1="6" x2="20" y2="6" />
+                <line x1="4" y1="12" x2="16" y2="12" />
+                <line x1="4" y1="18" x2="11" y2="18" />
+              </svg>
+            </button>
+          </div>
+        </div>
 
         {/* Search bar — shorter and tighter */}
         <input
@@ -4348,35 +6209,66 @@ function ExercisesTab({ userEquipment, onOpenEquipmentEditor }) {
       </div>
 
       {/* Exercise list */}
-      <div style={{ flex: 1, padding: "4px 24px 20px", overflowY: "auto", minHeight: 0 }}>
-        {filtered.length === 0 && (
+      <div style={{ flex: 1, padding: "4px 24px 20px", overflowY: "auto", overscrollBehavior: "contain", minHeight: 0 }}>
+        {sorted.length === 0 && (
           <div style={{ textAlign: "center", color: COLORS.textSecondary, fontSize: 13, padding: "40px 20px" }}>
             {onlyMine
               ? "No exercises match your equipment. Try turning off the My Equipment filter."
               : "No exercises found."}
           </div>
         )}
-        {filtered.map((e) => {
-          const lastMax = getRowLastMax(e.id, e);
+        {sorted.map((e) => {
+          const lastMax = getRowLastMax(e.id, e, workoutHistory, customExercises);
+          // When "Most Used" sort is active, the right side of the row
+          // swaps from (lastMax + relative date) to (session count).
+          // Frequency is derived from the user's actual workout history
+          // keyed by exercise name (not id).
+          const showFrequency = sortMode === "frequency";
+          const stat = freqByName[e.name];
+          const isHighlighted = e.id === recentlyAddedId;
           return (
             <button
               key={e.id}
-              onClick={() => setDetailId(e.id)}
+              ref={(node) => {
+                // Store refs for newly-added custom rows so the effect
+                // above can scroll them into view. We only need refs for
+                // custom exercises since library rows never get highlighted,
+                // but storing all keeps the code simple.
+                if (node) rowRefs.current[e.id] = node;
+                else delete rowRefs.current[e.id];
+              }}
+              onClick={() => {
+                // Tapping the highlighted row dismisses the highlight
+                // immediately, in addition to opening its detail sheet.
+                if (isHighlighted) setRecentlyAddedId(null);
+                setDetailId(e.id);
+              }}
               style={{
-                width: "100%", padding: "8px 0",
+                width: "100%", padding: "8px 10px",
                 display: "flex", alignItems: "center", gap: 12,
-                background: "none", border: "none",
+                background: isHighlighted ? COLORS.goldHighlight : "none",
+                border: "none",
                 borderBottom: `1px solid ${COLORS.border}`,
+                borderLeft: isHighlighted ? `3px solid ${COLORS.gold}` : "3px solid transparent",
                 cursor: "pointer", textAlign: "left",
+                transition: "background 0.4s ease, border-left-color 0.4s ease",
               }}
             >
-              <ExerciseThumbnail size={44} />
+              <ExerciseThumbnail size={44} monogram={e.isCustom ? e.name.charAt(0) : undefined} />
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ color: COLORS.text, fontSize: 14, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{e.name}</div>
                 <div style={{ color: COLORS.textSecondary, fontSize: 11, marginTop: 1 }}>{e.primary}</div>
               </div>
               <div style={{ textAlign: "right", flexShrink: 0, marginLeft: 8 }}>
-                {lastMax ? (
+                {showFrequency ? (
+                  stat ? (
+                    <div style={{ color: COLORS.gold, fontSize: 13, fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>
+                      {stat.count} {stat.count === 1 ? "session" : "sessions"}
+                    </div>
+                  ) : (
+                    <div style={{ color: COLORS.inactive, fontSize: 14 }}>—</div>
+                  )
+                ) : lastMax ? (
                   <>
                     <div style={{ color: COLORS.gold, fontSize: 13, fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>{lastMax.value}</div>
                     <div style={{ color: COLORS.textSecondary, fontSize: 9, marginTop: 1, fontVariantNumeric: "tabular-nums" }}>
@@ -4405,7 +6297,7 @@ function ExercisesTab({ userEquipment, onOpenEquipmentEditor }) {
             }}
           />
           <div style={{
-            position: "absolute", top: 122, left: 24, zIndex: 11,
+            position: "absolute", top: 150, left: 24, zIndex: 11,
             background: COLORS.card, border: `1px solid ${COLORS.border}`,
             borderRadius: 12, boxShadow: "0 8px 24px rgba(0,0,0,0.5)",
             minWidth: 180, padding: 6,
@@ -4416,7 +6308,13 @@ function ExercisesTab({ userEquipment, onOpenEquipmentEditor }) {
               return (
                 <button
                   key={g}
-                  onClick={() => { setFilter(g); setMenuOpen(false); }}
+                  onClick={() => {
+                    // Tapping the currently-active filter deselects it back
+                    // to "All". This prevents the dead-end where the user
+                    // has to open the dropdown, find "All", and tap it.
+                    setFilter(isActive && g !== "All" ? "All" : g);
+                    setMenuOpen(false);
+                  }}
                   style={{
                     width: "100%", padding: "10px 12px", borderRadius: 8,
                     background: isActive ? COLORS.goldHighlight : "transparent",
@@ -4439,13 +6337,97 @@ function ExercisesTab({ userEquipment, onOpenEquipmentEditor }) {
         </>
       )}
 
+      {/* Sort menu — anchored under the sort button in the top right.
+          Three options. The active one shows a checkmark + its current
+          direction as subtext. Tapping the active one flips direction. */}
+      {sortMenuOpen && (
+        <>
+          <div
+            onClick={() => setSortMenuOpen(false)}
+            style={{
+              position: "absolute", inset: 0,
+              background: "rgba(0,0,0,0.35)", zIndex: 10,
+            }}
+          />
+          <div style={{
+            position: "absolute", top: 44, right: 24, zIndex: 11,
+            background: COLORS.card, border: `1px solid ${COLORS.border}`,
+            borderRadius: 12, boxShadow: "0 8px 24px rgba(0,0,0,0.5)",
+            minWidth: 200, padding: 6,
+          }}>
+            {[
+              { id: "alpha", label: "Alphabetical" },
+              { id: "recent", label: "Most Recent" },
+              { id: "frequency", label: "Most Used" },
+            ].map((opt) => {
+              const isActive = opt.id === sortMode;
+              return (
+                <button
+                  key={opt.id}
+                  onClick={() => handleSortTap(opt.id)}
+                  style={{
+                    width: "100%", padding: "10px 12px", borderRadius: 8,
+                    background: isActive ? COLORS.goldHighlight : "transparent",
+                    border: "none", cursor: "pointer", textAlign: "left",
+                    color: isActive ? COLORS.gold : COLORS.text,
+                    fontSize: 13, fontWeight: isActive ? 600 : 400,
+                    display: "flex", alignItems: "center", justifyContent: "space-between",
+                  }}
+                >
+                  <span>{opt.label}</span>
+                  {isActive && (
+                    <span style={{
+                      color: COLORS.gold, fontSize: 11, fontVariantNumeric: "tabular-nums",
+                      fontStyle: "italic",
+                    }}>
+                      {sortLabels[opt.id]}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        </>
+      )}
+
       {/* Exercise detail bottom sheet — overlays the tab content. Backdrop
           click-to-dismiss above the sheet; sheet covers the lower ~85%. */}
       {detailId && (
         <ExerciseDetailSheet
-          exercise={EXERCISE_LIBRARY.find((e) => e.id === detailId)}
+          exercise={findExerciseById(detailId, customExercises)}
           userEquipment={userEquipment}
+          workoutHistory={workoutHistory}
+          customExercises={customExercises}
           onClose={() => setDetailId(null)}
+          onEditCustom={() => openEditCustom(detailId)}
+          onDeleteCustom={() => {
+            onDeleteCustom && onDeleteCustom(detailId);
+            setDetailId(null);
+          }}
+        />
+      )}
+
+      {/* Custom exercise creation / edit sheet — matches the detail sheet
+          pattern (backdrop + 85% height sheet). Rendered alongside so the
+          user can open it over the exercises list. */}
+      {createOpen && (
+        <CustomExerciseForm
+          existing={editingCustom}
+          existingNames={[...EXERCISE_LIBRARY, ...customExercises]
+            .filter((x) => !editingCustom || x.id !== editingCustom.id)
+            .map((x) => x.name.toLowerCase())}
+          onSave={(payload) => {
+            if (editingCustom) {
+              onUpdateCustom && onUpdateCustom(editingCustom.id, payload);
+            } else {
+              onAddCustom && onAddCustom(payload);
+              // Flag this row for scroll-into-view + gold highlight. The
+              // effect keyed on recentlyAddedId handles the rest.
+              setRecentlyAddedId(payload.id);
+            }
+            closeCreateCustom();
+          }}
+          onCancel={closeCreateCustom}
         />
       )}
     </div>
@@ -4460,18 +6442,268 @@ function ExercisesTab({ userEquipment, onOpenEquipmentEditor }) {
    of the sheet so it's always reachable regardless of active tab.
 */
 
-function ExerciseDetailSheet({ exercise, userEquipment, onClose }) {
+/* ── Custom Exercise Creation / Edit Form ─────────────────────────
+   Full-screen form for creating a user-defined exercise (Bible §3.4, §18).
+   Kept deliberately minimal: name, primary muscle, single equipment. No
+   variants, no secondary muscles, no type picker — defaulted to Compound
+   since Coach never programs custom exercises anyway (they're invisible
+   to the workout generator).
+
+   Validation:
+   - Name required, trimmed, unique per user (case-insensitive). Uniqueness
+     check receives a list of existing lower-cased names from the parent,
+     which handles the "editing my own exercise" exclusion correctly.
+   - Primary muscle required.
+   - Equipment required (with "Bodyweight / None" as a valid choice).
+
+   On save, builds a library-shaped object:
+     {
+       id: "custom_<timestamp>" (or kept if editing),
+       name, primary, secondary: [], type: "Compound",
+       variants: [{ label, equipment: [equipId | ...] }],
+       isCustom: true,
+       createdAt: Date.now(),
+     }
+
+   The variant label is generated from the equipment pick so it reads
+   naturally if the user ever has multiple custom exercises with the same
+   name + different equipment (e.g. "Dumbbells"). Custom exercises are
+   single-variant for v1.
+*/
+function CustomExerciseForm({ existing, existingNames = [], onSave, onCancel }) {
+  const [name, setName] = useState(existing ? existing.name : "");
+  const [primary, setPrimary] = useState(existing ? existing.primary : "");
+  // Equipment — single select from the master catalog, or the "none"
+  // token for bodyweight. Pre-fill from existing variant on edit.
+  const [equipmentId, setEquipmentId] = useState(() => {
+    if (!existing) return "";
+    const v = existing.variants && existing.variants[0];
+    if (!v) return "";
+    return v.equipment && v.equipment.length > 0 ? v.equipment[0] : "__none__";
+  });
+  const [showError, setShowError] = useState(null);
+
+  const PRIMARY_OPTIONS = ["Chest", "Back", "Shoulders", "Arms", "Legs", "Core", "Full Body", "Cardio"];
+
+  const trimmedName = name.trim();
+  const lowerName = trimmedName.toLowerCase();
+  const nameTaken = trimmedName.length > 0 && existingNames.includes(lowerName);
+  const canSave = trimmedName.length > 0 && primary && equipmentId && !nameTaken;
+
+  const handleSave = () => {
+    if (!canSave) {
+      if (nameTaken) setShowError("That name is already used by another exercise.");
+      else if (!trimmedName) setShowError("Name is required.");
+      else if (!primary) setShowError("Pick a primary muscle group.");
+      else if (!equipmentId) setShowError("Pick equipment.");
+      return;
+    }
+    const equipIds = equipmentId === "__none__" ? [] : [equipmentId];
+    // Build a readable variant label from the equipment pick
+    let variantLabel = "Bodyweight";
+    if (equipmentId !== "__none__") {
+      for (const cat of EQUIPMENT_CATEGORIES) {
+        const item = cat.items.find((i) => i.id === equipmentId);
+        if (item) { variantLabel = item.label; break; }
+      }
+    }
+    const payload = {
+      id: existing ? existing.id : `custom_${Date.now()}`,
+      name: trimmedName,
+      primary,
+      secondary: [],
+      type: "Compound",
+      variants: [{ label: variantLabel, equipment: equipIds }],
+      isCustom: true,
+      createdAt: existing ? existing.createdAt : Date.now(),
+    };
+    onSave(payload);
+  };
+
+  return (
+    <>
+      {/* Backdrop — covers entire tab, click dismisses */}
+      <div
+        onClick={onCancel}
+        style={{
+          position: "absolute", inset: 0,
+          background: "rgba(0,0,0,0.55)", zIndex: 20,
+        }}
+      />
+      {/* Bottom sheet card — matches HistoryRecap / ExerciseDetail pattern */}
+      <div style={{
+        position: "absolute", left: 0, right: 0, bottom: 0,
+        height: "85%", zIndex: 21,
+        background: COLORS.bg,
+        borderTopLeftRadius: 20, borderTopRightRadius: 20,
+        border: `1px solid ${COLORS.border}`,
+        borderBottom: "none",
+        display: "flex", flexDirection: "column",
+        boxShadow: "0 -12px 32px rgba(0,0,0,0.6)",
+      }}>
+        {/* Drag handle */}
+        <div style={{ display: "flex", justifyContent: "center", padding: "8px 0 2px", flexShrink: 0 }}>
+          <div style={{ width: 36, height: 4, borderRadius: 2, background: COLORS.border }} />
+        </div>
+
+        {/* Top bar: Cancel on left, title center, Save on right */}
+        <div style={{
+          display: "flex", alignItems: "center", justifyContent: "space-between",
+          padding: "4px 20px 10px", borderBottom: `1px solid ${COLORS.border}`,
+          flexShrink: 0,
+        }}>
+          <button
+            onClick={onCancel}
+            style={{ background: "none", border: "none", color: COLORS.textSecondary, fontSize: 14, cursor: "pointer", padding: 4 }}
+          >Cancel</button>
+          <div style={{
+            fontFamily: "Georgia, 'Times New Roman', serif",
+            color: COLORS.text, fontSize: 16, fontWeight: 500,
+          }}>{existing ? "Edit Exercise" : "New Exercise"}</div>
+          <button
+            onClick={handleSave}
+            disabled={!canSave}
+            style={{
+              background: "none", border: "none",
+              color: canSave ? COLORS.gold : COLORS.inactive,
+              fontSize: 14, fontWeight: 600,
+              cursor: canSave ? "pointer" : "default",
+              padding: 4,
+            }}
+          >Save</button>
+        </div>
+
+        <div style={{ flex: 1, padding: "18px 24px 20px", overflowY: "auto", overscrollBehavior: "contain" }}>
+          {/* Name */}
+          <div style={{ marginBottom: 18 }}>
+            <label style={{ display: "block", color: COLORS.textSecondary, fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>Name</label>
+            <input
+              value={name}
+              onChange={(e) => { setName(e.target.value); setShowError(null); }}
+              placeholder="e.g. Billy's Shoulder Thing"
+              maxLength={50}
+              style={{
+                width: "100%", padding: "10px 12px",
+                background: COLORS.card,
+                border: `1px solid ${nameTaken ? "#D14343" : COLORS.border}`,
+                borderRadius: 8, color: COLORS.text,
+                fontSize: 14, outline: "none", boxSizing: "border-box",
+              }}
+            />
+            {nameTaken && (
+              <div style={{ color: "#D14343", fontSize: 11, marginTop: 4, fontStyle: "italic" }}>
+                That name is already used by another exercise.
+              </div>
+            )}
+          </div>
+
+          {/* Primary muscle */}
+          <div style={{ marginBottom: 18 }}>
+            <label style={{ display: "block", color: COLORS.textSecondary, fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>Primary Muscle</label>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+              {PRIMARY_OPTIONS.map((p) => {
+                const active = p === primary;
+                return (
+                  <button
+                    key={p}
+                    onClick={() => { setPrimary(p); setShowError(null); }}
+                    style={{
+                      padding: "7px 12px", borderRadius: 18,
+                      border: `1px solid ${active ? COLORS.gold : COLORS.border}`,
+                      background: active ? COLORS.goldHighlight : "transparent",
+                      color: active ? COLORS.gold : COLORS.text,
+                      fontSize: 12, fontWeight: active ? 600 : 400,
+                      cursor: "pointer",
+                    }}
+                  >{p}</button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Equipment — flat, category-grouped list. Single-select. */}
+          <div style={{ marginBottom: 18 }}>
+            <label style={{ display: "block", color: COLORS.textSecondary, fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>Equipment</label>
+            <div style={{
+              background: COLORS.card,
+              border: `1px solid ${COLORS.border}`,
+              borderRadius: 10,
+              padding: 6,
+            }}>
+              {/* Bodyweight / other — covers the "no equipment" and "some
+                  equipment not in our catalog" cases. */}
+              <button
+                onClick={() => { setEquipmentId("__none__"); setShowError(null); }}
+                style={{
+                  width: "100%", padding: "9px 10px", borderRadius: 6,
+                  background: equipmentId === "__none__" ? COLORS.goldHighlight : "transparent",
+                  border: "none", textAlign: "left", cursor: "pointer",
+                  color: equipmentId === "__none__" ? COLORS.gold : COLORS.text,
+                  fontSize: 13, fontWeight: equipmentId === "__none__" ? 600 : 400,
+                }}
+              >Bodyweight / Other</button>
+              {EQUIPMENT_CATEGORIES.map((cat) => (
+                <div key={cat.id} style={{ marginTop: 8 }}>
+                  <div style={{
+                    color: COLORS.textSecondary, fontSize: 10,
+                    textTransform: "uppercase", letterSpacing: 0.5,
+                    padding: "4px 10px",
+                  }}>{cat.label}</div>
+                  {cat.items.map((item) => {
+                    const active = equipmentId === item.id;
+                    return (
+                      <button
+                        key={item.id}
+                        onClick={() => { setEquipmentId(item.id); setShowError(null); }}
+                        style={{
+                          width: "100%", padding: "9px 10px", borderRadius: 6,
+                          background: active ? COLORS.goldHighlight : "transparent",
+                          border: "none", textAlign: "left", cursor: "pointer",
+                          color: active ? COLORS.gold : COLORS.text,
+                          fontSize: 13, fontWeight: active ? 600 : 400,
+                        }}
+                      >{item.label}</button>
+                    );
+                  })}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {showError && (
+            <div style={{ color: "#D14343", fontSize: 12, marginTop: 4, textAlign: "center" }}>
+              {showError}
+            </div>
+          )}
+
+          <div style={{ color: COLORS.textSecondary, fontSize: 11, marginTop: 20, lineHeight: 1.5, fontStyle: "italic", textAlign: "center" }}>
+            {existing
+              ? "Changes only affect future workouts. Past sessions keep the name and equipment they were logged with."
+              : "Custom exercises are yours to track, but Coach won't include them in programmed workouts."}
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+function ExerciseDetailSheet({ exercise, userEquipment, workoutHistory = [], customExercises = [], onClose, onEditCustom, onDeleteCustom }) {
   const [activeTab, setActiveTab] = useState("about");
   const [variantMenuOpen, setVariantMenuOpen] = useState(false);
+  // Overflow (3-dot) menu for custom-exercise Edit / Delete. Only rendered
+  // when exercise.isCustom is true.
+  const [overflowOpen, setOverflowOpen] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   // Smart-default variant: most recently logged, else first available by
   // equipment, else first in the list. User can switch via the chip.
-  const [activeVariant, setActiveVariant] = useState(() => pickDefaultVariant(exercise, userEquipment));
+  const [activeVariant, setActiveVariant] = useState(() => pickDefaultVariant(exercise, userEquipment, workoutHistory, customExercises));
 
   const hasMultipleVariants = exercise.variants.length > 1;
   const activeVariantKey = variantKey(activeVariant);
-  const variantHistory = getVariantHistory(exercise.id, activeVariantKey);
+  const variantHistory = getVariantHistory(exercise.id, activeVariantKey, workoutHistory, customExercises);
   const hasHistory = variantHistory.length > 0;
+  const isCustom = !!exercise.isCustom;
 
   const tabs = [
     { id: "about", label: "About" },
@@ -4506,17 +6738,39 @@ function ExerciseDetailSheet({ exercise, userEquipment, onClose }) {
           <div style={{ width: 36, height: 4, borderRadius: 2, background: COLORS.border }} />
         </div>
 
-        {/* Header: centered name with compact CTA floating top-right */}
+        {/* Header: centered name with compact CTA floating top-right.
+            For custom exercises, a 3-dot overflow menu (Edit / Delete)
+            sits in the top-LEFT so it doesn't crowd the Add CTA. */}
         <div style={{ padding: "6px 16px 10px", flexShrink: 0, position: "relative" }}>
           <h2 style={{
             fontFamily: "Georgia, 'Times New Roman', serif",
             fontSize: 20, color: COLORS.text,
-            margin: 0, padding: "0 72px", // leave room for the CTA button on the right
+            margin: 0, padding: "0 72px", // leave room for buttons on both sides
             fontWeight: 400, lineHeight: 1.2,
             textAlign: "center",
           }}>{exercise.name}</h2>
 
-          {/* Compact Add-to-Workout CTA in the top-right of the sheet header */}
+          {/* 3-dot overflow — top-left, custom exercises only */}
+          {isCustom && (
+            <button
+              onClick={(e) => { e.stopPropagation(); setOverflowOpen((v) => !v); }}
+              title="Edit or delete"
+              style={{
+                position: "absolute", left: 16, top: 2,
+                background: "transparent", border: "none", cursor: "pointer",
+                padding: 4, display: "flex", alignItems: "center", justifyContent: "center",
+                borderRadius: 8, color: COLORS.textSecondary,
+              }}
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                <circle cx="5" cy="12" r="1.8" />
+                <circle cx="12" cy="12" r="1.8" />
+                <circle cx="19" cy="12" r="1.8" />
+              </svg>
+            </button>
+          )}
+
+          {/* Add-to-Workout CTA — top-right */}
           <button style={{
             position: "absolute", right: 16, top: 2,
             padding: "6px 11px", background: "transparent",
@@ -4530,6 +6784,44 @@ function ExerciseDetailSheet({ exercise, userEquipment, onClose }) {
             </svg>
             Add
           </button>
+
+          {/* Overflow menu for custom exercises — Edit / Delete. Anchored
+              to the left now that the 3-dot lives in the top-left. */}
+          {isCustom && overflowOpen && (
+            <>
+              <div
+                onClick={() => setOverflowOpen(false)}
+                style={{ position: "absolute", inset: 0, zIndex: 22 }}
+              />
+              <div style={{
+                position: "absolute", left: 16, top: 32, zIndex: 23,
+                background: COLORS.card, border: `1px solid ${COLORS.border}`,
+                borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.55)",
+                minWidth: 140, padding: 4,
+              }}>
+                <button
+                  onClick={() => { setOverflowOpen(false); onEditCustom && onEditCustom(); }}
+                  style={{
+                    width: "100%", padding: "9px 11px", borderRadius: 6,
+                    background: "transparent", border: "none", cursor: "pointer",
+                    textAlign: "left", color: COLORS.text, fontSize: 13,
+                  }}
+                >
+                  Edit
+                </button>
+                <button
+                  onClick={() => { setOverflowOpen(false); setConfirmDelete(true); }}
+                  style={{
+                    width: "100%", padding: "9px 11px", borderRadius: 6,
+                    background: "transparent", border: "none", cursor: "pointer",
+                    textAlign: "left", color: "#D14343", fontSize: 13,
+                  }}
+                >
+                  Delete
+                </button>
+              </div>
+            </>
+          )}
 
           {/* Variant chip — centered under the name. Hidden for single-variant
               exercises (nothing to switch to). */}
@@ -4582,7 +6874,7 @@ function ExerciseDetailSheet({ exercise, userEquipment, onClose }) {
 
         {/* Scrollable tab content. About is per-variant; History/Records pull
             from the variant-specific history. Empty state fires per-variant. */}
-        <div style={{ flex: 1, overflowY: "auto", minHeight: 0 }}>
+        <div style={{ flex: 1, overflowY: "auto", overscrollBehavior: "contain", minHeight: 0 }}>
           {activeTab === "about" && (
             <AboutTabContent exercise={exercise} variant={activeVariant} userEquipment={userEquipment} />
           )}
@@ -4616,7 +6908,7 @@ function ExerciseDetailSheet({ exercise, userEquipment, onClose }) {
             }}>
               {exercise.variants.map((v, i) => {
                 const vk = variantKey(v);
-                const hist = getVariantHistory(exercise.id, vk);
+                const hist = getVariantHistory(exercise.id, vk, workoutHistory, customExercises);
                 const isActive = vk === activeVariantKey;
                 let preview;
                 if (hist.length > 0) {
@@ -4661,6 +6953,56 @@ function ExerciseDetailSheet({ exercise, userEquipment, onClose }) {
           </>
         )}
       </div>
+
+      {/* Delete confirmation modal for custom exercises — fixed to phone
+          frame so the backdrop dims everything including the tab bar,
+          matching the Cancel Workout / chat delete modal pattern. */}
+      {confirmDelete && (
+        <div style={{
+          position: "fixed", inset: 0, zIndex: 100,
+          background: "rgba(0,0,0,0.7)",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          padding: 24,
+        }}>
+          <div style={{
+            width: "100%", maxWidth: 320,
+            background: COLORS.card, borderRadius: 14,
+            border: `1px solid ${COLORS.border}`,
+            padding: 20, textAlign: "center",
+          }}>
+            <div style={{
+              fontFamily: "Georgia, 'Times New Roman', serif",
+              color: COLORS.text, fontSize: 17, marginBottom: 6,
+            }}>Delete "{exercise.name}"?</div>
+            <div style={{ color: COLORS.textSecondary, fontSize: 12, marginBottom: 16, lineHeight: 1.4 }}>
+              Past workouts that logged this exercise will still show it, but
+              it will no longer appear in your library.
+            </div>
+            <div style={{ display: "flex", gap: 10 }}>
+              <button
+                onClick={() => setConfirmDelete(false)}
+                style={{
+                  flex: 1, padding: "10px 12px",
+                  background: "transparent",
+                  border: `1px solid ${COLORS.border}`,
+                  borderRadius: 10, color: COLORS.text,
+                  fontSize: 13, cursor: "pointer",
+                }}
+              >Cancel</button>
+              <button
+                onClick={() => { setConfirmDelete(false); onDeleteCustom && onDeleteCustom(); }}
+                style={{
+                  flex: 1, padding: "10px 12px",
+                  background: "#D14343",
+                  border: "none",
+                  borderRadius: 10, color: "#fff",
+                  fontSize: 13, fontWeight: 600, cursor: "pointer",
+                }}
+              >Delete</button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }
@@ -4880,7 +7222,6 @@ function LineChart({ series, metric }) {
 
   // Y-axis ticks: just min, mid, max
   const ticks = [yMin, (yMin + yMax) / 2, yMax];
-  const metricLabel = metric === "e1rm" ? "lb" : metric === "volume" ? "lb" : "lb";
 
   return (
     <div style={{
@@ -4928,11 +7269,6 @@ function LineChart({ series, metric }) {
         </text>
         <text x={xForIdx(series.length - 1)} y={H - 6} fontSize="9" fill={COLORS.textSecondary} textAnchor="end">
           {formatShortDate(series[series.length - 1].date)}
-        </text>
-
-        {/* Y-axis unit label top-left */}
-        <text x={PAD_L - 6} y={PAD_T - 2} fontSize="9" fill={COLORS.textSecondary} textAnchor="end">
-          {metricLabel}
         </text>
       </svg>
     </div>
@@ -5076,7 +7412,7 @@ function EmptyTabState({ message }) {
    which the App component routes to the full-screen EquipmentDetailScreen.
 */
 
-function ProfileTab({ onOpenEquipmentEditor, equipmentCount, onLogout }) {
+function ProfileTab({ onOpenEquipmentEditor, equipmentCount, onLogout, userName }) {
   const [confirmLogout, setConfirmLogout] = useState(false);
 
   // Settings rows (Section 1). Bible §6.5 lists Body Stats, Membership,
@@ -5121,10 +7457,10 @@ function ProfileTab({ onOpenEquipmentEditor, equipmentCount, onLogout }) {
         {/* Avatar block */}
         <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 20 }}>
           <div style={{ width: 56, height: 56, borderRadius: 28, background: COLORS.card, border: `2px solid ${COLORS.gold}`, display: "flex", alignItems: "center", justifyContent: "center" }}>
-            <span style={{ color: COLORS.gold, fontFamily: "Georgia, 'Times New Roman', serif", fontWeight: 700, fontSize: 22 }}>A</span>
+            <span style={{ color: COLORS.gold, fontFamily: "Georgia, 'Times New Roman', serif", fontWeight: 700, fontSize: 22 }}>{((userName || "").trim().charAt(0).toUpperCase()) || "?"}</span>
           </div>
           <div>
-            <div style={{ color: COLORS.text, fontSize: 18, fontWeight: 600 }}>Alex</div>
+            <div style={{ color: COLORS.text, fontSize: 18, fontWeight: 600 }}>{userName}</div>
             <div style={{ color: COLORS.gold, fontSize: 12, marginTop: 2 }}>Level 2 · Grinder · 750 XP</div>
           </div>
         </div>
@@ -5282,10 +7618,34 @@ function TabBar({ active, onTab }) {
 /* ── MAIN APP ────────────────────────────────────────────────── */
 
 export default function MYGFitness() {
-  const [screen, setScreen] = useState("welcome");
-  const [activeTab, setActiveTab] = useState("home");
+  // ── Hydrate from localStorage once on mount ──
+  // See the Session Persistence block at the top of this file for the
+  // full pattern. If a valid snapshot with onboardingComplete=true exists,
+  // every piece of state below is seeded from it. Otherwise each piece
+  // falls back to its fresh-user default.
+  //
+  // We read the snapshot once and stash it in a ref so every useState
+  // initializer sees the same hydration result. Ref (not state) because
+  // we never re-read it — subsequent writes are driven by the save
+  // effect below.
+  const hydrated = useRef(null);
+  if (hydrated.current === null) {
+    hydrated.current = loadSnapshot() || {};
+  }
+  const h = hydrated.current;
+  const hasCompletedOnboarding = !!h.onboardingComplete;
+
+  const [screen, setScreen] = useState(hasCompletedOnboarding ? "app" : "welcome");
+  const [onboardingComplete, setOnboardingComplete] = useState(hasCompletedOnboarding);
+  const [activeTab, setActiveTab] = useState(h.activeTab || "home");
   const [equipPreset, setEquipPreset] = useState(null);
-  const [selectedEquipment, setSelectedEquipment] = useState(new Set());
+  const [selectedEquipment, setSelectedEquipment] = useState(() => h.selectedEquipment || new Set());
+
+  // ── User name — single source of truth ──
+  // Collected on the Name screen (Screen 8). Defaults to Tyler if the
+  // user skips or leaves it blank. Threaded to Home, Profile, and Coach
+  // so the name renders identically everywhere. See Bible §6.1.
+  const [userName, setUserName] = useState(h.userName || "Tyler");
 
   const goTo = (s) => setScreen(s);
 
@@ -5298,15 +7658,222 @@ export default function MYGFitness() {
   const openEquipmentEditor = () => setAppSubScreen("equipment_editor");
   const closeEquipmentEditor = () => setAppSubScreen(null);
 
+  // ── Online / Offline detector ──
+  // Used to gracefully disable Coach input when the user is offline.
+  // The rest of the app works fully offline (exercise library is
+  // shipped in the bundle, workouts write locally). Only the Coach's
+  // live chat needs the network. See Bible §21.13 (offline behavior).
+  const [isOnline, setIsOnline] = useState(() => {
+    if (typeof navigator === "undefined") return true;
+    return navigator.onLine !== false;
+  });
+  useEffect(() => {
+    const on = () => setIsOnline(true);
+    const off = () => setIsOnline(false);
+    window.addEventListener("online", on);
+    window.addEventListener("offline", off);
+    return () => {
+      window.removeEventListener("online", on);
+      window.removeEventListener("offline", off);
+    };
+  }, []);
+
+  // ── Coach input focus state ──
+  // Lifted to App because the TabBar and Coach header visibility both
+  // depend on it. When the user focuses the Coach input, the TabBar
+  // collapses and the Coach header hides so the composing surface feels
+  // the full phone height, matching the pattern in every major chat app
+  // (Claude, iMessage, WhatsApp, Slack, etc.). Blurring restores both.
+  const [coachInputFocused, setCoachInputFocused] = useState(false);
+
+  // ── Coach chat state — lifted to App per Bible §4.1/§4.2 ──
+  // Multiple chats stored as an array. `currentCoachChatId` selects
+  // which one is visible. Chats never auto-reset; user starts a new
+  // chat via the "New Chat" button in the Coach tab header. History
+  // drawer lists all past chats and allows rename + delete.
+  //
+  // Chat shape:
+  //   { id, createdAt, messages: [], customName?: string }
+  // Default name is derived from createdAt ("Apr 19 · 3:42 PM").
+  // customName is set only when the user renames a chat.
+  //
+  // Spam prevention (Bible §4.2): tapping New Chat when the current
+  // chat has zero messages is a no-op — we stay on the current empty
+  // chat. Similarly, switching AWAY from an empty chat auto-prunes
+  // that chat (unless it's the only chat). This prevents the history
+  // list from bloating with empties.
+  //
+  // 📝 In the real build, chats persist via AsyncStorage and only the
+  // last 20 messages of the active chat are sent to the API per call.
+  // In the prototype this is UI-only; no API is hit.
+  // Seed chats + current id together so they stay in sync. If the
+  // hydrated snapshot has chats, use them and the saved active id (with
+  // a guard that the id still exists). Otherwise mint a fresh chat and
+  // point at it.
+  const initialChatState = (() => {
+    if (h.coachChats && h.coachChats.length > 0) {
+      const activeExists = h.currentCoachChatId && h.coachChats.some((c) => c.id === h.currentCoachChatId);
+      return {
+        chats: h.coachChats,
+        activeId: activeExists ? h.currentCoachChatId : h.coachChats[0].id,
+      };
+    }
+    const firstId = `c${Date.now()}`;
+    return {
+      chats: [{ id: firstId, createdAt: Date.now(), messages: [] }],
+      activeId: firstId,
+    };
+  })();
+  const [coachChats, setCoachChats] = useState(initialChatState.chats);
+  const [currentCoachChatId, setCurrentCoachChatId] = useState(initialChatState.activeId);
+
+  // ── Custom exercises (Bible §3.4, §18) ──
+  // User-created exercises that mix into the library alphabetically but
+  // are invisible to Coach AI. Shape matches library exercises (id, name,
+  // primary, secondary, type, variants) plus isCustom: true and
+  // createdAt. Single-variant by default — the creation form collects
+  // one equipment id which becomes the sole variant. Stored in App state
+  // and persisted alongside everything else in §21.7.
+  const [customExercises, setCustomExercises] = useState(() => h.customExercises || []);
+
+  // ── Exercise sort preference ──
+  // Persisted user preference for the Exercises tab list order. Three
+  // modes: alphabetical, recent (most-recently-logged first), frequency
+  // (most-often-logged first). Each mode has a direction flag that the
+  // sort button toggles on tap. Default is alphabetical ascending, which
+  // is the natural "browse" order.
+  const [exerciseSort, setExerciseSort] = useState(() => h.exerciseSort || { mode: "alpha", dir: "asc" });
+
+  const addCustomExercise = (ex) => {
+    setCustomExercises((prev) => [...prev, ex]);
+  };
+  const updateCustomExercise = (id, patch) => {
+    setCustomExercises((prev) => prev.map((x) => x.id === id ? { ...x, ...patch } : x));
+  };
+  const deleteCustomExercise = (id) => {
+    setCustomExercises((prev) => prev.filter((x) => x.id !== id));
+  };
+
+  const currentCoachChat = coachChats.find((c) => c.id === currentCoachChatId) || coachChats[0];
+
+  const appendCoachMessage = (msg) => {
+    setCoachChats((prev) => prev.map((c) =>
+      c.id === currentCoachChatId ? { ...c, messages: [...c.messages, msg] } : c
+    ));
+  };
+
+  const startNewCoachChat = () => {
+    // Spam prevention: if current chat is already empty, stay on it.
+    // The user already has an empty chat ready to type in.
+    const current = coachChats.find((c) => c.id === currentCoachChatId);
+    if (current && current.messages.length === 0) return;
+    const newId = `c${Date.now()}`;
+    setCoachChats((prev) => [{ id: newId, createdAt: Date.now(), messages: [] }, ...prev]);
+    setCurrentCoachChatId(newId);
+  };
+
+  const switchCoachChat = (id) => {
+    if (id === currentCoachChatId) return;
+    setCoachChats((prev) => {
+      // Auto-prune the chat we're LEAVING if it's empty (unless it's
+      // the only chat). Keeps the history drawer from bloating.
+      const leaving = prev.find((c) => c.id === currentCoachChatId);
+      if (leaving && leaving.messages.length === 0 && prev.length > 1) {
+        return prev.filter((c) => c.id !== currentCoachChatId);
+      }
+      return prev;
+    });
+    setCurrentCoachChatId(id);
+  };
+
+  const deleteCoachChat = (id) => {
+    setCoachChats((prev) => {
+      const next = prev.filter((c) => c.id !== id);
+      // If we just deleted the active chat, switch to the next one
+      // (or create a fresh empty chat if nothing remains).
+      if (id === currentCoachChatId) {
+        if (next.length === 0) {
+          const newId = `c${Date.now()}`;
+          const fresh = { id: newId, createdAt: Date.now(), messages: [] };
+          setCurrentCoachChatId(newId);
+          return [fresh];
+        }
+        setCurrentCoachChatId(next[0].id);
+      }
+      return next;
+    });
+  };
+
+  const renameCoachChat = (id, newName) => {
+    const trimmed = (newName || "").trim();
+    setCoachChats((prev) => prev.map((c) =>
+      c.id === id
+        ? { ...c, customName: trimmed.length > 0 ? trimmed : undefined }
+        : c
+    ));
+  };
+
   // ── Active workout lifted to App ──
   // The active workout object survives tab switches because it lives here,
   // not inside WorkoutTab. The SessionBar mounted above the TabBar lets
   // the user re-enter the logger from any tab.
-  const [activeWorkout, setActiveWorkout] = useState(null); // null = no session
+  //
+  // Hydrated from snapshot if present. hydrateActiveWorkout has already
+  // turned startTime back into a real Date. The rest timer keeps its
+  // startTs (a fixed numeric timestamp), so on reload the timer picks
+  // up counting from the original moment it was started, not from
+  // reload time.
+  const [activeWorkout, setActiveWorkout] = useState(h.activeWorkout || null);
   const [workoutMinimized, setWorkoutMinimized] = useState(false);
   const [finishedSession, setFinishedSession] = useState(null);
-  const [workoutHistory, setWorkoutHistory] = useState(MOCK_WORKOUT_HISTORY);
+  // workoutHistory: if we have a snapshot, use it (including empty array —
+  // user has logged nothing yet). Only fall back to the mock when no
+  // snapshot exists at all. That way logout (which clears the snapshot)
+  // brings back the mock demo data, as discussed.
+  const [workoutHistory, setWorkoutHistory] = useState(h.workoutHistory !== null && h.workoutHistory !== undefined ? h.workoutHistory : MOCK_WORKOUT_HISTORY);
   const [openHistoryId, setOpenHistoryId] = useState(null);
+
+  // ── Save effect ──
+  // Fires any time a persisted piece of state changes. saveSnapshot
+  // handles the serialization (Dates → ISO strings, Set → Array) and
+  // silently no-ops if localStorage isn't available (e.g. inside the
+  // Claude artifact sandbox).
+  //
+  // Note: isOnline, appSubScreen, workoutMinimized, finishedSession,
+  // openHistoryId, equipPreset are deliberately NOT in the dep array.
+  // They're transient UI state; we always want them to start fresh on
+  // reload.
+  //
+  // The rest timer ticks every second but its startTs is a fixed
+  // number stored inside activeWorkout. Elapsed is computed from
+  // Date.now() - startTs on each render. So this effect only fires
+  // when activeWorkout itself changes (start, add set, check set,
+  // etc) — not on every tick.
+  useEffect(() => {
+    saveSnapshot({
+      onboardingComplete,
+      userName,
+      selectedEquipment,
+      activeTab,
+      activeWorkout,
+      coachChats,
+      currentCoachChatId,
+      workoutHistory,
+      customExercises,
+      exerciseSort,
+    });
+  }, [
+    onboardingComplete,
+    userName,
+    selectedEquipment,
+    activeTab,
+    activeWorkout,
+    coachChats,
+    currentCoachChatId,
+    workoutHistory,
+    customExercises,
+    exerciseSort,
+  ]);
 
   const startEmptyWorkout = () => {
     const now = new Date();
@@ -5381,23 +7948,34 @@ export default function MYGFitness() {
     setFinishedSession(null);
   };
 
-  // Logout: reset all session-relevant state and return to welcome.
-  // We do not currently clear `selectedEquipment` because the user might
-  // log back in as the same person (this is a prototype, not a real auth flow).
-  // In production this would also clear auth tokens, etc.
+  // Logout: full reset to a fresh-install state. Clears the localStorage
+  // snapshot so the next load starts at welcome. Also restores the mock
+  // workout history and a clean chat so the demo loop works end-to-end:
+  // log out → see mock data again → run onboarding → new fresh state.
   const handleLogout = () => {
+    clearSnapshot();
     setActiveWorkout(null);
     setWorkoutMinimized(false);
     setFinishedSession(null);
     setOpenHistoryId(null);
     setActiveTab("home");
     setAppSubScreen(null);
+    setUserName("Tyler");
+    setSelectedEquipment(new Set());
+    setWorkoutHistory(MOCK_WORKOUT_HISTORY);
+    setOnboardingComplete(false);
+    setCustomExercises([]);
+    setExerciseSort({ mode: "alpha", dir: "asc" });
+    // Reset Coach chats to a single fresh chat
+    const newId = `c${Date.now()}`;
+    setCoachChats([{ id: newId, createdAt: Date.now(), messages: [] }]);
+    setCurrentCoachChatId(newId);
     setScreen("welcome");
   };
 
   const renderTab = () => {
     switch (activeTab) {
-      case "home": return <HomeTab onTabChange={setActiveTab} />;
+      case "home": return <HomeTab onTabChange={setActiveTab} userName={userName} history={workoutHistory} />;
       case "workout": return (
         <WorkoutTab
           userEquipment={selectedEquipment}
@@ -5407,6 +7985,7 @@ export default function MYGFitness() {
           openHistoryId={openHistoryId}
           setOpenHistoryId={setOpenHistoryId}
           finishedSession={finishedSession}
+          customExercises={customExercises}
           onStartEmpty={startEmptyWorkout}
           onUpdateWorkout={updateActiveWorkout}
           onMinimize={minimizeWorkout}
@@ -5416,10 +7995,36 @@ export default function MYGFitness() {
           onDiscardFinished={discardFinishedSession}
         />
       );
-      case "coach": return <CoachTab />;
-      case "exercises": return <ExercisesTab userEquipment={selectedEquipment} onOpenEquipmentEditor={openEquipmentEditor} />;
-      case "profile": return <ProfileTab onOpenEquipmentEditor={openEquipmentEditor} equipmentCount={selectedEquipment.size} onLogout={handleLogout} />;
-      default: return <HomeTab onTabChange={setActiveTab} />;
+      case "coach": return (
+        <CoachTab
+          userName={userName}
+          chat={currentCoachChat}
+          chats={coachChats}
+          isOnline={isOnline}
+          inputFocused={coachInputFocused}
+          onSetInputFocused={setCoachInputFocused}
+          onAppendMessage={appendCoachMessage}
+          onNewChat={startNewCoachChat}
+          onSwitchChat={switchCoachChat}
+          onDeleteChat={deleteCoachChat}
+          onRenameChat={renameCoachChat}
+        />
+      );
+      case "exercises": return (
+        <ExercisesTab
+          userEquipment={selectedEquipment}
+          onOpenEquipmentEditor={openEquipmentEditor}
+          customExercises={customExercises}
+          exerciseSort={exerciseSort}
+          onChangeSort={setExerciseSort}
+          workoutHistory={workoutHistory}
+          onAddCustom={addCustomExercise}
+          onUpdateCustom={updateCustomExercise}
+          onDeleteCustom={deleteCustomExercise}
+        />
+      );
+      case "profile": return <ProfileTab onOpenEquipmentEditor={openEquipmentEditor} equipmentCount={selectedEquipment.size} onLogout={handleLogout} userName={userName} />;
+      default: return <HomeTab onTabChange={setActiveTab} userName={userName} history={workoutHistory} />;
     }
   };
 
@@ -5442,13 +8047,27 @@ export default function MYGFitness() {
     //   - the workout is minimized
     // It sits between the tab content and the TabBar.
     const showSessionBar = activeWorkout && (activeTab !== "workout" || workoutMinimized);
+    // Hide the TabBar while the Coach input is focused, so the composing
+    // surface feels full-height instead of getting sandwiched between the
+    // keyboard and the tab bar. Matches Claude / iMessage / every major
+    // chat app. Only triggers on the Coach tab.
+    const hideTabBar = activeTab === "coach" && coachInputFocused;
     return (
       <>
         {renderTab()}
         {showSessionBar && <SessionBar workout={activeWorkout} onTap={expandWorkoutFromBar} />}
-        <TabBar active={activeTab} onTab={setActiveTab} />
+        {!hideTabBar && <TabBar active={activeTab} onTab={setActiveTab} />}
       </>
     );
+  };
+
+  // Called at the two entry points into the main app: (1) finishing
+  // onboarding via the Completion screen's "Meet Coach AI" button, and
+  // (2) signing back in on the Sign In screen. Flips the persistence
+  // flag so subsequent reloads skip straight to the tabs.
+  const enterApp = () => {
+    setOnboardingComplete(true);
+    goTo("app");
   };
 
   const renderScreen = () => {
@@ -5456,7 +8075,7 @@ export default function MYGFitness() {
       case "welcome":
         return <WelcomeScreen onGetStarted={() => goTo("goals")} onSignIn={() => goTo("signin")} />;
       case "signin":
-        return <SignInScreen onBack={() => goTo("welcome")} onSignIn={() => goTo("app")} />;
+        return <SignInScreen onBack={() => goTo("welcome")} onSignIn={enterApp} />;
       case "goals":
         return <GoalsScreen onNext={() => goTo("level")} onBack={() => goTo("welcome")} onSkip={() => goTo("level")} />;
       case "level":
@@ -5507,9 +8126,14 @@ export default function MYGFitness() {
       case "account":
         return <CreateAccountScreen onNext={() => goTo("name")} onBack={() => goTo("equipment")} />;
       case "name":
-        return <NameScreen onNext={() => goTo("complete")} onBack={() => goTo("account")} />;
+        return (
+          <NameScreen
+            onNext={(n) => { setUserName(n); goTo("complete"); }}
+            onBack={() => goTo("account")}
+          />
+        );
       case "complete":
-        return <CompletionScreen onEnter={() => goTo("app")} />;
+        return <CompletionScreen onEnter={enterApp} />;
       case "app":
         return renderAppContent();
       default:
@@ -5523,6 +8147,16 @@ export default function MYGFitness() {
         input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 24px; height: 24px; border-radius: 50%; background: #FFD700; cursor: pointer; border: 3px solid #111111; box-shadow: 0 0 8px rgba(255,215,0,0.4); }
         input[type="range"]::-moz-range-thumb { width: 24px; height: 24px; border-radius: 50%; background: #FFD700; cursor: pointer; border: 3px solid #111111; box-shadow: 0 0 8px rgba(255,215,0,0.4); }
         @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+        @keyframes coachDot { 0%, 60%, 100% { opacity: 0.2; } 30% { opacity: 1; } }
+        @keyframes shakeField {
+          0%, 100% { transform: translateX(0); }
+          15% { transform: translateX(-6px); }
+          30% { transform: translateX(6px); }
+          45% { transform: translateX(-4px); }
+          60% { transform: translateX(4px); }
+          75% { transform: translateX(-2px); }
+          90% { transform: translateX(2px); }
+        }
         input::placeholder { color: #555; }
         * { box-sizing: border-box; }
         ::-webkit-scrollbar { width: 0; }
