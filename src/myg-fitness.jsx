@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useLayoutEffect } from "react";
 
 const COLORS = {
   bg: "#111111",
@@ -188,6 +188,7 @@ const EQUIPMENT_CATEGORIES = [
     items: [
       { id: "smith_machine", label: "Smith Machine" },
       { id: "hack_squat_machine", label: "Hack Squat Machine" },
+      { id: "leg_press_machine", label: "Leg Press (45°)" },
       { id: "tbar_row_machine", label: "T-Bar Row Machine" },
       { id: "hammer_strength_chest", label: "Hammer Strength Chest Press" },
       { id: "hammer_strength_incline", label: "Hammer Strength Incline Press" },
@@ -202,7 +203,6 @@ const EQUIPMENT_CATEGORIES = [
     id: "selectorized",
     label: "Selectorized Machines",
     items: [
-      { id: "leg_press_machine", label: "Leg Press (45°)" },
       { id: "seated_leg_press_machine", label: "Seated Leg Press" },
       { id: "lying_leg_curl_machine", label: "Lying Leg Curl Machine" },
       { id: "seated_leg_curl_machine", label: "Seated Leg Curl Machine" },
@@ -252,6 +252,14 @@ const EQUIPMENT_CATEGORIES = [
 
 const ALL_IDS = EQUIPMENT_CATEGORIES.flatMap((c) => c.items.map((i) => i.id));
 
+// Flat id → pretty label lookup. Used for the "Needs ___" subline in the
+// AlternativesSheet (D-019) when a row's variants aren't available with the
+// user's equipment. Built once at module load from the same source of truth
+// as ALL_IDS so labels can never drift.
+const EQUIPMENT_LABEL_BY_ID = Object.fromEntries(
+  EQUIPMENT_CATEGORIES.flatMap((c) => c.items.map((i) => [i.id, i.label]))
+);
+
 const PRESETS = {
   full: ALL_IDS,
   home: [
@@ -267,7 +275,7 @@ const PRESETS = {
 /* ── Exercise Library (117 exercises, source of truth: Project Bible §8) ──
    Each exercise: id, name, primary, secondary[], type, variants[].
    A variant is { label, equipment: [equipment_ids] } — user needs ALL ids in
-   the list to have access to that variant (e.g. "Barbell + Flat Bench").
+   the list to have access to that variant (e.g. "Barbell").
    Equipment ids map to EQUIPMENT_CATEGORIES above. Exercises spanning two
    muscle groups (Deadlift, RDL, Good Morning, Rack Pull, Back Extension)
    appear in both filters but are de-duped in "All" by id.
@@ -275,397 +283,397 @@ const PRESETS = {
 
 const EXERCISE_LIBRARY = [
   // LEGS (20)
-  { id: "squat", name: "Squat", primary: "Legs", secondary: ["Core"], type: "Compound", variants: [
+  { id: "squat", name: "Squat", primary: "Legs", pattern: "squat_bilateral", secondary: ["Core"], type: "Compound", variants: [
     { label: "Barbell + Squat Rack", equipment: ["barbell", "squat_rack"] },
     { label: "Dumbbells", equipment: ["dumbbells"] },
     { label: "Smith Machine", equipment: ["smith_machine"] },
   ]},
-  { id: "front_squat", name: "Front Squat", primary: "Legs", secondary: ["Core"], type: "Compound", variants: [
+  { id: "front_squat", name: "Front Squat", primary: "Legs", pattern: "squat_bilateral", secondary: ["Core"], type: "Compound", variants: [
     { label: "Barbell + Squat Rack", equipment: ["barbell", "squat_rack"] },
     { label: "Smith Machine", equipment: ["smith_machine"] },
   ]},
-  { id: "goblet_squat", name: "Goblet Squat", primary: "Legs", secondary: ["Core"], type: "Compound", variants: [
+  { id: "goblet_squat", name: "Goblet Squat", primary: "Legs", pattern: "squat_bilateral", secondary: ["Core"], type: "Compound", variants: [
     { label: "Dumbbells", equipment: ["dumbbells"] },
     { label: "Kettlebells", equipment: ["kettlebell"] },
   ]},
-  { id: "deadlift", name: "Deadlift", primary: "Legs", alsoIn: ["Back"], secondary: ["Back"], type: "Compound", variants: [
+  { id: "deadlift", name: "Deadlift", primary: "Legs", pattern: "hinge_compound", alsoIn: ["Back"], secondary: ["Back"], type: "Compound", variants: [
     { label: "Barbell", equipment: ["barbell"], key: "barbell_conventional" },
     { label: "Barbell (Sumo)", equipment: ["barbell"], key: "barbell_sumo" },
     { label: "Hex Bar", equipment: ["hex_bar"] },
     { label: "Dumbbells", equipment: ["dumbbells"] },
   ]},
-  { id: "romanian_deadlift", name: "Romanian Deadlift", primary: "Legs", alsoIn: ["Back"], secondary: ["Back"], type: "Compound", variants: [
+  { id: "romanian_deadlift", name: "Romanian Deadlift", primary: "Legs", pattern: "hinge_compound", alsoIn: ["Back"], secondary: ["Back"], type: "Compound", variants: [
     { label: "Barbell", equipment: ["barbell"] },
     { label: "Dumbbells", equipment: ["dumbbells"] },
   ]},
-  { id: "good_morning", name: "Good Morning", primary: "Legs", alsoIn: ["Back"], secondary: ["Back"], type: "Compound", variants: [
+  { id: "good_morning", name: "Good Morning", primary: "Legs", pattern: "hinge_compound", alsoIn: ["Back"], secondary: ["Back"], type: "Compound", variants: [
     { label: "Barbell", equipment: ["barbell"] },
     { label: "Resistance Bands", equipment: ["resistance_bands"] },
   ]},
-  { id: "hip_thrust", name: "Hip Thrust", primary: "Legs", secondary: ["Core"], type: "Compound", variants: [
-    { label: "Barbell + Flat Bench", equipment: ["barbell", "flat_bench"] },
-    { label: "Dumbbells + Flat Bench", equipment: ["dumbbells", "flat_bench"] },
+  { id: "hip_thrust", name: "Hip Thrust", primary: "Legs", pattern: "hinge_accessory", secondary: ["Core"], type: "Compound", variants: [
+    { label: "Barbell", equipment: ["barbell", "flat_bench"] },
+    { label: "Dumbbells", equipment: ["dumbbells", "flat_bench"] },
     { label: "Hip Thrust Machine", equipment: ["hip_thrust_machine"] },
   ]},
-  { id: "leg_press", name: "Leg Press", primary: "Legs", secondary: [], type: "Compound", variants: [
+  { id: "leg_press", name: "Leg Press", primary: "Legs", pattern: "squat_bilateral", secondary: [], type: "Compound", variants: [
     { label: "Leg Press (45°)", equipment: ["leg_press_machine"] },
     { label: "Seated Leg Press", equipment: ["seated_leg_press_machine"] },
   ]},
-  { id: "hack_squat", name: "Hack Squat", primary: "Legs", secondary: [], type: "Compound", variants: [
+  { id: "hack_squat", name: "Hack Squat", primary: "Legs", pattern: "squat_bilateral", secondary: [], type: "Compound", variants: [
     { label: "Hack Squat Machine", equipment: ["hack_squat_machine"] },
   ]},
-  { id: "bulgarian_split_squat", name: "Bulgarian Split Squat", primary: "Legs", secondary: ["Core"], type: "Compound", variants: [
+  { id: "bulgarian_split_squat", name: "Bulgarian Split Squat", primary: "Legs", pattern: "squat_unilateral", secondary: ["Core"], type: "Compound", variants: [
     { label: "Barbell", equipment: ["barbell"] },
     { label: "Dumbbells", equipment: ["dumbbells"] },
   ]},
-  { id: "lunge", name: "Lunge", primary: "Legs", secondary: ["Core"], type: "Compound", variants: [
+  { id: "lunge", name: "Lunge", primary: "Legs", pattern: "squat_unilateral", secondary: ["Core"], type: "Compound", variants: [
     { label: "Barbell", equipment: ["barbell"] },
     { label: "Dumbbells", equipment: ["dumbbells"] },
-    { label: "Bodyweight", equipment: [] },
+    { label: "Bodyweight", equipment: [], bodyweight: true },
   ]},
-  { id: "step_up", name: "Step-Up", primary: "Legs", secondary: ["Core"], type: "Compound", variants: [
+  { id: "step_up", name: "Step-Up", primary: "Legs", pattern: "squat_unilateral", secondary: ["Core"], type: "Compound", variants: [
     { label: "Dumbbells + Plyo Box", equipment: ["dumbbells", "plyo_box"] },
   ]},
-  { id: "glute_bridge", name: "Glute Bridge", primary: "Legs", secondary: ["Core"], type: "Compound", variants: [
+  { id: "glute_bridge", name: "Glute Bridge", primary: "Legs", pattern: "hinge_accessory", secondary: ["Core"], type: "Compound", variants: [
     { label: "Barbell", equipment: ["barbell"] },
     { label: "Dumbbells", equipment: ["dumbbells"] },
-    { label: "Bodyweight", equipment: [] },
+    { label: "Bodyweight", equipment: [], bodyweight: true },
   ]},
-  { id: "glute_kickback", name: "Glute Kickback", primary: "Legs", secondary: [], type: "Isolation", variants: [
+  { id: "glute_kickback", name: "Glute Kickback", primary: "Legs", pattern: "isolation_glutes", secondary: [], type: "Isolation", variants: [
     { label: "Cable (Low Pulley)", equipment: ["cable_low"] },
     { label: "Glute Kickback Machine", equipment: ["glute_kickback_machine"] },
-    { label: "Bodyweight", equipment: [] },
+    { label: "Bodyweight", equipment: [], bodyweight: true },
   ]},
-  { id: "leg_curl", name: "Leg Curl", primary: "Legs", secondary: [], type: "Isolation", variants: [
+  { id: "leg_curl", name: "Leg Curl", primary: "Legs", pattern: "isolation_hamstrings", secondary: [], type: "Isolation", variants: [
     { label: "Seated Leg Curl", equipment: ["seated_leg_curl_machine"] },
     { label: "Lying Leg Curl", equipment: ["lying_leg_curl_machine"] },
   ]},
-  { id: "leg_extension", name: "Leg Extension", primary: "Legs", secondary: [], type: "Isolation", variants: [
+  { id: "leg_extension", name: "Leg Extension", primary: "Legs", pattern: "isolation_quads", secondary: [], type: "Isolation", variants: [
     { label: "Leg Extension Machine", equipment: ["leg_extension_machine"] },
   ]},
-  { id: "standing_calf_raise", name: "Standing Calf Raise", primary: "Legs", secondary: [], type: "Isolation", variants: [
+  { id: "standing_calf_raise", name: "Standing Calf Raise", primary: "Legs", pattern: "isolation_calves", secondary: [], type: "Isolation", variants: [
     { label: "Barbell", equipment: ["barbell"] },
     { label: "Dumbbells", equipment: ["dumbbells"] },
     { label: "Smith Machine", equipment: ["smith_machine"] },
     { label: "Standing Calf Raise Machine", equipment: ["standing_calf_raise_machine"] },
-    { label: "Bodyweight", equipment: [] },
+    { label: "Bodyweight", equipment: [], bodyweight: true },
   ]},
-  { id: "seated_calf_raise", name: "Seated Calf Raise", primary: "Legs", secondary: [], type: "Isolation", variants: [
+  { id: "seated_calf_raise", name: "Seated Calf Raise", primary: "Legs", pattern: "isolation_calves", secondary: [], type: "Isolation", variants: [
     { label: "Seated Calf Raise Machine", equipment: ["seated_calf_raise_machine"] },
     { label: "Plate on Knees", equipment: ["weight_plates"] },
     { label: "Rotary Calf Machine", equipment: ["rotary_calf_machine"] },
     { label: "Calf Press on 45° Leg Press", equipment: ["leg_press_machine"] },
     { label: "Calf Press on Seated Leg Press", equipment: ["seated_leg_press_machine"] },
   ]},
-  { id: "hip_abductor", name: "Hip Abductor", primary: "Legs", secondary: [], type: "Isolation", variants: [
+  { id: "hip_abductor", name: "Hip Abductor", primary: "Legs", pattern: "isolation_hip_abductor", secondary: [], type: "Isolation", variants: [
     { label: "Hip Abductor Machine", equipment: ["hip_abductor_machine"] },
   ]},
-  { id: "hip_adductor", name: "Hip Adductor", primary: "Legs", secondary: [], type: "Isolation", variants: [
+  { id: "hip_adductor", name: "Hip Adductor", primary: "Legs", pattern: "isolation_hip_adductor", secondary: [], type: "Isolation", variants: [
     { label: "Hip Adductor Machine", equipment: ["hip_abductor_machine"] },
   ]},
-  { id: "box_jump", name: "Box Jump", primary: "Legs", secondary: ["Core"], type: "Compound", variants: [
-    { label: "Plyo Box", equipment: ["plyo_box"] },
+  { id: "box_jump", name: "Box Jump", primary: "Legs", pattern: "conditioning", secondary: ["Core"], type: "Compound", variants: [
+    { label: "Plyo Box", equipment: ["plyo_box"], bodyweight: true },
   ]},
 
   // BACK (18) — deadlift/RDL/good_morning already declared under Legs with alsoIn
-  { id: "rack_pull", name: "Rack Pull", primary: "Back", secondary: ["Legs"], type: "Compound", variants: [
+  { id: "rack_pull", name: "Rack Pull", primary: "Back", pattern: "hinge_compound", secondary: ["Legs"], type: "Compound", variants: [
     { label: "Barbell + Squat Rack", equipment: ["barbell", "squat_rack"] },
   ]},
-  { id: "bent_over_row", name: "Bent-Over Row", primary: "Back", secondary: ["Arms"], type: "Compound", variants: [
+  { id: "bent_over_row", name: "Bent-Over Row", primary: "Back", pattern: "horizontal_pull", secondary: ["Arms"], type: "Compound", variants: [
     { label: "Barbell", equipment: ["barbell"] },
     { label: "Dumbbells", equipment: ["dumbbells"] },
     { label: "Smith Machine", equipment: ["smith_machine"] },
   ]},
-  { id: "single_arm_row", name: "Single-Arm Row", primary: "Back", secondary: ["Arms"], type: "Compound", variants: [
+  { id: "single_arm_row", name: "Single-Arm Row", primary: "Back", pattern: "horizontal_pull", secondary: ["Arms"], type: "Compound", variants: [
     { label: "Dumbbells", equipment: ["dumbbells"] },
     { label: "Cable (Low Pulley)", equipment: ["cable_low"] },
   ]},
-  { id: "incline_row", name: "Incline Row", primary: "Back", secondary: ["Arms"], type: "Compound", variants: [
-    { label: "Barbell + Adjustable Bench", equipment: ["barbell", "adjustable_bench"] },
-    { label: "Dumbbells + Adjustable Bench", equipment: ["dumbbells", "adjustable_bench"] },
+  { id: "incline_row", name: "Incline Row", primary: "Back", pattern: "horizontal_pull", secondary: ["Arms"], type: "Compound", variants: [
+    { label: "Barbell", equipment: ["barbell", "adjustable_bench"] },
+    { label: "Dumbbells", equipment: ["dumbbells", "adjustable_bench"] },
   ]},
-  { id: "seated_row", name: "Seated Row", primary: "Back", secondary: ["Arms"], type: "Compound", variants: [
+  { id: "seated_row", name: "Seated Row", primary: "Back", pattern: "horizontal_pull", secondary: ["Arms"], type: "Compound", variants: [
     { label: "Seated Cable Row", equipment: ["seated_cable_row"] },
     { label: "Iso Lateral Row Machine", equipment: ["iso_lateral_row_machine"] },
     { label: "Cable (Low Pulley)", equipment: ["cable_low"] },
   ]},
-  { id: "tbar_row", name: "T-Bar Row", primary: "Back", secondary: ["Arms"], type: "Compound", variants: [
+  { id: "tbar_row", name: "T-Bar Row", primary: "Back", pattern: "horizontal_pull", secondary: ["Arms"], type: "Compound", variants: [
     { label: "T-Bar Row Machine", equipment: ["tbar_row_machine"] },
   ]},
-  { id: "upright_row", name: "Upright Row", primary: "Back", secondary: ["Shoulders"], type: "Compound", variants: [
+  { id: "upright_row", name: "Upright Row", primary: "Back", pattern: "isolation_traps", secondary: ["Shoulders"], type: "Compound", variants: [
     { label: "Barbell", equipment: ["barbell"] },
     { label: "Dumbbells", equipment: ["dumbbells"] },
     { label: "Resistance Bands", equipment: ["resistance_bands"] },
   ]},
-  { id: "lat_pulldown", name: "Lat Pulldown", primary: "Back", secondary: ["Arms"], type: "Compound", variants: [
+  { id: "lat_pulldown", name: "Lat Pulldown", primary: "Back", pattern: "vertical_pull", secondary: ["Arms"], type: "Compound", variants: [
     { label: "Cable Lat Pulldown", equipment: ["cable_lat_pulldown"] },
     { label: "Lat Pulldown Machine", equipment: ["lat_pulldown_machine"] },
     { label: "Single-Arm Cable", equipment: ["cable_high"], key: "cable_high_single_arm" },
   ]},
-  { id: "pull_up", name: "Pull-Up", primary: "Back", secondary: ["Arms"], type: "Compound", variants: [
-    { label: "Pull-Up Bar", equipment: ["pull_up_bar"] },
+  { id: "pull_up", name: "Pull-Up", primary: "Back", pattern: "vertical_pull", secondary: ["Arms"], type: "Compound", variants: [
+    { label: "Pull-Up Bar", equipment: ["pull_up_bar"], bodyweight: true },
     { label: "Assisted Pull-Up Machine", equipment: ["assisted_pullup_machine"] },
-    { label: "Resistance Bands", equipment: ["resistance_bands", "pull_up_bar"] },
+    { label: "Resistance Bands", equipment: ["resistance_bands", "pull_up_bar"], bodyweight: true },
   ]},
-  { id: "chin_up", name: "Chin-Up", primary: "Back", secondary: ["Arms"], type: "Compound", variants: [
-    { label: "Pull-Up Bar", equipment: ["pull_up_bar"] },
+  { id: "chin_up", name: "Chin-Up", primary: "Back", pattern: "vertical_pull", secondary: ["Arms"], type: "Compound", variants: [
+    { label: "Pull-Up Bar", equipment: ["pull_up_bar"], bodyweight: true },
     { label: "Assisted Pull-Up Machine", equipment: ["assisted_pullup_machine"] },
-    { label: "Resistance Bands", equipment: ["resistance_bands", "pull_up_bar"] },
+    { label: "Resistance Bands", equipment: ["resistance_bands", "pull_up_bar"], bodyweight: true },
   ]},
-  { id: "inverted_row", name: "Inverted Row", primary: "Back", secondary: ["Arms"], type: "Compound", variants: [
-    { label: "Bodyweight", equipment: [] },
+  { id: "inverted_row", name: "Inverted Row", primary: "Back", pattern: "horizontal_pull", secondary: ["Arms"], type: "Compound", variants: [
+    { label: "Bodyweight", equipment: [], bodyweight: true },
   ]},
-  { id: "straight_arm_pulldown", name: "Straight-Arm Pulldown", primary: "Back", secondary: [], type: "Isolation", variants: [
+  { id: "straight_arm_pulldown", name: "Straight-Arm Pulldown", primary: "Back", pattern: "isolation_lats", secondary: [], type: "Isolation", variants: [
     { label: "Cable (High Pulley)", equipment: ["cable_high"] },
   ]},
-  { id: "face_pull", name: "Face Pull", primary: "Back", secondary: ["Shoulders"], type: "Isolation", variants: [
+  { id: "face_pull", name: "Face Pull", primary: "Back", pattern: "isolation_rear_delt", secondary: ["Shoulders"], type: "Isolation", variants: [
     { label: "Cable (High Pulley)", equipment: ["cable_high"] },
   ]},
-  { id: "shrug", name: "Shrug", primary: "Back", secondary: [], type: "Isolation", variants: [
+  { id: "shrug", name: "Shrug", primary: "Back", pattern: "isolation_traps", secondary: [], type: "Isolation", variants: [
     { label: "Barbell", equipment: ["barbell"] },
     { label: "Dumbbells", equipment: ["dumbbells"] },
   ]},
-  { id: "back_extension", name: "Back Extension", primary: "Back", secondary: ["Legs"], type: "Compound", variants: [
-    { label: "Hyperextension Bench", equipment: ["hyperextension_bench"] },
+  { id: "back_extension", name: "Back Extension", primary: "Back", pattern: "hinge_accessory", secondary: ["Legs"], type: "Compound", variants: [
+    { label: "Hyperextension Bench", equipment: ["hyperextension_bench"], bodyweight: true },
     { label: "Back Extension Machine", equipment: ["back_extension_machine"] },
   ]},
 
   // CHEST (11)
-  { id: "bench_press", name: "Bench Press", primary: "Chest", secondary: ["Shoulders", "Arms"], type: "Compound", variants: [
-    { label: "Barbell + Flat Bench", equipment: ["barbell", "flat_bench"] },
-    { label: "Dumbbells + Flat Bench", equipment: ["dumbbells", "flat_bench"] },
-    { label: "Smith Machine + Flat Bench", equipment: ["smith_machine", "flat_bench"] },
+  { id: "bench_press", name: "Bench Press", primary: "Chest", pattern: "horizontal_press", secondary: ["Shoulders", "Arms"], type: "Compound", variants: [
+    { label: "Barbell", equipment: ["barbell", "flat_bench"] },
+    { label: "Dumbbells", equipment: ["dumbbells", "flat_bench"] },
+    { label: "Smith Machine", equipment: ["smith_machine", "flat_bench"] },
   ]},
-  { id: "incline_press", name: "Incline Press", primary: "Chest", secondary: ["Shoulders", "Arms"], type: "Compound", variants: [
-    { label: "Barbell + Adjustable Bench", equipment: ["barbell", "adjustable_bench"] },
-    { label: "Dumbbells + Adjustable Bench", equipment: ["dumbbells", "adjustable_bench"] },
-    { label: "Smith Machine + Adjustable Bench", equipment: ["smith_machine", "adjustable_bench"] },
+  { id: "incline_press", name: "Incline Bench Press", primary: "Chest", pattern: "horizontal_press", secondary: ["Shoulders", "Arms"], type: "Compound", variants: [
+    { label: "Barbell", equipment: ["barbell", "adjustable_bench"] },
+    { label: "Dumbbells", equipment: ["dumbbells", "adjustable_bench"] },
+    { label: "Smith Machine", equipment: ["smith_machine", "adjustable_bench"] },
   ]},
-  { id: "decline_press", name: "Decline Press", primary: "Chest", secondary: ["Arms"], type: "Compound", variants: [
-    { label: "Barbell + Adjustable Bench", equipment: ["barbell", "adjustable_bench"] },
-    { label: "Dumbbells + Adjustable Bench", equipment: ["dumbbells", "adjustable_bench"] },
+  { id: "decline_press", name: "Decline Bench Press", primary: "Chest", pattern: "horizontal_press", secondary: ["Arms"], type: "Compound", variants: [
+    { label: "Barbell", equipment: ["barbell", "adjustable_bench"] },
+    { label: "Dumbbells", equipment: ["dumbbells", "adjustable_bench"] },
   ]},
-  { id: "machine_press", name: "Machine Press", primary: "Chest", secondary: ["Shoulders", "Arms"], type: "Compound", variants: [
+  { id: "machine_press", name: "Machine Press", primary: "Chest", pattern: "horizontal_press", secondary: ["Shoulders", "Arms"], type: "Compound", variants: [
     { label: "Hammer Strength Chest Press", equipment: ["hammer_strength_chest"] },
     { label: "Hammer Strength Incline Press", equipment: ["hammer_strength_incline"] },
     { label: "Hammer Strength Decline Press", equipment: ["hammer_strength_decline"] },
   ]},
-  { id: "chest_fly", name: "Chest Fly", primary: "Chest", secondary: [], type: "Isolation", variants: [
-    { label: "Dumbbells + Flat Bench", equipment: ["dumbbells", "flat_bench"] },
+  { id: "chest_fly", name: "Chest Fly", primary: "Chest", pattern: "isolation_chest", secondary: [], type: "Isolation", variants: [
+    { label: "Dumbbells", equipment: ["dumbbells", "flat_bench"] },
     { label: "Pec Deck", equipment: ["pec_deck"] },
   ]},
-  { id: "incline_chest_fly", name: "Incline Chest Fly", primary: "Chest", secondary: [], type: "Isolation", variants: [
-    { label: "Dumbbells + Adjustable Bench", equipment: ["dumbbells", "adjustable_bench"] },
+  { id: "incline_chest_fly", name: "Incline Chest Fly", primary: "Chest", pattern: "isolation_chest", secondary: [], type: "Isolation", variants: [
+    { label: "Dumbbells", equipment: ["dumbbells", "adjustable_bench"] },
   ]},
-  { id: "cable_crossover", name: "Cable Crossover", primary: "Chest", secondary: [], type: "Isolation", variants: [
+  { id: "cable_crossover", name: "Cable Crossover", primary: "Chest", pattern: "isolation_chest", secondary: [], type: "Isolation", variants: [
     { label: "Cable Crossover", equipment: ["cable_crossover"] },
   ]},
-  { id: "push_up", name: "Push-Up", primary: "Chest", secondary: ["Arms", "Core"], type: "Compound", variants: [
-    { label: "Standard", equipment: [], key: "bodyweight_standard" },
-    { label: "Diamond", equipment: [], key: "bodyweight_diamond" },
+  { id: "push_up", name: "Push-Up", primary: "Chest", pattern: "horizontal_press", secondary: ["Arms", "Core"], type: "Compound", variants: [
+    { label: "Standard", equipment: [], key: "bodyweight_standard", bodyweight: true },
+    { label: "Diamond", equipment: [], key: "bodyweight_diamond", bodyweight: true },
   ]},
-  { id: "dip", name: "Dip", primary: "Chest", secondary: ["Arms"], type: "Compound", variants: [
-    { label: "Dip Station", equipment: ["dip_station"] },
+  { id: "dip", name: "Dip", primary: "Chest", pattern: "horizontal_press", secondary: ["Arms"], type: "Compound", variants: [
+    { label: "Dip Station", equipment: ["dip_station"], bodyweight: true },
     { label: "Assisted Dip Machine", equipment: ["assisted_pullup_machine"] },
   ]},
-  { id: "svend_press", name: "Svend Press", primary: "Chest", secondary: [], type: "Isolation", variants: [
+  { id: "svend_press", name: "Svend Press", primary: "Chest", pattern: "isolation_chest", secondary: [], type: "Isolation", variants: [
     { label: "Weight Plates", equipment: ["weight_plates"] },
   ]},
-  { id: "floor_press", name: "Floor Press", primary: "Chest", secondary: ["Arms"], type: "Compound", variants: [
+  { id: "floor_press", name: "Floor Press", primary: "Chest", pattern: "horizontal_press", secondary: ["Arms"], type: "Compound", variants: [
     { label: "Barbell", equipment: ["barbell"] },
     { label: "Dumbbells", equipment: ["dumbbells"] },
   ]},
-  { id: "pullover", name: "Pullover", primary: "Chest", secondary: ["Back"], type: "Isolation", variants: [
-    { label: "Dumbbells + Flat Bench", equipment: ["dumbbells", "flat_bench"] },
+  { id: "pullover", name: "Pullover", primary: "Chest", pattern: "isolation_chest", secondary: ["Back"], type: "Isolation", variants: [
+    { label: "Dumbbells", equipment: ["dumbbells", "flat_bench"] },
     { label: "Cable (High Pulley)", equipment: ["cable_high"] },
   ]},
 
   // SHOULDERS (9)
-  { id: "overhead_press", name: "Overhead Press", primary: "Shoulders", secondary: ["Arms", "Core"], type: "Compound", variants: [
+  { id: "overhead_press", name: "Overhead Press", primary: "Shoulders", pattern: "vertical_press", secondary: ["Arms", "Core"], type: "Compound", variants: [
     { label: "Barbell", equipment: ["barbell"] },
     { label: "Dumbbells", equipment: ["dumbbells"] },
     { label: "Smith Machine", equipment: ["smith_machine"] },
   ]},
-  { id: "arnold_press", name: "Arnold Press", primary: "Shoulders", secondary: ["Arms"], type: "Compound", variants: [
+  { id: "arnold_press", name: "Arnold Press", primary: "Shoulders", pattern: "vertical_press", secondary: ["Arms"], type: "Compound", variants: [
     { label: "Dumbbells", equipment: ["dumbbells"] },
   ]},
-  { id: "machine_shoulder_press", name: "Machine Shoulder Press", primary: "Shoulders", secondary: ["Arms"], type: "Compound", variants: [
+  { id: "machine_shoulder_press", name: "Machine Shoulder Press", primary: "Shoulders", pattern: "vertical_press", secondary: ["Arms"], type: "Compound", variants: [
     { label: "Hammer Strength Shoulder Press", equipment: ["hammer_strength_shoulder"] },
   ]},
-  { id: "lateral_raise", name: "Lateral Raise", primary: "Shoulders", secondary: [], type: "Isolation", variants: [
+  { id: "lateral_raise", name: "Lateral Raise", primary: "Shoulders", pattern: "isolation_side_delt", secondary: [], type: "Isolation", variants: [
     { label: "Dumbbells", equipment: ["dumbbells"] },
     { label: "Cable (Low Pulley)", equipment: ["cable_low"] },
     { label: "Lateral Raise Machine", equipment: ["lateral_raise_machine"] },
     { label: "Resistance Bands", equipment: ["resistance_bands"] },
   ]},
-  { id: "front_raise", name: "Front Raise", primary: "Shoulders", secondary: [], type: "Isolation", variants: [
+  { id: "front_raise", name: "Front Raise", primary: "Shoulders", pattern: "isolation_front_delt", secondary: [], type: "Isolation", variants: [
     { label: "Dumbbells", equipment: ["dumbbells"] },
     { label: "Barbell", equipment: ["barbell"] },
     { label: "Cable (Low Pulley)", equipment: ["cable_low"] },
   ]},
-  { id: "rear_delt_fly", name: "Rear Delt Fly", primary: "Shoulders", secondary: [], type: "Isolation", variants: [
+  { id: "rear_delt_fly", name: "Rear Delt Fly", primary: "Shoulders", pattern: "isolation_rear_delt", secondary: [], type: "Isolation", variants: [
     { label: "Dumbbells", equipment: ["dumbbells"] },
     { label: "Cable Crossover", equipment: ["cable_crossover"] },
     { label: "Pec Deck (Reverse)", equipment: ["pec_deck"] },
   ]},
-  { id: "landmine_press", name: "Landmine Press", primary: "Shoulders", secondary: ["Arms", "Core"], type: "Compound", variants: [
+  { id: "landmine_press", name: "Landmine Press", primary: "Shoulders", pattern: "vertical_press", secondary: ["Arms", "Core"], type: "Compound", variants: [
     { label: "Barbell", equipment: ["barbell"] },
   ]},
-  { id: "handstand_push_up", name: "Handstand Push-Up", primary: "Shoulders", secondary: ["Arms", "Core"], type: "Compound", variants: [
-    { label: "Bodyweight", equipment: [] },
+  { id: "handstand_push_up", name: "Handstand Push-Up", primary: "Shoulders", pattern: "vertical_press", secondary: ["Arms", "Core"], type: "Compound", variants: [
+    { label: "Bodyweight", equipment: [], bodyweight: true },
   ]},
 
   // ARMS (13)
-  { id: "bicep_curl", name: "Bicep Curl", primary: "Arms", secondary: [], type: "Isolation", variants: [
+  { id: "bicep_curl", name: "Bicep Curl", primary: "Arms", pattern: "isolation_biceps", secondary: [], type: "Isolation", variants: [
     { label: "Barbell", equipment: ["barbell"] },
     { label: "Dumbbells", equipment: ["dumbbells"] },
     { label: "Cable (Low Pulley)", equipment: ["cable_low"] },
     { label: "EZ Curl Bar", equipment: ["ez_curl_bar"] },
     { label: "Bicep Curl Machine", equipment: ["bicep_curl_machine"] },
   ]},
-  { id: "hammer_curl", name: "Hammer Curl", primary: "Arms", secondary: [], type: "Isolation", variants: [
+  { id: "hammer_curl", name: "Hammer Curl", primary: "Arms", pattern: "isolation_biceps", secondary: [], type: "Isolation", variants: [
     { label: "Dumbbells", equipment: ["dumbbells"] },
   ]},
-  { id: "preacher_curl", name: "Preacher Curl", primary: "Arms", secondary: [], type: "Isolation", variants: [
-    { label: "EZ Curl Bar + Preacher Bench", equipment: ["ez_curl_bar", "preacher_bench"] },
-    { label: "Dumbbells + Preacher Bench", equipment: ["dumbbells", "preacher_bench"] },
+  { id: "preacher_curl", name: "Preacher Curl", primary: "Arms", pattern: "isolation_biceps", secondary: [], type: "Isolation", variants: [
+    { label: "EZ Curl Bar", equipment: ["ez_curl_bar", "preacher_bench"] },
+    { label: "Dumbbells", equipment: ["dumbbells", "preacher_bench"] },
   ]},
-  { id: "concentration_curl", name: "Concentration Curl", primary: "Arms", secondary: [], type: "Isolation", variants: [
+  { id: "concentration_curl", name: "Concentration Curl", primary: "Arms", pattern: "isolation_biceps", secondary: [], type: "Isolation", variants: [
     { label: "Dumbbells", equipment: ["dumbbells"] },
   ]},
-  { id: "incline_curl", name: "Incline Curl", primary: "Arms", secondary: [], type: "Isolation", variants: [
-    { label: "Dumbbells + Adjustable Bench", equipment: ["dumbbells", "adjustable_bench"] },
+  { id: "incline_curl", name: "Incline Curl", primary: "Arms", pattern: "isolation_biceps", secondary: [], type: "Isolation", variants: [
+    { label: "Dumbbells", equipment: ["dumbbells", "adjustable_bench"] },
   ]},
-  { id: "tricep_pushdown", name: "Tricep Pushdown", primary: "Arms", secondary: [], type: "Isolation", variants: [
+  { id: "tricep_pushdown", name: "Tricep Pushdown", primary: "Arms", pattern: "isolation_triceps", secondary: [], type: "Isolation", variants: [
     { label: "Cable (High Pulley)", equipment: ["cable_high"] },
     { label: "Tricep Extension Machine", equipment: ["tricep_extension_machine"] },
     { label: "Resistance Bands", equipment: ["resistance_bands"] },
   ]},
-  { id: "overhead_tricep_extension", name: "Overhead Tricep Extension", primary: "Arms", secondary: [], type: "Isolation", variants: [
+  { id: "overhead_tricep_extension", name: "Overhead Tricep Extension", primary: "Arms", pattern: "isolation_triceps", secondary: [], type: "Isolation", variants: [
     { label: "Dumbbells", equipment: ["dumbbells"] },
     { label: "EZ Curl Bar", equipment: ["ez_curl_bar"] },
     { label: "Cable (High Pulley)", equipment: ["cable_high"] },
     { label: "Tricep Extension Machine", equipment: ["tricep_extension_machine"] },
   ]},
-  { id: "skull_crusher", name: "Skull Crusher", primary: "Arms", secondary: [], type: "Isolation", variants: [
-    { label: "EZ Curl Bar + Flat Bench", equipment: ["ez_curl_bar", "flat_bench"] },
-    { label: "Dumbbells + Flat Bench", equipment: ["dumbbells", "flat_bench"] },
+  { id: "skull_crusher", name: "Skull Crusher", primary: "Arms", pattern: "isolation_triceps", secondary: [], type: "Isolation", variants: [
+    { label: "EZ Curl Bar", equipment: ["ez_curl_bar", "flat_bench"] },
+    { label: "Dumbbells", equipment: ["dumbbells", "flat_bench"] },
   ]},
-  { id: "close_grip_bench", name: "Close-Grip Bench Press", primary: "Arms", secondary: ["Chest"], type: "Compound", variants: [
-    { label: "Barbell + Flat Bench", equipment: ["barbell", "flat_bench"] },
-    { label: "Smith Machine + Flat Bench", equipment: ["smith_machine", "flat_bench"] },
+  { id: "close_grip_bench", name: "Close-Grip Bench Press", primary: "Arms", pattern: "horizontal_press", secondary: ["Chest"], type: "Compound", variants: [
+    { label: "Barbell", equipment: ["barbell", "flat_bench"] },
+    { label: "Smith Machine", equipment: ["smith_machine", "flat_bench"] },
   ]},
-  { id: "tricep_kickback", name: "Tricep Kickback", primary: "Arms", secondary: [], type: "Isolation", variants: [
+  { id: "tricep_kickback", name: "Tricep Kickback", primary: "Arms", pattern: "isolation_triceps", secondary: [], type: "Isolation", variants: [
     { label: "Dumbbells", equipment: ["dumbbells"] },
     { label: "Cable (Low Pulley)", equipment: ["cable_low"] },
     { label: "Resistance Bands", equipment: ["resistance_bands"] },
   ]},
-  { id: "wrist_curl", name: "Wrist Curl", primary: "Arms", secondary: [], type: "Isolation", variants: [
+  { id: "wrist_curl", name: "Wrist Curl", primary: "Arms", pattern: "isolation_forearms", secondary: [], type: "Isolation", variants: [
     { label: "Barbell", equipment: ["barbell"] },
     { label: "Dumbbells", equipment: ["dumbbells"] },
   ]},
-  { id: "bench_dip", name: "Bench Dip", primary: "Arms", secondary: ["Chest"], type: "Compound", variants: [
-    { label: "Flat Bench", equipment: ["flat_bench"] },
+  { id: "bench_dip", name: "Bench Dip", primary: "Arms", pattern: "isolation_triceps", secondary: ["Chest"], type: "Compound", variants: [
+    { label: "Flat Bench", equipment: ["flat_bench"], bodyweight: true },
   ]},
 
   // CORE (19)
-  { id: "plank", name: "Plank", primary: "Core", secondary: [], type: "Compound", variants: [{ label: "Bodyweight", equipment: [] }]},
-  { id: "side_plank", name: "Side Plank", primary: "Core", secondary: [], type: "Compound", variants: [{ label: "Bodyweight", equipment: [] }]},
-  { id: "reverse_plank", name: "Reverse Plank", primary: "Core", secondary: [], type: "Compound", variants: [{ label: "Bodyweight", equipment: [] }]},
-  { id: "dead_bug", name: "Dead Bug", primary: "Core", secondary: [], type: "Compound", variants: [{ label: "Bodyweight", equipment: [] }]},
-  { id: "pallof_press", name: "Pallof Press", primary: "Core", secondary: [], type: "Compound", variants: [
+  { id: "plank", name: "Plank", primary: "Core", pattern: "isolation_abs", secondary: [], type: "Compound", variants: [{ label: "Bodyweight", equipment: [], bodyweight: true }]},
+  { id: "side_plank", name: "Side Plank", primary: "Core", pattern: "isolation_obliques", secondary: [], type: "Compound", variants: [{ label: "Bodyweight", equipment: [], bodyweight: true }]},
+  { id: "reverse_plank", name: "Reverse Plank", primary: "Core", pattern: "isolation_abs", secondary: [], type: "Compound", variants: [{ label: "Bodyweight", equipment: [], bodyweight: true }]},
+  { id: "dead_bug", name: "Dead Bug", primary: "Core", pattern: "isolation_abs", secondary: [], type: "Compound", variants: [{ label: "Bodyweight", equipment: [], bodyweight: true }]},
+  { id: "pallof_press", name: "Pallof Press", primary: "Core", pattern: "isolation_obliques", secondary: [], type: "Compound", variants: [
     { label: "Cable (Low Pulley)", equipment: ["cable_low"] },
     { label: "Resistance Bands", equipment: ["resistance_bands"] },
   ]},
-  { id: "ab_wheel_rollout", name: "Ab Wheel Rollout", primary: "Core", secondary: [], type: "Compound", variants: [{ label: "Ab Wheel", equipment: ["ab_wheel"] }]},
-  { id: "cable_twist", name: "Cable Twist", primary: "Core", secondary: [], type: "Compound", variants: [
+  { id: "ab_wheel_rollout", name: "Ab Wheel Rollout", primary: "Core", pattern: "isolation_abs", secondary: [], type: "Compound", variants: [{ label: "Ab Wheel", equipment: ["ab_wheel"], bodyweight: true }]},
+  { id: "cable_twist", name: "Cable Twist", primary: "Core", pattern: "isolation_obliques", secondary: [], type: "Compound", variants: [
     { label: "Cable (High Pulley)", equipment: ["cable_high"] },
     { label: "Torso Rotation Machine", equipment: ["torso_rotation_machine"] },
   ]},
-  { id: "mountain_climber", name: "Mountain Climber", primary: "Core", secondary: [], type: "Compound", variants: [{ label: "Bodyweight", equipment: [] }]},
-  { id: "crunch", name: "Crunch", primary: "Core", secondary: [], type: "Isolation", variants: [
-    { label: "Bodyweight", equipment: [] },
+  { id: "mountain_climber", name: "Mountain Climber", primary: "Core", pattern: "isolation_abs", secondary: [], type: "Compound", variants: [{ label: "Bodyweight", equipment: [], bodyweight: true }]},
+  { id: "crunch", name: "Crunch", primary: "Core", pattern: "isolation_abs", secondary: [], type: "Isolation", variants: [
+    { label: "Bodyweight", equipment: [], bodyweight: true },
     { label: "Ab Crunch Machine", equipment: ["ab_crunch_machine"] },
   ]},
-  { id: "cable_crunch", name: "Cable Crunch", primary: "Core", secondary: [], type: "Isolation", variants: [
+  { id: "cable_crunch", name: "Cable Crunch", primary: "Core", pattern: "isolation_abs", secondary: [], type: "Isolation", variants: [
     { label: "Cable (High Pulley)", equipment: ["cable_high"] },
   ]},
-  { id: "bicycle_crunch", name: "Bicycle Crunch", primary: "Core", secondary: [], type: "Isolation", variants: [{ label: "Bodyweight", equipment: [] }]},
-  { id: "oblique_crunch", name: "Oblique Crunch", primary: "Core", secondary: [], type: "Isolation", variants: [{ label: "Bodyweight", equipment: [] }]},
-  { id: "decline_crunch", name: "Decline Crunch", primary: "Core", secondary: [], type: "Isolation", variants: [
-    { label: "Adjustable Bench", equipment: ["adjustable_bench"] },
+  { id: "bicycle_crunch", name: "Bicycle Crunch", primary: "Core", pattern: "isolation_obliques", secondary: [], type: "Isolation", variants: [{ label: "Bodyweight", equipment: [], bodyweight: true }]},
+  { id: "oblique_crunch", name: "Oblique Crunch", primary: "Core", pattern: "isolation_obliques", secondary: [], type: "Isolation", variants: [{ label: "Bodyweight", equipment: [], bodyweight: true }]},
+  { id: "decline_crunch", name: "Decline Crunch", primary: "Core", pattern: "isolation_abs", secondary: [], type: "Isolation", variants: [
+    { label: "Adjustable Bench", equipment: ["adjustable_bench"], bodyweight: true },
   ]},
-  { id: "hanging_leg_raise", name: "Hanging Leg Raise", primary: "Core", secondary: [], type: "Isolation", variants: [
-    { label: "Pull-Up Bar", equipment: ["pull_up_bar"] },
+  { id: "hanging_leg_raise", name: "Hanging Leg Raise", primary: "Core", pattern: "isolation_abs", secondary: [], type: "Isolation", variants: [
+    { label: "Pull-Up Bar", equipment: ["pull_up_bar"], bodyweight: true },
   ]},
-  { id: "leg_raise", name: "Leg Raise", primary: "Core", secondary: [], type: "Isolation", variants: [
-    { label: "Bodyweight", equipment: [] },
+  { id: "leg_raise", name: "Leg Raise", primary: "Core", pattern: "isolation_abs", secondary: [], type: "Isolation", variants: [
+    { label: "Bodyweight", equipment: [], bodyweight: true },
   ]},
-  { id: "russian_twist", name: "Russian Twist", primary: "Core", secondary: [], type: "Isolation", variants: [
-    { label: "Bodyweight", equipment: [] },
+  { id: "russian_twist", name: "Russian Twist", primary: "Core", pattern: "isolation_obliques", secondary: [], type: "Isolation", variants: [
+    { label: "Bodyweight", equipment: [], bodyweight: true },
     { label: "Medicine Ball", equipment: ["medicine_ball"] },
     { label: "Weight Plates", equipment: ["weight_plates"] },
   ]},
-  { id: "side_bend", name: "Side Bend", primary: "Core", secondary: [], type: "Isolation", variants: [
+  { id: "side_bend", name: "Side Bend", primary: "Core", pattern: "isolation_obliques", secondary: [], type: "Isolation", variants: [
     { label: "Dumbbells", equipment: ["dumbbells"] },
     { label: "Cable (Low Pulley)", equipment: ["cable_low"] },
     { label: "Resistance Bands", equipment: ["resistance_bands"] },
   ]},
-  { id: "superman", name: "Superman", primary: "Core", secondary: [], type: "Isolation", variants: [{ label: "Bodyweight", equipment: [] }]},
-  { id: "v_up", name: "V-Up", primary: "Core", secondary: [], type: "Isolation", variants: [{ label: "Bodyweight", equipment: [] }]},
+  { id: "superman", name: "Superman", primary: "Core", pattern: "isolation_lower_back", secondary: [], type: "Isolation", variants: [{ label: "Bodyweight", equipment: [], bodyweight: true }]},
+  { id: "v_up", name: "V-Up", primary: "Core", pattern: "isolation_abs", secondary: [], type: "Isolation", variants: [{ label: "Bodyweight", equipment: [], bodyweight: true }]},
 
   // CARDIO (7)
-  { id: "treadmill", name: "Treadmill", primary: "Cardio", secondary: ["Legs"], type: "Compound", variants: [{ label: "Treadmill", equipment: ["treadmill"] }]},
-  { id: "stationary_bike", name: "Stationary Bike", primary: "Cardio", secondary: ["Legs"], type: "Compound", variants: [{ label: "Stationary Bike", equipment: ["stationary_bike"] }]},
-  { id: "rowing_machine", name: "Rowing Machine", primary: "Cardio", secondary: ["Back", "Arms"], type: "Compound", variants: [{ label: "Rowing Machine", equipment: ["rowing_machine"] }]},
-  { id: "elliptical", name: "Elliptical", primary: "Cardio", secondary: ["Legs"], type: "Compound", variants: [{ label: "Elliptical", equipment: ["elliptical"] }]},
-  { id: "stair_climber", name: "Stair Climber", primary: "Cardio", secondary: ["Legs"], type: "Compound", variants: [{ label: "Stair Climber", equipment: ["stair_climber"] }]},
-  { id: "jump_rope", name: "Jump Rope", primary: "Cardio", secondary: [], type: "Compound", variants: [{ label: "Jump Rope", equipment: ["jump_rope"] }]},
-  { id: "battle_ropes", name: "Battle Ropes", primary: "Cardio", secondary: ["Arms", "Shoulders"], type: "Compound", variants: [{ label: "Battle Ropes", equipment: ["battle_ropes"] }]},
+  { id: "treadmill", name: "Treadmill", primary: "Cardio", pattern: "cardio_steady", secondary: ["Legs"], type: "Compound", variants: [{ label: "Treadmill", equipment: ["treadmill"] }]},
+  { id: "stationary_bike", name: "Stationary Bike", primary: "Cardio", pattern: "cardio_steady", secondary: ["Legs"], type: "Compound", variants: [{ label: "Stationary Bike", equipment: ["stationary_bike"] }]},
+  { id: "rowing_machine", name: "Rowing Machine", primary: "Cardio", pattern: "cardio_steady", secondary: ["Back", "Arms"], type: "Compound", variants: [{ label: "Rowing Machine", equipment: ["rowing_machine"] }]},
+  { id: "elliptical", name: "Elliptical", primary: "Cardio", pattern: "cardio_steady", secondary: ["Legs"], type: "Compound", variants: [{ label: "Elliptical", equipment: ["elliptical"] }]},
+  { id: "stair_climber", name: "Stair Climber", primary: "Cardio", pattern: "cardio_steady", secondary: ["Legs"], type: "Compound", variants: [{ label: "Stair Climber", equipment: ["stair_climber"] }]},
+  { id: "jump_rope", name: "Jump Rope", primary: "Cardio", pattern: "conditioning", secondary: [], type: "Compound", variants: [{ label: "Jump Rope", equipment: ["jump_rope"] }]},
+  { id: "battle_ropes", name: "Battle Ropes", primary: "Cardio", pattern: "conditioning", secondary: ["Arms", "Shoulders"], type: "Compound", variants: [{ label: "Battle Ropes", equipment: ["battle_ropes"] }]},
 
   // FULL BODY (18)
-  { id: "power_clean", name: "Power Clean", primary: "Full Body", secondary: ["Legs", "Back", "Shoulders"], type: "Olympic", variants: [{ label: "Barbell", equipment: ["barbell"] }]},
-  { id: "hang_clean", name: "Hang Clean", primary: "Full Body", secondary: ["Legs", "Back", "Shoulders"], type: "Olympic", variants: [
+  { id: "power_clean", name: "Power Clean", primary: "Full Body", pattern: "olympic", secondary: ["Legs", "Back", "Shoulders"], type: "Olympic", variants: [{ label: "Barbell", equipment: ["barbell"] }]},
+  { id: "hang_clean", name: "Hang Clean", primary: "Full Body", pattern: "olympic", secondary: ["Legs", "Back", "Shoulders"], type: "Olympic", variants: [
     { label: "Barbell", equipment: ["barbell"] },
     { label: "Dumbbells", equipment: ["dumbbells"] },
   ]},
-  { id: "clean_and_press", name: "Clean and Press", primary: "Full Body", secondary: ["Legs", "Back", "Shoulders", "Arms"], type: "Olympic", variants: [
+  { id: "clean_and_press", name: "Clean and Press", primary: "Full Body", pattern: "olympic", secondary: ["Legs", "Back", "Shoulders", "Arms"], type: "Olympic", variants: [
     { label: "Barbell", equipment: ["barbell"] },
     { label: "Dumbbells", equipment: ["dumbbells"] },
   ]},
-  { id: "clean_and_jerk", name: "Clean and Jerk", primary: "Full Body", secondary: ["Legs", "Back", "Shoulders", "Arms"], type: "Olympic", variants: [{ label: "Barbell", equipment: ["barbell"] }]},
-  { id: "snatch", name: "Snatch", primary: "Full Body", secondary: ["Legs", "Back", "Shoulders"], type: "Olympic", variants: [{ label: "Barbell", equipment: ["barbell"] }]},
-  { id: "power_snatch", name: "Power Snatch", primary: "Full Body", secondary: ["Legs", "Back", "Shoulders"], type: "Olympic", variants: [{ label: "Barbell", equipment: ["barbell"] }]},
-  { id: "hang_snatch", name: "Hang Snatch", primary: "Full Body", secondary: ["Legs", "Back", "Shoulders"], type: "Olympic", variants: [{ label: "Barbell", equipment: ["barbell"] }]},
-  { id: "deadlift_high_pull", name: "Deadlift High Pull", primary: "Full Body", secondary: ["Back", "Shoulders"], type: "Olympic", variants: [
-    { label: "Barbell", equipment: ["barbell"] },
-    { label: "Dumbbells", equipment: ["dumbbells"] },
-    { label: "Kettlebells", equipment: ["kettlebell"] },
-  ]},
-  { id: "muscle_up", name: "Muscle-Up", primary: "Full Body", secondary: ["Back", "Chest", "Arms"], type: "Olympic", variants: [
-    { label: "Pull-Up Bar", equipment: ["pull_up_bar"] },
-    { label: "Gymnastics Rings", equipment: ["gymnastics_rings"] },
-  ]},
-  { id: "kettlebell_swing", name: "Kettlebell Swing", primary: "Full Body", secondary: ["Legs", "Back"], type: "Compound", variants: [{ label: "Kettlebells", equipment: ["kettlebell"] }]},
-  { id: "turkish_get_up", name: "Turkish Get-Up", primary: "Full Body", secondary: ["Shoulders", "Core"], type: "Compound", variants: [
-    { label: "Dumbbells", equipment: ["dumbbells"] },
-    { label: "Kettlebells", equipment: ["kettlebell"] },
-  ]},
-  { id: "thruster", name: "Thruster", primary: "Full Body", secondary: ["Legs", "Shoulders"], type: "Compound", variants: [
+  { id: "clean_and_jerk", name: "Clean and Jerk", primary: "Full Body", pattern: "olympic", secondary: ["Legs", "Back", "Shoulders", "Arms"], type: "Olympic", variants: [{ label: "Barbell", equipment: ["barbell"] }]},
+  { id: "snatch", name: "Snatch", primary: "Full Body", pattern: "olympic", secondary: ["Legs", "Back", "Shoulders"], type: "Olympic", variants: [{ label: "Barbell", equipment: ["barbell"] }]},
+  { id: "power_snatch", name: "Power Snatch", primary: "Full Body", pattern: "olympic", secondary: ["Legs", "Back", "Shoulders"], type: "Olympic", variants: [{ label: "Barbell", equipment: ["barbell"] }]},
+  { id: "hang_snatch", name: "Hang Snatch", primary: "Full Body", pattern: "olympic", secondary: ["Legs", "Back", "Shoulders"], type: "Olympic", variants: [{ label: "Barbell", equipment: ["barbell"] }]},
+  { id: "deadlift_high_pull", name: "Deadlift High Pull", primary: "Full Body", pattern: "olympic", secondary: ["Back", "Shoulders"], type: "Olympic", variants: [
     { label: "Barbell", equipment: ["barbell"] },
     { label: "Dumbbells", equipment: ["dumbbells"] },
     { label: "Kettlebells", equipment: ["kettlebell"] },
   ]},
-  { id: "farmer_carry", name: "Farmer Carry", primary: "Full Body", secondary: ["Back", "Core"], type: "Compound", variants: [
+  { id: "muscle_up", name: "Muscle-Up", primary: "Full Body", pattern: "olympic", secondary: ["Back", "Chest", "Arms"], type: "Olympic", variants: [
+    { label: "Pull-Up Bar", equipment: ["pull_up_bar"], bodyweight: true },
+    { label: "Gymnastics Rings", equipment: ["gymnastics_rings"], bodyweight: true },
+  ]},
+  { id: "kettlebell_swing", name: "Kettlebell Swing", primary: "Full Body", pattern: "conditioning", secondary: ["Legs", "Back"], type: "Compound", variants: [{ label: "Kettlebells", equipment: ["kettlebell"] }]},
+  { id: "turkish_get_up", name: "Turkish Get-Up", primary: "Full Body", pattern: "conditioning", secondary: ["Shoulders", "Core"], type: "Compound", variants: [
+    { label: "Dumbbells", equipment: ["dumbbells"] },
+    { label: "Kettlebells", equipment: ["kettlebell"] },
+  ]},
+  { id: "thruster", name: "Thruster", primary: "Full Body", pattern: "conditioning", secondary: ["Legs", "Shoulders"], type: "Compound", variants: [
+    { label: "Barbell", equipment: ["barbell"] },
+    { label: "Dumbbells", equipment: ["dumbbells"] },
+    { label: "Kettlebells", equipment: ["kettlebell"] },
+  ]},
+  { id: "farmer_carry", name: "Farmer Carry", primary: "Full Body", pattern: "carry", secondary: ["Back", "Core"], type: "Compound", variants: [
     { label: "Dumbbells", equipment: ["dumbbells"] },
     { label: "Kettlebells", equipment: ["kettlebell"] },
     { label: "Weight Plates", equipment: ["weight_plates"] },
   ]},
-  { id: "sled_push", name: "Sled Push", primary: "Full Body", secondary: ["Legs", "Core"], type: "Compound", variants: [{ label: "Sled", equipment: ["sled"] }]},
-  { id: "sled_pull", name: "Sled Pull", primary: "Full Body", secondary: ["Legs", "Back"], type: "Compound", variants: [{ label: "Sled", equipment: ["sled"] }]},
-  { id: "bear_crawl", name: "Bear Crawl", primary: "Full Body", secondary: ["Core", "Shoulders"], type: "Compound", variants: [{ label: "Bodyweight", equipment: [] }]},
-  { id: "burpee", name: "Burpee", primary: "Full Body", secondary: ["Core", "Legs"], type: "Compound", variants: [{ label: "Bodyweight", equipment: [] }]},
-  { id: "ball_slam", name: "Ball Slam", primary: "Full Body", secondary: ["Core", "Shoulders"], type: "Compound", variants: [{ label: "Medicine Ball", equipment: ["medicine_ball"] }]},
+  { id: "sled_push", name: "Sled Push", primary: "Full Body", pattern: "conditioning", secondary: ["Legs", "Core"], type: "Compound", variants: [{ label: "Sled", equipment: ["sled"] }]},
+  { id: "sled_pull", name: "Sled Pull", primary: "Full Body", pattern: "conditioning", secondary: ["Legs", "Back"], type: "Compound", variants: [{ label: "Sled", equipment: ["sled"] }]},
+  { id: "bear_crawl", name: "Bear Crawl", primary: "Full Body", pattern: "conditioning", secondary: ["Core", "Shoulders"], type: "Compound", variants: [{ label: "Bodyweight", equipment: [], bodyweight: true }]},
+  { id: "burpee", name: "Burpee", primary: "Full Body", pattern: "conditioning", secondary: ["Core", "Legs"], type: "Compound", variants: [{ label: "Bodyweight", equipment: [], bodyweight: true }]},
+  { id: "ball_slam", name: "Ball Slam", primary: "Full Body", pattern: "conditioning", secondary: ["Core", "Shoulders"], type: "Compound", variants: [{ label: "Medicine Ball", equipment: ["medicine_ball"] }]},
 ];
 
 /* Variant key helper: deterministic string derived from a variant's equipment
@@ -716,11 +724,45 @@ function exerciseHasAnyAvailableVariant(ex, userEquip) {
   return ex.variants.some((v) => variantAvailable(v, userEquip));
 }
 
+/* For the AlternativesSheet (D-019) row dim state. Returns a short label
+   like "Needs flat bench" or "Needs barbell + adjustable bench" describing
+   what the user is missing. Strategy: pick the variant with the FEWEST
+   missing equipment ids (the cheapest path to "I can do this today"), then
+   join their pretty labels with " + ". Returns null when the user has at
+   least one variant fully covered (i.e. nothing is missing — not dimmed).
+   Falls back to "Needs equipment" when the joined label would exceed ~28
+   chars, since the row is one-line and ellipsis on this string reads worse
+   than a generic message. */
+function getMissingEquipmentLabel(exercise, userEquip) {
+  if (exerciseHasAnyAvailableVariant(exercise, userEquip)) return null;
+  // Cheapest-missing variant
+  let best = null;
+  for (const v of exercise.variants) {
+    const missing = v.equipment.filter((id) => !userEquip.has(id));
+    if (missing.length === 0) return null; // safety; covered by the early return above
+    if (best === null || missing.length < best.length) best = missing;
+  }
+  if (!best) return "Needs equipment";
+  const labels = best.map((id) => (EQUIPMENT_LABEL_BY_ID[id] || id).toLowerCase());
+  const joined = `Needs ${labels.join(" + ")}`;
+  return joined.length > 28 ? "Needs equipment" : joined;
+}
+
+/* A variant is "bodyweight" if its data carries the explicit bodyweight: true
+   flag. Used by the active logger to decide whether the lbs field is required
+   for completing a set. Bodyweight variants still render the lbs tap-target
+   so the user can optionally log added weight (belt, plate held, etc.); the
+   flag only affects checkbox gating. Coalesce to false defensively — older
+   persisted variant snapshots may not carry the field. */
+function isBodyweightVariant(variant) {
+  return !!(variant && variant.bodyweight);
+}
+
 /* Multi-field search matcher. Matches if the query is a substring of any of:
    - exercise name ("Bench Press")
    - primary muscle group ("Chest")
    - secondary muscles ("Arms", "Shoulders")
-   - variant labels ("Barbell + Flat Bench", "Dumbbells", "Smith Machine")
+   - variant labels ("Barbell", "Dumbbells", "Smith Machine")
 
    This lets users search by equipment ("dumbbell"), muscle ("chest"), or
    name ("bench") and get sensible results instead of only name matching.
@@ -767,25 +809,40 @@ const SEARCH_ALIASES = {
   "pushups": "push-up",
   "chinup": "chin-up",
   "chinups": "chin-up",
+  // Bench press short forms — exercises were renamed to "Incline Bench Press"
+  // and "Decline Bench Press", but plenty of users will still type the
+  // shorter "Incline Press" / "Decline Press". Keys are normalized form
+  // (no spaces/hyphens) to match the alias-lookup key.
+  "inclinepress": "incline bench press",
+  "declinepress": "decline bench press",
 };
 
+// Normalize for search matching: lowercase, strip hyphens and whitespace.
+// Lets "Pull Up" match "Pull-Up", "push-up" match "push up", "chinup" match
+// "Chin-Up", etc. Applied symmetrically to query and haystack.
+function normalizeForSearch(s) {
+  return s.toLowerCase().replace(/[-\s]+/g, "");
+}
+
 function exerciseMatchesSearch(ex, query) {
-  const q = query.trim().toLowerCase();
+  const q = normalizeForSearch(query);
   if (!q) return true;
   // Direct match against name, primary, secondary, variants.
-  if (ex.name.toLowerCase().includes(q)) return true;
-  if (ex.primary.toLowerCase().includes(q)) return true;
-  if (ex.secondary && ex.secondary.some((m) => m.toLowerCase().includes(q))) return true;
-  if (ex.variants.some((v) => v.label.toLowerCase().includes(q))) return true;
+  if (normalizeForSearch(ex.name).includes(q)) return true;
+  if (normalizeForSearch(ex.primary).includes(q)) return true;
+  if (ex.secondary && ex.secondary.some((m) => normalizeForSearch(m).includes(q))) return true;
+  if (ex.variants.some((v) => normalizeForSearch(v.label).includes(q))) return true;
   // Alias match — if the query is a known abbreviation, also try its
   // expansion against the same fields. Avoids false negatives like "rdl"
-  // returning zero results.
+  // returning zero results. Lookup key is normalized so "Incline Press",
+  // "incline press", "incline-press", and "InclinePress" all resolve.
   const alias = SEARCH_ALIASES[q];
   if (alias) {
-    if (ex.name.toLowerCase().includes(alias)) return true;
-    if (ex.primary.toLowerCase().includes(alias)) return true;
-    if (ex.secondary && ex.secondary.some((m) => m.toLowerCase().includes(alias))) return true;
-    if (ex.variants.some((v) => v.label.toLowerCase().includes(alias))) return true;
+    const a = normalizeForSearch(alias);
+    if (normalizeForSearch(ex.name).includes(a)) return true;
+    if (normalizeForSearch(ex.primary).includes(a)) return true;
+    if (ex.secondary && ex.secondary.some((m) => normalizeForSearch(m).includes(a))) return true;
+    if (ex.variants.some((v) => normalizeForSearch(v.label).includes(a))) return true;
   }
   return false;
 }
@@ -882,6 +939,58 @@ function pickDefaultVariant(exercise, userEquipment, workoutHistory = [], custom
   return exercise.variants[0];
 }
 
+/* Alternatives lookup for D-019. Strict same-primary + same-pattern filter,
+   with a same-primary fallback when the strict bucket is sparse (<3 peers).
+   Returns:
+     { peers, fallback, bucket }
+   where bucket ∈ "primary" | "fallback" | "empty":
+     • "primary":  3+ peers — show peers only
+     • "fallback": 1-2 peers — show peers, divider, then fallback ("Other <muscle> exercises")
+     • "empty":    0 peers — caller renders the Ask Coach / Browse empty state
+   Custom exercises (pattern: null) and orphan isolations (Lateral Raise,
+   Wrist Curl, etc — bucket size 1) intentionally trigger empty-state per
+   Session 31. The Coach paywall is a designed conversion moment, not a gap.
+   No equipment filter: all peers/fallback are returned regardless of what
+   the user owns. The traveling-user / drop-in-gym case is real — we don't
+   hide options. AlternativesSheet dims rows for un-owned exercises and
+   surfaces the missing equipment in the row's subline.
+*/
+function getAlternatives(exercise, userEquipment, customExercises = []) {
+  // No pattern means the exercise opted out of algorithmic alternatives —
+  // route to Coach. Customs land here, plus any future library entries we
+  // explicitly leave untagged.
+  if (!exercise.pattern) {
+    return { peers: [], fallback: [], bucket: "empty" };
+  }
+
+  const pool = [...EXERCISE_LIBRARY, ...customExercises];
+
+  const peers = pool.filter((e) =>
+    e.id !== exercise.id &&
+    e.pattern === exercise.pattern &&
+    e.primary === exercise.primary
+  );
+
+  // Fallback only matters when peers are sparse. Same primary, different
+  // pattern, not the exercise itself.
+  let fallback = [];
+  if (peers.length < 3) {
+    const peerIds = new Set(peers.map((e) => e.id));
+    fallback = pool.filter((e) =>
+      e.id !== exercise.id &&
+      !peerIds.has(e.id) &&
+      e.primary === exercise.primary
+    );
+  }
+
+  let bucket;
+  if (peers.length >= 3) bucket = "primary";
+  else if (peers.length >= 1) bucket = "fallback";
+  else bucket = "empty";
+
+  return { peers, fallback, bucket };
+}
+
 /* For the list row display: last max of the user's most-recently-logged
    variant of this exercise. Returns { value, date, variantLabel } or null.
    Falls back to null for exercises with no logged history at all. */
@@ -917,7 +1026,7 @@ function getRowLastMax(exerciseId, exercise, workoutHistory = [], customs = []) 
   }
 
   return {
-    value: `${topSet.weight} × ${topSet.reps}`,
+    value: formatSetSummary(topSet, " × "),
     date: latestDate,
     variantLabel,
   };
@@ -971,6 +1080,20 @@ function sessionTopSet(sets) {
   return best;
 }
 
+/* Render a "weight × reps" summary, collapsing the weight portion when the
+   set has no meaningful weight (bodyweight sets stored as 0 in older mock
+   history, or "" in new sessions where the user left the optional lbs field
+   blank). Returns formatted string for display in history rows, recaps, and
+   PR cards. Caller controls separator (`×` vs ` × ` vs ` lbs × `). */
+function hasMeaningfulWeight(set) {
+  return set && set.weight !== "" && set.weight != null && set.weight !== 0;
+}
+function formatSetSummary(set, sep = "×") {
+  if (!set) return "—";
+  if (!hasMeaningfulWeight(set)) return `${set.reps}`;
+  return `${set.weight}${sep}${set.reps}`;
+}
+
 /* Format a date string (YYYY-MM-DD) into a short display label like "Mar 22" */
 function formatShortDate(isoDate) {
   const d = new Date(isoDate + "T00:00:00");
@@ -980,41 +1103,6 @@ function formatShortDate(isoDate) {
 /* ── Shared Components ───────────────────────────────────────── */
 
 function PhoneFrame({ children }) {
-  const [isMobile, setIsMobile] = useState(
-    typeof window !== "undefined" && window.innerWidth < 500
-  );
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const onResize = () => setIsMobile(window.innerWidth < 500);
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
-  }, []);
-
-  if (isMobile) {
-    return (
-      <div
-        style={{
-          width: "100vw",
-          height: "100vh",
-          background: COLORS.bg,
-          position: "fixed",
-          top: 0,
-          left: 0,
-          overflow: "hidden",
-          fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-          display: "flex",
-          flexDirection: "column",
-          paddingTop: "env(safe-area-inset-top)",
-          paddingBottom: "env(safe-area-inset-bottom)",
-        }}
-      >
-        <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
-          {children}
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div
       style={{
@@ -1558,15 +1646,15 @@ function EquipmentDetailScreen({ presetId, existingSelection, onDone, onBack }) 
               <button
                 onClick={() => toggleSection(cat.id)}
                 style={{
-                  width: "100%", padding: "12px 24px",
+                  width: "100%", padding: "16px 24px",
                   background: "transparent",
                   border: "none",
                   cursor: "pointer", display: "flex", alignItems: "center", gap: 14,
                 }}
               >
-                <EquipThumb size={40} />
+                <EquipThumb size={48} />
                 <div style={{ flex: 1, textAlign: "left", minWidth: 0 }}>
-                  <div style={{ color: COLORS.text, fontSize: 15, fontWeight: 500 }}>{cat.label}</div>
+                  <div style={{ color: COLORS.text, fontSize: 16, fontWeight: 500 }}>{cat.label}</div>
                   {catState === "partial" && (
                     <div style={{ color: COLORS.textSecondary, fontSize: 12, marginTop: 2 }}>
                       {catCount} selected
@@ -1594,18 +1682,18 @@ function EquipmentDetailScreen({ presetId, existingSelection, onDone, onBack }) 
                     key={item.id}
                     onClick={(e) => toggleItem(item.id, e)}
                     style={{
-                      width: "100%", padding: "10px 24px 10px 48px",
+                      width: "100%", padding: "14px 24px 14px 48px",
                       background: "rgba(255,255,255,0.02)",
                       border: "none",
                       borderTop: idx === 0 ? `1px solid ${COLORS.border}` : "none",
                       cursor: "pointer", display: "flex", alignItems: "center", gap: 12,
                     }}
                   >
-                    <EquipThumb size={32} small />
+                    <EquipThumb size={38} small />
                     <span style={{
                       flex: 1, textAlign: "left",
                       color: isSel ? COLORS.text : COLORS.textSecondary,
-                      fontSize: 14, fontWeight: isSel ? 500 : 400,
+                      fontSize: 15, fontWeight: isSel ? 500 : 400,
                     }}>
                       {item.label}
                     </span>
@@ -1865,7 +1953,7 @@ const MOCK_WORKOUT_HISTORY = [
         { weight: 245, reps: 6, type: "working" },
         { weight: 255, reps: 5, type: "working" },
       ]},
-      { name: "Bench Press", variantLabel: "Barbell + Flat Bench", sets: [
+      { name: "Bench Press", variantLabel: "Barbell", sets: [
         { weight: 95, reps: 10, type: "warmup" },
         { weight: 170, reps: 7, type: "working" },
         { weight: 180, reps: 6, type: "working" },
@@ -1910,12 +1998,12 @@ const MOCK_WORKOUT_HISTORY = [
         { weight: 305, reps: 6, type: "working" },
         { weight: 325, reps: 5, type: "working" },
       ]},
-      { name: "Incline Press", variantLabel: "Dumbbells + Adjustable Bench", sets: [
+      { name: "Incline Bench Press", variantLabel: "Dumbbells", sets: [
         { weight: 60, reps: 8, type: "working" },
         { weight: 60, reps: 7, type: "working" },
         { weight: 60, reps: 6, type: "working" },
       ]},
-      { name: "Incline Row", variantLabel: "Dumbbells + Adjustable Bench", sets: [
+      { name: "Incline Row", variantLabel: "Dumbbells", sets: [
         { weight: 60, reps: 10, type: "working" },
         { weight: 60, reps: 9, type: "working" },
         { weight: 60, reps: 8, type: "working" },
@@ -1955,7 +2043,7 @@ const MOCK_WORKOUT_HISTORY = [
         { weight: 245, reps: 6, type: "working" },
         { weight: 255, reps: 5, type: "working" },
       ]},
-      { name: "Bench Press", variantLabel: "Barbell + Flat Bench", sets: [
+      { name: "Bench Press", variantLabel: "Barbell", sets: [
         { weight: 95, reps: 10, type: "warmup" },
         { weight: 170, reps: 7, type: "working" },
         { weight: 180, reps: 6, type: "working" },
@@ -2002,7 +2090,7 @@ const MOCK_WORKOUT_HISTORY = [
         { weight: 240, reps: 7, type: "working" },
         { weight: 250, reps: 6, type: "working" },
       ]},
-      { name: "Bench Press", variantLabel: "Barbell + Flat Bench", sets: [
+      { name: "Bench Press", variantLabel: "Barbell", sets: [
         { weight: 95, reps: 10, type: "warmup" },
         { weight: 170, reps: 8, type: "working" },
         { weight: 180, reps: 7, type: "working" },
@@ -2047,12 +2135,12 @@ const MOCK_WORKOUT_HISTORY = [
         { weight: 295, reps: 6, type: "working" },
         { weight: 315, reps: 5, type: "working" },
       ]},
-      { name: "Incline Press", variantLabel: "Dumbbells + Adjustable Bench", sets: [
+      { name: "Incline Bench Press", variantLabel: "Dumbbells", sets: [
         { weight: 60, reps: 8, type: "working" },
         { weight: 60, reps: 7, type: "working" },
         { weight: 60, reps: 6, type: "working" },
       ]},
-      { name: "Incline Row", variantLabel: "Dumbbells + Adjustable Bench", sets: [
+      { name: "Incline Row", variantLabel: "Dumbbells", sets: [
         { weight: 60, reps: 10, type: "working" },
         { weight: 60, reps: 9, type: "working" },
         { weight: 60, reps: 8, type: "working" },
@@ -2092,7 +2180,7 @@ const MOCK_WORKOUT_HISTORY = [
         { weight: 235, reps: 7, type: "working" },
         { weight: 245, reps: 6, type: "working" },
       ]},
-      { name: "Bench Press", variantLabel: "Barbell + Flat Bench", sets: [
+      { name: "Bench Press", variantLabel: "Barbell", sets: [
         { weight: 95, reps: 10, type: "warmup" },
         { weight: 165, reps: 8, type: "working" },
         { weight: 175, reps: 7, type: "working" },
@@ -2139,7 +2227,7 @@ const MOCK_WORKOUT_HISTORY = [
         { weight: 190, reps: 9, type: "working" },
         { weight: 200, reps: 8, type: "working" },
       ]},
-      { name: "Bench Press", variantLabel: "Barbell + Flat Bench", sets: [
+      { name: "Bench Press", variantLabel: "Barbell", sets: [
         { weight: 80, reps: 10, type: "warmup" },
         { weight: 135, reps: 10, type: "working" },
         { weight: 145, reps: 9, type: "working" },
@@ -2184,12 +2272,12 @@ const MOCK_WORKOUT_HISTORY = [
         { weight: 240, reps: 8, type: "working" },
         { weight: 260, reps: 7, type: "working" },
       ]},
-      { name: "Incline Press", variantLabel: "Dumbbells + Adjustable Bench", sets: [
+      { name: "Incline Bench Press", variantLabel: "Dumbbells", sets: [
         { weight: 45, reps: 10, type: "working" },
         { weight: 45, reps: 9, type: "working" },
         { weight: 45, reps: 8, type: "working" },
       ]},
-      { name: "Incline Row", variantLabel: "Dumbbells + Adjustable Bench", sets: [
+      { name: "Incline Row", variantLabel: "Dumbbells", sets: [
         { weight: 45, reps: 12, type: "working" },
         { weight: 45, reps: 11, type: "working" },
         { weight: 45, reps: 10, type: "working" },
@@ -2229,7 +2317,7 @@ const MOCK_WORKOUT_HISTORY = [
         { weight: 190, reps: 9, type: "working" },
         { weight: 200, reps: 8, type: "working" },
       ]},
-      { name: "Bench Press", variantLabel: "Barbell + Flat Bench", sets: [
+      { name: "Bench Press", variantLabel: "Barbell", sets: [
         { weight: 80, reps: 10, type: "warmup" },
         { weight: 135, reps: 10, type: "working" },
         { weight: 145, reps: 9, type: "working" },
@@ -2276,7 +2364,7 @@ const MOCK_WORKOUT_HISTORY = [
         { weight: 215, reps: 7, type: "working" },
         { weight: 225, reps: 6, type: "working" },
       ]},
-      { name: "Bench Press", variantLabel: "Barbell + Flat Bench", sets: [
+      { name: "Bench Press", variantLabel: "Barbell", sets: [
         { weight: 90, reps: 10, type: "warmup" },
         { weight: 155, reps: 8, type: "working" },
         { weight: 165, reps: 7, type: "working" },
@@ -2321,12 +2409,12 @@ const MOCK_WORKOUT_HISTORY = [
         { weight: 275, reps: 6, type: "working" },
         { weight: 285, reps: 4, type: "working" },
       ]},
-      { name: "Incline Press", variantLabel: "Dumbbells + Adjustable Bench", sets: [
+      { name: "Incline Bench Press", variantLabel: "Dumbbells", sets: [
         { weight: 55, reps: 8, type: "working" },
         { weight: 55, reps: 7, type: "working" },
         { weight: 55, reps: 6, type: "working" },
       ]},
-      { name: "Incline Row", variantLabel: "Dumbbells + Adjustable Bench", sets: [
+      { name: "Incline Row", variantLabel: "Dumbbells", sets: [
         { weight: 55, reps: 10, type: "working" },
         { weight: 55, reps: 9, type: "working" },
         { weight: 55, reps: 8, type: "working" },
@@ -2366,7 +2454,7 @@ const MOCK_WORKOUT_HISTORY = [
         { weight: 215, reps: 7, type: "working" },
         { weight: 225, reps: 6, type: "working" },
       ]},
-      { name: "Bench Press", variantLabel: "Barbell + Flat Bench", sets: [
+      { name: "Bench Press", variantLabel: "Barbell", sets: [
         { weight: 90, reps: 10, type: "warmup" },
         { weight: 155, reps: 8, type: "working" },
         { weight: 165, reps: 7, type: "working" },
@@ -2413,7 +2501,7 @@ const MOCK_WORKOUT_HISTORY = [
         { weight: 205, reps: 7, type: "working" },
         { weight: 215, reps: 6, type: "working" },
       ]},
-      { name: "Bench Press", variantLabel: "Barbell + Flat Bench", sets: [
+      { name: "Bench Press", variantLabel: "Barbell", sets: [
         { weight: 85, reps: 10, type: "warmup" },
         { weight: 150, reps: 8, type: "working" },
         { weight: 160, reps: 7, type: "working" },
@@ -2458,12 +2546,12 @@ const MOCK_WORKOUT_HISTORY = [
         { weight: 265, reps: 6, type: "working" },
         { weight: 285, reps: 5, type: "working" },
       ]},
-      { name: "Incline Press", variantLabel: "Dumbbells + Adjustable Bench", sets: [
+      { name: "Incline Bench Press", variantLabel: "Dumbbells", sets: [
         { weight: 50, reps: 8, type: "working" },
         { weight: 50, reps: 7, type: "working" },
         { weight: 50, reps: 6, type: "working" },
       ]},
-      { name: "Incline Row", variantLabel: "Dumbbells + Adjustable Bench", sets: [
+      { name: "Incline Row", variantLabel: "Dumbbells", sets: [
         { weight: 50, reps: 10, type: "working" },
         { weight: 50, reps: 9, type: "working" },
         { weight: 50, reps: 8, type: "working" },
@@ -2503,7 +2591,7 @@ const MOCK_WORKOUT_HISTORY = [
         { weight: 205, reps: 7, type: "working" },
         { weight: 215, reps: 6, type: "working" },
       ]},
-      { name: "Bench Press", variantLabel: "Barbell + Flat Bench", sets: [
+      { name: "Bench Press", variantLabel: "Barbell", sets: [
         { weight: 85, reps: 10, type: "warmup" },
         { weight: 150, reps: 8, type: "working" },
         { weight: 160, reps: 7, type: "working" },
@@ -2550,7 +2638,7 @@ const MOCK_WORKOUT_HISTORY = [
         { weight: 195, reps: 7, type: "working" },
         { weight: 205, reps: 6, type: "working" },
       ]},
-      { name: "Bench Press", variantLabel: "Barbell + Flat Bench", sets: [
+      { name: "Bench Press", variantLabel: "Barbell", sets: [
         { weight: 85, reps: 10, type: "warmup" },
         { weight: 145, reps: 8, type: "working" },
         { weight: 155, reps: 7, type: "working" },
@@ -2595,12 +2683,12 @@ const MOCK_WORKOUT_HISTORY = [
         { weight: 255, reps: 6, type: "working" },
         { weight: 275, reps: 5, type: "working" },
       ]},
-      { name: "Incline Press", variantLabel: "Dumbbells + Adjustable Bench", sets: [
+      { name: "Incline Bench Press", variantLabel: "Dumbbells", sets: [
         { weight: 50, reps: 8, type: "working" },
         { weight: 50, reps: 7, type: "working" },
         { weight: 50, reps: 6, type: "working" },
       ]},
-      { name: "Incline Row", variantLabel: "Dumbbells + Adjustable Bench", sets: [
+      { name: "Incline Row", variantLabel: "Dumbbells", sets: [
         { weight: 50, reps: 10, type: "working" },
         { weight: 50, reps: 9, type: "working" },
         { weight: 50, reps: 8, type: "working" },
@@ -2640,7 +2728,7 @@ const MOCK_WORKOUT_HISTORY = [
         { weight: 195, reps: 7, type: "working" },
         { weight: 205, reps: 6, type: "working" },
       ]},
-      { name: "Bench Press", variantLabel: "Barbell + Flat Bench", sets: [
+      { name: "Bench Press", variantLabel: "Barbell", sets: [
         { weight: 85, reps: 10, type: "warmup" },
         { weight: 145, reps: 8, type: "working" },
         { weight: 155, reps: 7, type: "working" },
@@ -2730,6 +2818,7 @@ function WorkoutTab({
   finishedSession, customExercises = [],
   onStartEmpty, onUpdateWorkout, onMinimize, onCancel, onFinish,
   onCommitFinished, onDiscardFinished,
+  onRepeatWorkout, onTabChange,
 }) {
 
   // Finish summary screen takes priority — once user taps Finish, that's
@@ -2744,66 +2833,60 @@ function WorkoutTab({
     );
   }
 
-  // Active workout that's not minimized → show the logger
-  if (workout && !minimized) {
-    return (
-      <ActiveLogger
-        workout={workout}
-        onUpdateWorkout={onUpdateWorkout}
-        userEquipment={userEquipment}
-        customExercises={customExercises}
-        workoutHistory={history}
-        onMinimize={onMinimize}
-        onCancel={onCancel}
-        onFinish={onFinish}
-      />
-    );
-  }
-
-  // Idle (or minimized active workout — same idle view, the SessionBar
-  // takes care of letting them get back into it).
+  // ── Layered Workout tab (Bible §14, step 3) ──
+  // Idle view (CTA + history list) is ALWAYS rendered as the base layer.
+  // ActiveLogger renders as a bottom-sheet overlay on top when there's
+  // an active workout that isn't minimized. As the user drags the sheet
+  // down, the idle view becomes visible behind it — matching Strong's
+  // model where you can see the underlying tab as the sheet slides away.
   //
-  // Structure: outer `position: relative` container DOES NOT scroll.
-  // Inner div holds all the tab content (title, CTA, history list) and
-  // is the scrollable surface. Sheet sits at the outer level so it
-  // anchors to the tab viewport rather than the scroll content — same
-  // pattern as ExercisesTab. Fixes the bug where the sheet used to
-  // scroll with the history list behind it.
+  // The CTA's "No active workout" messaging is hidden when a workout is
+  // active (the messaging would be wrong), but the Start Empty button
+  // stays visible so it can be tapped after minimizing — that triggers
+  // the conflict modal from step 2.
+  // Ref on the outer container — passed down to ActiveLogger so its drag
+  // math can measure the actual rendered height and compute MAX_SHEET_TOP
+  // exactly. Hardcoded constants were a few px off (TabBar/PhoneFrame
+  // metrics are font-dependent), causing the sheet to overshoot its
+  // resting position during drag.
+  const containerRef = useRef(null);
+
   return (
-    <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, position: "relative" }}>
+    <div ref={containerRef} style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, position: "relative" }}>
       <div style={{ flex: 1, padding: "8px 24px 20px", overflowY: "auto" }}>
         <h2 style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 22, color: COLORS.text, margin: "0 0 12px", fontWeight: 400 }}>Workout</h2>
 
-        {/* Empty CTA — Situation B only. Situation A (Coach-queued workout)
-            will live above this when Coach generation lands.
-            If a workout is currently active but minimized, hide this CTA so
-            the user isn't tempted to start a second one. */}
-        {!workout && (
-          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", paddingTop: 30, paddingBottom: 12 }}>
-            <div style={{ width: 64, height: 64, borderRadius: 32, background: COLORS.card, border: `1px solid ${COLORS.border}`, display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 18 }}>
-              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke={COLORS.gold} strokeWidth="1.8"><path d="M3 12h4l3-9 4 18 3-9h4" /></svg>
-            </div>
-            <p style={{ color: COLORS.text, fontSize: 17, fontWeight: 500, margin: "0 0 4px" }}>No active workout</p>
-            <p style={{ color: COLORS.textSecondary, fontSize: 13, margin: "0 0 22px", textAlign: "center" }}>Start an empty session or ask Coach to build one</p>
-            <GoldButton onClick={onStartEmpty} style={{ width: "auto", padding: "14px 36px", fontSize: 15 }}>Start Empty Workout</GoldButton>
-            <button
-              /* Coach CTA — wired to nothing for now; will route to Coach
-                 tab when that's threaded through. */
-              style={{
-                marginTop: 14, padding: "10px 20px", background: "transparent",
-                border: `1px solid ${COLORS.border}`, borderRadius: 22,
-                color: COLORS.textSecondary, fontSize: 13, cursor: "pointer",
-                display: "flex", alignItems: "center", gap: 6,
-              }}
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={COLORS.gold} strokeWidth="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z" /></svg>
-              Ask Coach to build one
-            </button>
-          </div>
-        )}
+        {/* CTA section — messaging only when no workout. Buttons always
+            visible per Bible §14 working-style decision (so user can
+            tap Start Empty after minimizing → conflict modal). */}
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", paddingTop: 30, paddingBottom: 12 }}>
+          {!workout && (
+            <>
+              <div style={{ width: 64, height: 64, borderRadius: 32, background: COLORS.card, border: `1px solid ${COLORS.border}`, display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 18 }}>
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke={COLORS.gold} strokeWidth="1.8"><path d="M3 12h4l3-9 4 18 3-9h4" /></svg>
+              </div>
+              <p style={{ color: COLORS.text, fontSize: 17, fontWeight: 500, margin: "0 0 4px" }}>No active workout</p>
+              <p style={{ color: COLORS.textSecondary, fontSize: 13, margin: "0 0 22px", textAlign: "center" }}>Start an empty session or ask Coach to build one</p>
+            </>
+          )}
+          <GoldButton onClick={onStartEmpty} style={{ width: "auto", padding: "14px 36px", fontSize: 15 }}>Start Empty Workout</GoldButton>
+          <button
+            /* Coach CTA — wired to nothing for now; will route to Coach
+               tab when that's threaded through. */
+            style={{
+              marginTop: 14, padding: "10px 20px", background: "transparent",
+              border: `1px solid ${COLORS.border}`, borderRadius: 22,
+              color: COLORS.textSecondary, fontSize: 13, cursor: "pointer",
+              display: "flex", alignItems: "center", gap: 6,
+            }}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={COLORS.gold} strokeWidth="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z" /></svg>
+            Ask Coach to build one
+          </button>
+        </div>
 
         {/* History list — full-detail cards per spec */}
-        <p style={{ color: COLORS.textSecondary, fontSize: 12, margin: workout ? "0 0 10px" : "32px 0 10px", textTransform: "uppercase", letterSpacing: 1, fontWeight: 500 }}>History</p>
+        <p style={{ color: COLORS.textSecondary, fontSize: 12, margin: "32px 0 10px", textTransform: "uppercase", letterSpacing: 1, fontWeight: 500 }}>History</p>
         {history.map((w) => {
           const volume = totalVolumeFromExercises(w.exercises);
           return (
@@ -2833,7 +2916,7 @@ function WorkoutTab({
                       {ex.name} <span style={{ color: COLORS.textSecondary }}>({ex.variantLabel})</span>
                     </span>
                     <span style={{ color: COLORS.textSecondary, marginLeft: 8, flexShrink: 0, fontVariantNumeric: "tabular-nums" }}>
-                      {ex.sets.length} sets · Max: {top.weight}×{top.reps}
+                      {ex.sets.length} sets · Max: {formatSetSummary(top)}
                     </span>
                   </div>
                 );
@@ -2851,6 +2934,31 @@ function WorkoutTab({
         <HistoryRecapSheet
           session={history.find((w) => w.id === openHistoryId)}
           onClose={() => setOpenHistoryId(null)}
+          onRepeat={onRepeatWorkout}
+        />
+      )}
+
+      {/* ── Active Logger overlay (bottom sheet) ──
+          When a workout is active and not minimized, ActiveLogger renders
+          as an absolute-positioned overlay on top of the idle view above.
+          Drag-down on the sheet's drag handle slides the sheet downward,
+          revealing the idle view behind it (matches Strong's model).
+          When fully docked, only the sheet's header strip remains visible
+          above the TabBar — at that moment the state flips to minimized,
+          ActiveLogger unmounts, and the real SessionBar mounts in the same
+          position (invisible swap). */}
+      {workout && !minimized && (
+        <ActiveLogger
+          workout={workout}
+          onUpdateWorkout={onUpdateWorkout}
+          userEquipment={userEquipment}
+          customExercises={customExercises}
+          workoutHistory={history}
+          onMinimize={onMinimize}
+          onCancel={onCancel}
+          onFinish={onFinish}
+          onTabChange={onTabChange}
+          containerRef={containerRef}
         />
       )}
     </div>
@@ -2865,6 +2973,8 @@ function WorkoutTab({
 */
 function ActiveLogger({
   workout, onUpdateWorkout, userEquipment, customExercises = [], workoutHistory = [], onMinimize, onCancel, onFinish,
+  onTabChange,
+  containerRef,
 }) {
   // Pull session state out of the workout prop. We mutate via onUpdateWorkout
   // (which writes through to App-level state, so it survives tab switches).
@@ -2889,6 +2999,13 @@ function ActiveLogger({
   const [editingName, setEditingName] = useState(false);
   const [settingsMenuOpen, setSettingsMenuOpen] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
+  // D-019: which exercise's alternatives sheet is open. The uid of the
+  // exercise whose row was swiped, or null when no sheet is open.
+  const [alternativesFor, setAlternativesFor] = useState(null);
+  // When the user opens AddExerciseSheet via the empty-state "Browse
+  // Exercises" CTA, we're in swap mode — picking an exercise replaces the
+  // target, doesn't append. uid of the swap target, or null for normal add.
+  const [pickerSwapTargetUid, setPickerSwapTargetUid] = useState(null);
   const [confirmCancel, setConfirmCancel] = useState(false);
   const [rirHelpOpen, setRirHelpOpen] = useState(false);
 
@@ -2931,6 +3048,117 @@ function ActiveLogger({
   // (e.g. after onUpdateWorkout commits and React re-renders).
   useEffect(() => { exercisesRef.current = exercises; }, [exercises]);
 
+  // ── Reorder drag state ────────────────────────────────────────
+  // When a card is being long-press-dragged for reorder, this object holds
+  // the live drag info. null when no drag is in progress.
+  //   uid         — which card is being dragged (stable across renders)
+  //   originIdx   — its index when the drag started
+  //   pointerY    — current pointer Y in viewport coords
+  //   startY      — pointer Y when drag started; used to compute translate
+  //   cardHeight  — measured height of dragged card (siblings shift by this)
+  //   cardRect    — original bounding rect of dragged card (top is fixed
+  //                 in viewport space; translate offset = pointerY - startY)
+  // Live reflow is computed in ExerciseCard from this prop — siblings shift
+  // when the dragged card's center crosses their midpoint. The actual array
+  // mutation happens once on drop, in onReorderEnd.
+  const [reorderDrag, setReorderDrag] = useState(null);
+  const reorderDragRef = useRef(null);
+  useEffect(() => { reorderDragRef.current = reorderDrag; }, [reorderDrag]);
+
+  // Auto-scroll the list when the dragged card is near the top or bottom.
+  // Active only during a drag; tick at ~30fps via rAF.
+  const autoScrollRafRef = useRef(null);
+  useEffect(() => {
+    if (!reorderDrag) {
+      if (autoScrollRafRef.current) cancelAnimationFrame(autoScrollRafRef.current);
+      autoScrollRafRef.current = null;
+      return;
+    }
+    const tick = () => {
+      const drag = reorderDragRef.current;
+      const scroller = scrollRef.current;
+      if (!drag || !scroller) return;
+      const rect = scroller.getBoundingClientRect();
+      const EDGE = 60; // px from edge that triggers auto-scroll
+      const SPEED = 8; // px per frame
+      let dy = 0;
+      if (drag.pointerY < rect.top + EDGE) dy = -SPEED;
+      else if (drag.pointerY > rect.bottom - EDGE) dy = SPEED;
+      if (dy !== 0) scroller.scrollTop += dy;
+      autoScrollRafRef.current = requestAnimationFrame(tick);
+    };
+    autoScrollRafRef.current = requestAnimationFrame(tick);
+    return () => {
+      if (autoScrollRafRef.current) cancelAnimationFrame(autoScrollRafRef.current);
+    };
+  }, [reorderDrag]);
+
+  // Compute the index the dragged card would land at given current pointerY.
+  // Uses the baseline rects snapshotted at drag start (siblingRects), so
+  // computation stays stable even as siblings visually shift during reflow.
+  const computeTargetIdx = (drag) => {
+    if (!drag || !drag.siblingRects) return drag ? drag.originIdx : -1;
+    const draggedCenterY = drag.cardRect.top + (drag.pointerY - drag.startY) + drag.cardHeight / 2;
+    // Walk baseline rects (already in DOM order, dragged card excluded).
+    // Each entry: { uid, top, height, idx }. We find the slot the dragged
+    // card's center falls into. With N siblings there are N+1 possible
+    // landing slots (before each sibling, plus after the last).
+    let target = drag.originIdx;
+    for (let i = 0; i < drag.siblingRects.length; i += 1) {
+      const r = drag.siblingRects[i];
+      if (draggedCenterY < r.top + r.height / 2) {
+        // Land just before this sibling. Sibling's array index is r.idx;
+        // because we excluded the dragged card from siblingRects, target
+        // index in the post-removal array is just r.idx adjusted for
+        // whether the dragged card was originally above or below this
+        // sibling.
+        target = r.idx > drag.originIdx ? r.idx - 1 : r.idx;
+        return target;
+      }
+    }
+    // Past every sibling — land at end.
+    return exercisesRef.current.length - 1;
+  };
+
+  const onReorderStart = (uid, originIdx, pointerY, cardEl) => {
+    if (!cardEl) return;
+    const rect = cardEl.getBoundingClientRect();
+    // Snapshot every sibling's baseline rect so reflow math is stable
+    // even after siblings start visually shifting.
+    const scroller = scrollRef.current;
+    const siblingRects = [];
+    if (scroller) {
+      const allCards = scroller.querySelectorAll("[data-exercise-card]");
+      allCards.forEach((card, i) => {
+        const cardUid = card.getAttribute("data-exercise-card");
+        if (cardUid === uid) return;
+        const r = card.getBoundingClientRect();
+        siblingRects.push({ uid: cardUid, top: r.top, height: r.height, idx: i });
+      });
+    }
+    setReorderDrag({
+      uid,
+      originIdx,
+      pointerY,
+      startY: pointerY,
+      cardHeight: rect.height,
+      cardRect: { top: rect.top, left: rect.left, width: rect.width },
+      siblingRects,
+    });
+  };
+  const onReorderMove = (pointerY) => {
+    setReorderDrag((prev) => (prev ? { ...prev, pointerY } : prev));
+  };
+  const onReorderEnd = () => {
+    const drag = reorderDragRef.current;
+    if (!drag) return;
+    const targetIdx = computeTargetIdx(drag);
+    if (targetIdx !== drag.originIdx) {
+      reorderExercise(drag.originIdx, targetIdx);
+    }
+    setReorderDrag(null);
+  };
+
   // Live timer — ticks once per second while logger is mounted
   useEffect(() => {
     const tick = () => setElapsed(Math.floor((Date.now() - startTime.getTime()) / 1000));
@@ -2939,15 +3167,34 @@ function ActiveLogger({
     return () => clearInterval(id);
   }, [startTime]);
 
-  // When the active field changes, scroll its row into view above the keypad.
+  // When the active field changes, scroll its row to a comfortable position
+  // above the keypad. We can't use scrollIntoView({ block: "center" }) here
+  // because "center" centers the row in the FULL scroll container — but the
+  // keypad occludes the bottom ~280px of that container, so a centered row
+  // can still end up partially under the keypad on shorter content lists.
+  // Manual math: compute the visible area above the keypad and place the row's
+  // top at ~30% of that area (Strong-style comfortable position — clearly above
+  // the keypad, plenty of breathing room above to confirm context). The
+  // paddingBottom on the scroll container is 280px to match the keypad.
   useEffect(() => {
     if (!activeField) return;
     const key = `${activeField.exerciseUid}_${activeField.setIdx}`;
     const node = setRowRefs.current[key];
-    if (node && node.scrollIntoView) {
-      // Use a small timeout so React has committed any layout changes first.
-      setTimeout(() => node.scrollIntoView({ behavior: "smooth", block: "center" }), 30);
-    }
+    const scroller = scrollRef.current;
+    if (!node || !scroller) return;
+    // Small timeout so React has committed any layout changes first
+    // (e.g. paddingBottom: 280 transition just kicked in).
+    setTimeout(() => {
+      const KEYPAD_ZONE = 260; // ~keypad height + small gap
+      const COMFORT_RATIO = 0.3; // row top sits at 30% of visible-above-keypad
+      const visibleAbove = scroller.clientHeight - KEYPAD_ZONE;
+      // Row's current top relative to the scroll container.
+      const nodeTop = node.offsetTop - scroller.offsetTop;
+      // Target scrollTop puts the row's top at COMFORT_RATIO of the visible area.
+      const target = nodeTop - visibleAbove * COMFORT_RATIO;
+      const clamped = Math.max(0, Math.min(target, scroller.scrollHeight - scroller.clientHeight));
+      scroller.scrollTo({ top: clamped, behavior: "smooth" });
+    }, 30);
   }, [activeField]);
 
   // ── Single global rest timer ──
@@ -2962,40 +3209,84 @@ function ActiveLogger({
   const clearRestTimer = () => onUpdateWorkout({ restTimer: null });
 
   // ── Exercise mutators ──
-  const addExercise = (libraryEx, variant) => {
-    // Pre-fill the first set as a placeholder from the previous workout's
-    // first set, if any history exists for this variant.
+
+  // Build a fresh in-workout exercise object. Same first-set placeholder
+  // logic shared by addExercise and swapExercise so the swap path doesn't
+  // drift from the add path's behavior. New uid every time so activeField,
+  // restTimer, and reorderDrag (all uid-keyed) cleanly detach from any
+  // prior incarnation.
+  const buildExerciseEntry = (libraryEx, variant) => {
     const hist = getVariantHistory(libraryEx.id, variantKey(variant), workoutHistory, customExercises);
     const lastSession = hist[hist.length - 1];
     const prevFirstSet = lastSession && lastSession.sets[0];
     const hasPrev = prevFirstSet != null;
+    return {
+      uid: `e${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      exerciseId: libraryEx.id,
+      name: libraryEx.name,
+      primary: libraryEx.primary,
+      variant,
+      sets: [
+        {
+          weight: "", reps: "", done: false, type: "working", rir: null,
+          weightIsPlaceholder: hasPrev,
+          repsIsPlaceholder: hasPrev,
+          placeholderWeight: hasPrev ? prevFirstSet.weight : "",
+          placeholderReps: hasPrev ? prevFirstSet.reps : "",
+        },
+      ],
+      collapsed: false,
+    };
+  };
 
-    setExercises((prev) => [
-      ...prev,
-      {
-        uid: `e${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-        exerciseId: libraryEx.id,
-        name: libraryEx.name,
-        primary: libraryEx.primary,
-        variant,
-        sets: [
-          {
-            weight: "", reps: "", done: false, type: "working", rir: null,
-            weightIsPlaceholder: hasPrev,
-            repsIsPlaceholder: hasPrev,
-            placeholderWeight: hasPrev ? prevFirstSet.weight : "",
-            placeholderReps: hasPrev ? prevFirstSet.reps : "",
-          },
-        ],
-        collapsed: false,
-      },
-    ]);
+  const addExercise = (libraryEx, variant) => {
+    // If the picker was opened from the alternatives empty-state's
+    // "Browse Exercises" CTA, picking an exercise SWAPS the target
+    // instead of appending. Detect via pickerSwapTargetUid.
+    if (pickerSwapTargetUid) {
+      swapExercise(pickerSwapTargetUid, libraryEx, variant);
+      setPickerSwapTargetUid(null);
+      setPickerOpen(false);
+      return;
+    }
+    setExercises((prev) => [...prev, buildExerciseEntry(libraryEx, variant)]);
     setPickerOpen(false);
+  };
+
+  // D-019: replace the exercise at `uid` with a fresh entry built from
+  // libraryEx + variant. Order preserved. Sets reset (a different exercise
+  // means the prior sets are no longer meaningful — same shape as the
+  // add path). Cleans up any uid-keyed state that referenced the old row.
+  const swapExercise = (uid, libraryEx, variant) => {
+    setExercises((prev) => {
+      const idx = prev.findIndex((e) => e.uid === uid);
+      if (idx === -1) return prev;
+      const next = prev.slice();
+      next[idx] = buildExerciseEntry(libraryEx, variant);
+      return next;
+    });
+    if (restTimer && restTimer.exerciseUid === uid) clearRestTimer();
+    if (activeField && activeField.exerciseUid === uid) setActiveField(null);
   };
 
   const removeExercise = (uid) => {
     setExercises((prev) => prev.filter((e) => e.uid !== uid));
     if (restTimer && restTimer.exerciseUid === uid) clearRestTimer();
+  };
+
+  // Move the exercise at `fromIdx` to `toIdx` in the active workout list.
+  // No-op if either index is out of range or fromIdx === toIdx. Set state,
+  // rest timer, and active field are all uid-keyed and pass through unchanged.
+  const reorderExercise = (fromIdx, toIdx) => {
+    setExercises((prev) => {
+      if (fromIdx < 0 || fromIdx >= prev.length) return prev;
+      if (toIdx < 0 || toIdx >= prev.length) return prev;
+      if (fromIdx === toIdx) return prev;
+      const next = prev.slice();
+      const [moved] = next.splice(fromIdx, 1);
+      next.splice(toIdx, 0, moved);
+      return next;
+    });
   };
 
   const toggleExerciseCollapsed = (uid) => {
@@ -3366,82 +3657,288 @@ function ActiveLogger({
   const onDragHandleUp = () => {
     if (!dragMinRef.current.dragging) return;
     dragMinRef.current.dragging = false;
-    if (dragY > 120) { onMinimize(); }
+    if (dragY > MINIMIZE_THRESHOLD) { onMinimize(); }
     setDragY(0);
   };
 
+  // ── Minimize morph constants (Bible §14, step 3) ──
+  // Bottom-sheet model: ActiveLogger renders as a sheet that overlays the
+  // WorkoutTab idle view. As the user drags down, the sheet's top edge
+  // moves down (sheet shrinks from the bottom-up since its bottom is pinned
+  // above the TabBar). The fixed header section stays at the top of the
+  // sheet and ends up at SessionBar position when fully docked.
+  //
+  // MINIMIZE_THRESHOLD: drag distance past which release commits to
+  //   minimized state (33% of typical content area, ~240px).
+  // MAX_SHEET_TOP: how far the sheet's top can travel — at this distance
+  //   only the header is visible above the TabBar, identical to the real
+  //   SessionBar's docked position. Computed at runtime from the actual
+  //   measured height of the WorkoutTab outer container (passed in via
+  //   containerRef). Hardcoded constants were a few px off due to TabBar
+  //   font metrics, causing the sheet to overshoot its resting position
+  //   on drag. Measuring fixes this exactly.
+  // SESSION_BAR_HEIGHT: source-of-truth match with the SessionBar component.
+  const MINIMIZE_THRESHOLD = 240;
+  const SESSION_BAR_HEIGHT = 52;
+
+  // Measured container height. Defaults to the old hardcoded approximation
+  // (624 + 52 = 676) so the very first render before useLayoutEffect
+  // settles still looks reasonable. Real value comes in next frame via
+  // ResizeObserver.
+  const [containerHeight, setContainerHeight] = useState(676);
+  useLayoutEffect(() => {
+    if (!containerRef || !containerRef.current) return;
+    const el = containerRef.current;
+    const update = () => setContainerHeight(el.getBoundingClientRect().height);
+    update(); // initial sync read
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [containerRef]);
+
+  const MAX_SHEET_TOP = Math.max(0, containerHeight - SESSION_BAR_HEIGHT);
+  // dockedness — 0 when fully expanded, 1 when fully docked into bar
+  // position. Used for cross-fading header decorations during the gesture.
+  const dockedness = MAX_SHEET_TOP > 0 ? Math.min(1, dragY / MAX_SHEET_TOP) : 0;
+  // Cap effective drag at MAX_SHEET_TOP so finger can't push sheet
+  // off-screen past the docked position.
+  const effectiveDragY = Math.min(dragY, MAX_SHEET_TOP);
+
+  // ── DEV-ONLY fake drag (desktop testing) ──
+  // Animates dragY from 0 → MAX_SHEET_TOP over 500ms via rAF, mimicking a
+  // finger drag that completes the docking gesture. Triggers onMinimize
+  // at the end (release-past-threshold).
+  // grep marker: DEV_MINIMIZE_BUTTON
+  const fakeDragRafRef = useRef(null);
+  const playFakeDrag = () => {
+    // Don't double-trigger if already playing
+    if (fakeDragRafRef.current !== null) return;
+    const startTime = performance.now();
+    const duration = 500; // ms
+    const targetY = MAX_SHEET_TOP;
+    dragMinRef.current.dragging = true;
+    const tick = (now) => {
+      const t = Math.min(1, (now - startTime) / duration);
+      // Ease-out cubic — feels like a real finger flick deceleration
+      const eased = 1 - Math.pow(1 - t, 3);
+      setDragY(targetY * eased);
+      if (t < 1) {
+        fakeDragRafRef.current = requestAnimationFrame(tick);
+      } else {
+        // Done — release path: commit minimize, clear dragY, clear flag.
+        // The state flip from active → minimized happens here. The real
+        // SessionBar mounts in the same screen position the docked sheet
+        // header just was, so the swap is invisible.
+        fakeDragRafRef.current = null;
+        dragMinRef.current.dragging = false;
+        onMinimize();
+        setDragY(0);
+      }
+    };
+    fakeDragRafRef.current = requestAnimationFrame(tick);
+  };
+  // Cleanup any in-flight animation if logger unmounts mid-drag
+  useEffect(() => () => {
+    if (fakeDragRafRef.current !== null) {
+      cancelAnimationFrame(fakeDragRafRef.current);
+    }
+  }, []);
+
   return (
     <div style={{
-      flex: 1, display: "flex", flexDirection: "column", minHeight: 0,
-      position: "relative",
-      transform: `translateY(${dragY}px)`,
-      transition: dragMinRef.current.dragging ? "none" : "transform 0.25s ease",
-      opacity: dragY > 0 ? Math.max(0.4, 1 - dragY / 300) : 1,
+      // ── Bottom-sheet positioning (Bible §14, step 3) ──
+      // ActiveLogger is a sheet that overlays the WorkoutTab idle view.
+      // top moves down with drag; bottom is pinned just above TabBar (handled
+      // by parent's flex layout — we sit inside the same flex slot the idle
+      // view occupies, but absolutely positioned within it).
+      //
+      // Goal: by dockedness === 1 the sheet is pixel-identical to the
+      // SessionBar that will mount in its place at the state flip. So we
+      // interpolate every visible attribute (background, border, internal
+      // element coordinates) so they reach SessionBar's resting values
+      // before the swap, not at it.
+      position: "absolute",
+      top: effectiveDragY, left: 0, right: 0, bottom: 0,
+      display: "flex", flexDirection: "column", minHeight: 0,
+      // Background: #111111 → #161616 over 0 → 1 (matches SessionBar at end).
+      background: `rgb(${17 + dockedness * 5}, ${17 + dockedness * 5}, ${17 + dockedness * 5})`,
+      // Gold top border: faded in over the BACK HALF of the morph
+      // (dockedness 0.5 → 1). At 1, border is fully opaque and matches the
+      // real SessionBar's borderTop. The 'rgba' form lets us interpolate
+      // alpha rather than swap colors.
+      borderTop: `1px solid rgba(255, 215, 0, ${Math.max(0, (dockedness - 0.5) * 2)})`,
+      overflow: "hidden",
+      transition: dragMinRef.current.dragging ? "none"
+        : "top 0.25s ease, background 0.25s ease, border-color 0.25s ease",
     }}>
-      {/* ── Drag handle — pull down to minimize ── */}
-      <div
-        onPointerDown={onDragHandleDown}
-        onPointerMove={onDragHandleMove}
-        onPointerUp={onDragHandleUp}
-        onPointerCancel={onDragHandleUp}
+      {/* ── DEV-ONLY: play fake drag-down (desktop testing) ──
+          Fixed-position so it stays visible during the morph.
+          Remove before launch. grep marker: DEV_MINIMIZE_BUTTON */}
+      <button
+        onClick={playFakeDrag}
         style={{
-          display: "flex", justifyContent: "center", padding: "8px 0 4px",
-          cursor: "grab", touchAction: "none", flexShrink: 0,
+          position: "fixed", top: 12, right: 12, zIndex: 90,
+          padding: "6px 10px", fontSize: 11, fontWeight: 600,
+          background: "rgba(255,215,0,0.15)",
+          border: `1px dashed ${COLORS.gold}`,
+          borderRadius: 6, color: COLORS.gold, cursor: "pointer",
+          fontFamily: "monospace",
         }}
       >
-        <div style={{
-          width: 36, height: 4, borderRadius: 2,
-          background: COLORS.border,
-        }} />
-      </div>
+        DEV: play minimize ↓
+      </button>
 
-      {/* ── Header — clean: name + timer left, gear + finish right ── */}
-      <div style={{
-        padding: "4px 20px 10px",
-        display: "flex", justifyContent: "space-between", alignItems: "flex-start",
-        flexShrink: 0, gap: 10,
-      }}>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          {editingName ? (
-            <input
-              autoFocus
-              value={workoutName}
-              onChange={(e) => setWorkoutName(e.target.value)}
-              onBlur={() => setEditingName(false)}
-              onKeyDown={(e) => { if (e.key === "Enter") setEditingName(false); }}
-              style={{
-                background: "transparent", border: "none", outline: "none",
-                color: COLORS.text, fontSize: 19, fontWeight: 600, padding: 0,
-                width: "100%", borderBottom: `1px solid ${COLORS.gold}`,
-              }}
-            />
-          ) : (
-            <button
-              onClick={() => setEditingName(true)}
-              style={{
-                background: "none", border: "none", padding: 0, cursor: "pointer",
-                color: COLORS.text, fontSize: 19, fontWeight: 600, textAlign: "left",
-                whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
-                width: "100%", lineHeight: 1.2,
-              }}
-            >
-              {workoutName}
-            </button>
-          )}
-          <div style={{
-            color: COLORS.gold, fontSize: 12, fontWeight: 500,
-            marginTop: 4, fontVariantNumeric: "tabular-nums",
-            display: "flex", alignItems: "center", gap: 6,
-          }}>
-            <span style={{ width: 6, height: 6, borderRadius: 3, background: COLORS.gold }} />
-            {formatDuration(elapsed)}
-            {/* Gear icon — opens settings menu (rest timer + cancel) */}
+      {/* ── Morph header — drag region + shared-element interpolation ──
+          Container is 52px tall — exactly matches SessionBar. The whole
+          surface is the drag-detection region (no separate drag pill).
+          Inside, shared elements (gold dot, workout name, duration) are
+          absolutely positioned and interpolate continuously based on
+          `dockedness`. By dockedness === 1, the layout is pixel-identical
+          to SessionBar's, so the state-flip swap is invisible.
+
+          editingName mode replaces the name <button> with an <input> only
+          at dockedness === 0 — interpolating an input would warp it. */}
+      {(() => {
+        const lerp = (a, b, t) => a + (b - a) * t;
+        const d = dockedness;
+        // Element-fade windows (0 — active fully visible, 1 — bar fully visible)
+        const activeChromeOpacity = Math.max(0, 1 - d * 2);     // out by d=0.5
+        const barChromeOpacity   = Math.max(0, (d - 0.5) * 2);  // in from d=0.5
+
+        // Shared dot — in active: 6×6 square at the left of the duration row.
+        // In bar (matches SessionBar exactly): 8×8 round, left=18, top=22 (vertically
+        // centered in 52px), with subtle glow.
+        const dotLeft   = lerp(20, 18, d);
+        const dotTop    = lerp(34, 22, d);
+        const dotSize   = lerp(6, 8, d);
+        const dotRadius = lerp(3, 4, d);
+        const dotGlow   = d > 0 ? `0 0 ${8 * d}px rgba(255,215,0,${0.6 * d})` : "none";
+
+        // Shared name — in active: top-left, fontSize 19. In bar (matches
+        // SessionBar exactly): left=38 (after 18 padding + 8 dot + 12 gap),
+        // top=11 (vertically centering the text column in 52px), fontSize 13.
+        const nameLeft     = lerp(20, 38, d);
+        const nameTop      = lerp(6, 11, d);
+        const nameFontSize = lerp(19, 13, d);
+        // Width: reserve right space for whichever chrome is visible. Active
+        // needs room for Finish button (~80). Bar needs room for chevron
+        // (~40 incl padding).
+        const nameRight    = lerp(100, 40, d);
+
+        // Shared duration — in active: inline after the dot at top=32 fontSize 12.
+        // In bar (matches SessionBar): below the name at left=38 top=28 fontSize 11.
+        const durLeft     = lerp(30, 38, d);
+        const durTop      = lerp(32, 28, d);
+        const durFontSize = lerp(12, 11, d);
+
+        const exCountSuffix = ` · ${exercises.length} ${exercises.length === 1 ? "exercise" : "exercises"}`;
+
+        return (
+          <div
+            // The whole 52px header is the drag region (no separate pill).
+            // This also gives a much larger drag hitbox than the old 36×4
+            // pill — addresses your earlier note about hitbox being too small.
+            onPointerDown={onDragHandleDown}
+            onPointerMove={onDragHandleMove}
+            onPointerUp={onDragHandleUp}
+            onPointerCancel={onDragHandleUp}
+            style={{
+              position: "relative", height: 52, flexShrink: 0,
+              touchAction: "none",
+              cursor: d === 0 ? "grab" : "default",
+              // No padding on the container — children are absolute-positioned
+              // with explicit coordinates. This keeps the morph deterministic.
+            }}
+          >
+
+            {/* SHARED — pulsing gold dot */}
+            <div style={{
+              position: "absolute",
+              left: dotLeft, top: dotTop,
+              width: dotSize, height: dotSize, borderRadius: dotRadius,
+              background: COLORS.gold,
+              boxShadow: dotGlow,
+              pointerEvents: "none",
+              transition: dragMinRef.current.dragging ? "none"
+                : "left 0.25s ease, top 0.25s ease, width 0.25s ease, height 0.25s ease, border-radius 0.25s ease, box-shadow 0.25s ease",
+            }} />
+
+            {/* SHARED — workout name. Interpolates position + font size.
+                Becomes an <input> only when editingName is true AND we're
+                fully expanded (dockedness === 0). Otherwise it's a button. */}
+            {editingName && d === 0 ? (
+              <input
+                autoFocus
+                value={workoutName}
+                onChange={(e) => setWorkoutName(e.target.value)}
+                onBlur={() => setEditingName(false)}
+                onKeyDown={(e) => { if (e.key === "Enter") setEditingName(false); }}
+                style={{
+                  position: "absolute",
+                  left: nameLeft, top: nameTop, right: nameRight,
+                  background: "transparent", border: "none", outline: "none",
+                  color: COLORS.text, fontSize: nameFontSize, fontWeight: 600,
+                  padding: 0, lineHeight: 1.2,
+                  borderBottom: `1px solid ${COLORS.gold}`,
+                }}
+              />
+            ) : (
+              <button
+                onClick={() => { if (d === 0) setEditingName(true); }}
+                style={{
+                  position: "absolute",
+                  left: nameLeft, top: nameTop, right: nameRight,
+                  background: "none", border: "none", padding: 0,
+                  cursor: d === 0 ? "pointer" : "default",
+                  color: workoutName ? COLORS.text : COLORS.textSecondary,
+                  fontSize: nameFontSize, fontWeight: 600,
+                  textAlign: "left",
+                  whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                  lineHeight: 1.2,
+                  transition: dragMinRef.current.dragging ? "none"
+                    : "left 0.25s ease, top 0.25s ease, right 0.25s ease, font-size 0.25s ease",
+                }}
+              >
+                {workoutName || "Workout Name"}
+              </button>
+            )}
+
+            {/* SHARED — duration text. Active form: just time. Bar form:
+                time · N exercises. The suffix is rendered as a separate
+                inline span that fades in. */}
+            <div style={{
+              position: "absolute",
+              left: durLeft, top: durTop,
+              color: COLORS.gold, fontSize: durFontSize, fontWeight: 500,
+              fontVariantNumeric: "tabular-nums",
+              whiteSpace: "nowrap",
+              pointerEvents: "none",
+              transition: dragMinRef.current.dragging ? "none"
+                : "left 0.25s ease, top 0.25s ease, font-size 0.25s ease",
+            }}>
+              {formatDuration(elapsed)}
+              <span style={{
+                opacity: barChromeOpacity,
+                transition: dragMinRef.current.dragging ? "none" : "opacity 0.25s ease",
+              }}>
+                {exCountSuffix}
+              </span>
+            </div>
+
+            {/* ACTIVE-ONLY — gear icon, fades out as sheet docks.
+                Position matches where it sat in the original active layout
+                (after the duration text, vertically aligned with it). */}
             <button
               onClick={() => setSettingsMenuOpen((o) => !o)}
               style={{
+                position: "absolute",
+                left: 78, top: 30,
                 background: "none", border: "none", padding: "2px 4px",
                 cursor: "pointer", color: COLORS.textSecondary,
-                display: "flex", alignItems: "center", marginLeft: 4,
+                display: "flex", alignItems: "center",
+                opacity: activeChromeOpacity,
+                pointerEvents: d > 0.4 ? "none" : "auto",
+                transition: dragMinRef.current.dragging ? "none" : "opacity 0.25s ease",
               }}
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -3449,19 +3946,42 @@ function ActiveLogger({
                 <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z" />
               </svg>
             </button>
+
+            {/* ACTIVE-ONLY — Finish button, fades out as sheet docks. */}
+            <button
+              onClick={onFinish}
+              style={{
+                position: "absolute",
+                right: 18, top: 9,
+                padding: "8px 18px", background: COLORS.gold, border: "none",
+                borderRadius: 17, color: COLORS.bg, fontSize: 13, fontWeight: 700,
+                cursor: "pointer", height: 34,
+                opacity: activeChromeOpacity,
+                pointerEvents: d > 0.4 ? "none" : "auto",
+                transition: dragMinRef.current.dragging ? "none" : "opacity 0.25s ease",
+              }}
+            >
+              Finish
+            </button>
+
+            {/* BAR-ONLY — chevron-up indicator, fades in as sheet docks.
+                Position matches SessionBar's right-side chevron. */}
+            <svg
+              width="14" height="14" viewBox="0 0 24 24" fill="none"
+              stroke={COLORS.gold} strokeWidth="2.5"
+              style={{
+                position: "absolute",
+                right: 18, top: 19,
+                opacity: barChromeOpacity,
+                pointerEvents: "none",
+                transition: dragMinRef.current.dragging ? "none" : "opacity 0.25s ease",
+              }}
+            >
+              <polyline points="18 15 12 9 6 15" />
+            </svg>
           </div>
-        </div>
-        <button
-          onClick={onFinish}
-          style={{
-            padding: "8px 18px", background: COLORS.gold, border: "none",
-            borderRadius: 17, color: COLORS.bg, fontSize: 13, fontWeight: 700,
-            cursor: "pointer", height: 34, flexShrink: 0,
-          }}
-        >
-          Finish
-        </button>
-      </div>
+        );
+      })()}
 
       {/* Settings menu (gear icon) — rest timer + cancel */}
       {settingsMenuOpen && (
@@ -3518,9 +4038,19 @@ function ActiveLogger({
         </>
       )}
 
-      {/* ── Scrollable exercise list ── */}
+      {/* ── Scrollable exercise list ──
+          When the keypad is open, an onClick on this container dismisses
+          it. Field buttons inside cards already call e.stopPropagation()
+          on their onClick, so tapping a field on another row activates
+          that field (one tap) without first dismissing the keypad. Tapping
+          truly empty space (between cards, around + Add Exercise, scroll
+          padding) still closes the keypad. Replaces the previous absolute-
+          positioned catcher overlay, which was layering above and below
+          the cards in z-order conflicts with AddExerciseSheet, set type
+          popover, and variant menu. */}
       <div
         ref={scrollRef}
+        onClick={activeField ? () => setActiveField(null) : undefined}
         style={{
           flex: 1,
           padding: "8px 20px 20px",
@@ -3540,6 +4070,7 @@ function ActiveLogger({
           <ExerciseCard
             key={ex.uid}
             exercise={ex}
+            exIdx={exIdx}
             isLast={exIdx === exercises.length - 1}
             restTimerMode={restTimerMode}
             restTimer={restTimer}
@@ -3548,12 +4079,17 @@ function ActiveLogger({
             setCaretPos={setCaretPos}
             workoutHistory={workoutHistory}
             customExercises={customExercises}
+            reorderDrag={reorderDrag}
+            onReorderStart={onReorderStart}
+            onReorderMove={onReorderMove}
+            onReorderEnd={onReorderEnd}
             onUpdateSet={(setIdx, patch) => updateSet(ex.uid, setIdx, patch)}
             onToggleSetDone={(setIdx) => toggleSetDone(ex.uid, setIdx)}
             onAddSet={() => addSet(ex.uid)}
             onRemoveSet={(setIdx) => removeSet(ex.uid, setIdx)}
             onClearRestTimer={clearRestTimer}
             onRemove={() => removeExercise(ex.uid)}
+            onOpenAlternatives={() => setAlternativesFor(ex.uid)}
             onToggleCollapsed={() => toggleExerciseCollapsed(ex.uid)}
             onOpenSetTypePopover={(setIdx) => setTypePopover({ uid: ex.uid, setIdx })}
             onOpenVariantMenu={() => setVariantMenuFor(ex.uid)}
@@ -3580,17 +4116,6 @@ function ActiveLogger({
           + Add Exercise
         </button>
       </div>
-
-      {/* ── Tap-outside catcher to dismiss keypad ── */}
-      {activeField && (
-        <div
-          onClick={() => setActiveField(null)}
-          style={{
-            position: "absolute", left: 0, right: 0, top: 0,
-            bottom: 280, zIndex: 39,
-          }}
-        />
-      )}
 
       {/* ── Numeric Keypad ── */}
       {activeField && (() => {
@@ -3786,10 +4311,44 @@ function ActiveLogger({
           userEquipment={userEquipment}
           customExercises={customExercises}
           workoutHistory={workoutHistory}
-          onClose={() => setPickerOpen(false)}
+          onClose={() => { setPickerOpen(false); setPickerSwapTargetUid(null); }}
           onAdd={addExercise}
         />
       )}
+
+      {/* ── Alternatives sheet (D-019) ── */}
+      {alternativesFor && (() => {
+        const activeEntry = exercises.find((e) => e.uid === alternativesFor);
+        if (!activeEntry) return null;
+        // Resolve to the library/custom record so the sheet has access to
+        // pattern, variants, primary, etc. Customs route through findExerciseById
+        // and arrive with pattern: undefined → empty-state per getAlternatives.
+        const libEntry = findExerciseById(activeEntry.exerciseId, customExercises);
+        if (!libEntry) return null;
+        return (
+          <AlternativesSheet
+            exercise={libEntry}
+            userEquipment={userEquipment}
+            customExercises={customExercises}
+            workoutHistory={workoutHistory}
+            onClose={() => setAlternativesFor(null)}
+            onPick={(libEx, variant) => {
+              swapExercise(alternativesFor, libEx, variant);
+              setAlternativesFor(null);
+            }}
+            onAskCoach={() => {
+              setAlternativesFor(null);
+              if (onTabChange) onTabChange("coach");
+            }}
+            onBrowseAll={() => {
+              // Hand off to the existing AddExerciseSheet in swap-mode.
+              setPickerSwapTargetUid(alternativesFor);
+              setAlternativesFor(null);
+              setPickerOpen(true);
+            }}
+          />
+        );
+      })()}
     </div>
   );
 }
@@ -3800,36 +4359,125 @@ function ActiveLogger({
    collapse-on-complete behavior, and add-set button.
 */
 function ExerciseCard({
-  exercise, isLast, restTimerMode, restTimer, activeField, caretPos, setCaretPos,
+  exercise, exIdx, isLast, restTimerMode, restTimer, activeField, caretPos, setCaretPos,
   workoutHistory = [], customExercises = [],
+  reorderDrag, onReorderStart, onReorderMove, onReorderEnd,
   onUpdateSet, onToggleSetDone, onAddSet, onRemoveSet, onClearRestTimer,
-  onRemove, onToggleCollapsed,
+  onRemove, onOpenAlternatives, onToggleCollapsed,
   onOpenSetTypePopover, onOpenVariantMenu,
   onFocusField, registerSetRef,
 }) {
-  // Swipe-to-reveal Remove/Alternative actions on the entire exercise
+  // Header pointer handler: a single point of entry that disambiguates
+  // between three gestures from rest:
+  //   • Hold still ≥300ms  → long-press → reorder begins (card lifts)
+  //   • Move horizontal ≥6px first → swipe-to-reveal Remove/Alternative
+  //   • Move vertical ≥6px first → release the gesture so the list scrolls
+  // Quick tap-and-release before any motion is a no-op (header has no
+  // primary tap action; the buttons inside it stop-propagation themselves).
   const REVEAL_WIDTH = 140;
+  const HOLD_MS = 300;
+  const SLOP = 6;
   const [drag, setDrag] = useState(0);
   const [revealed, setRevealed] = useState(false);
-  const dragRef = useRef({ startX: null, dragging: false });
+  const cardElRef = useRef(null);
+  const headerGestureRef = useRef({
+    mode: "idle",     // "idle" | "pending" | "swipe" | "reorder" | "vscroll"
+    startX: 0,
+    startY: 0,
+    holdTimer: null,
+  });
+
+  const cancelHoldTimer = () => {
+    if (headerGestureRef.current.holdTimer) {
+      clearTimeout(headerGestureRef.current.holdTimer);
+      headerGestureRef.current.holdTimer = null;
+    }
+  };
 
   const onPointerDown = (e) => {
-    dragRef.current = { startX: e.clientX, dragging: true };
+    // If the card is already swiped open (Remove/Alternative actions
+    // visible), enter a "closing" gesture mode: any pointerup will
+    // snap the card closed. No long-press, no reorder, no further swipe.
+    if (revealed) {
+      headerGestureRef.current.startX = e.clientX;
+      headerGestureRef.current.startY = e.clientY;
+      headerGestureRef.current.mode = "closing";
+      return;
+    }
+    // Capture the pointer to this element so subsequent move/up events
+    // continue to fire here even if the visible card translates out from
+    // under the finger during reorder. Without capture, the move events
+    // would route to whatever's under the actual cursor position, which
+    // for a card translated 100px down means the next card down.
+    if (e.currentTarget && e.currentTarget.setPointerCapture) {
+      try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_) { /* noop */ }
+    }
+    headerGestureRef.current.startX = e.clientX;
+    headerGestureRef.current.startY = e.clientY;
+    headerGestureRef.current.mode = "pending";
+    // Arm the long-press timer — fires only if no SLOP-exceeding motion
+    // and pointer hasn't released by then.
+    headerGestureRef.current.holdTimer = setTimeout(() => {
+      headerGestureRef.current.holdTimer = null;
+      // Confirm we're still pending (didn't transition to swipe/vscroll
+      // or pointerUp) before firing reorder.
+      if (headerGestureRef.current.mode !== "pending") return;
+      headerGestureRef.current.mode = "reorder";
+      onReorderStart(exercise.uid, exIdx, headerGestureRef.current.startY, cardElRef.current);
+    }, HOLD_MS);
   };
+
   const onPointerMove = (e) => {
-    if (!dragRef.current.dragging) return;
-    const dx = e.clientX - dragRef.current.startX;
-    let next = revealed ? -REVEAL_WIDTH + dx : dx;
-    if (next > 0) next = 0;
-    if (next < -REVEAL_WIDTH) next = -REVEAL_WIDTH;
-    setDrag(next);
+    const g = headerGestureRef.current;
+    if (g.mode === "idle") return;
+
+    if (g.mode === "pending") {
+      const dx = e.clientX - g.startX;
+      const dy = e.clientY - g.startY;
+      if (Math.abs(dx) >= SLOP && Math.abs(dx) > Math.abs(dy)) {
+        // Horizontal-first → commit to swipe-to-reveal.
+        cancelHoldTimer();
+        g.mode = "swipe";
+      } else if (Math.abs(dy) >= SLOP) {
+        // Vertical-first before hold fires → release the gesture so the
+        // list scrolls naturally. Reorder requires the user to hold still.
+        cancelHoldTimer();
+        g.mode = "vscroll";
+        return;
+      } else {
+        return; // still inside slop
+      }
+    }
+
+    if (g.mode === "swipe") {
+      const dx = e.clientX - g.startX;
+      let next = revealed ? -REVEAL_WIDTH + dx : dx;
+      if (next > 0) next = 0;
+      if (next < -REVEAL_WIDTH) next = -REVEAL_WIDTH;
+      setDrag(next);
+      return;
+    }
+
+    if (g.mode === "reorder") {
+      onReorderMove(e.clientY);
+      return;
+    }
+    // vscroll: nothing to do — let the browser handle scroll
   };
+
   const onPointerUp = () => {
-    if (!dragRef.current.dragging) return;
-    dragRef.current.dragging = false;
-    const open = drag < -REVEAL_WIDTH / 2;
-    setRevealed(open);
-    setDrag(open ? -REVEAL_WIDTH : 0);
+    const g = headerGestureRef.current;
+    cancelHoldTimer();
+    if (g.mode === "closing") {
+      closeSwipe();
+    } else if (g.mode === "swipe") {
+      const open = drag < -REVEAL_WIDTH / 2;
+      setRevealed(open);
+      setDrag(open ? -REVEAL_WIDTH : 0);
+    } else if (g.mode === "reorder") {
+      onReorderEnd();
+    }
+    g.mode = "idle";
   };
   const closeSwipe = () => { setRevealed(false); setDrag(0); };
 
@@ -3937,13 +4585,58 @@ function ExerciseCard({
     setCaretPos(pos);
   };
 
+  // Reorder visual state for THIS card. Three possibilities:
+  //   • This card is being dragged → translateY tracks pointer; isDragged=true
+  //   • A sibling is being dragged and would displace this card → translateY
+  //     equals ±cardHeight depending on whether displaced sibling moves
+  //     above or below this card's original slot
+  //   • No drag active → translateY=0
+  // Computed every render; cheap (one find + a couple of comparisons).
+  const reorderVisual = (() => {
+    if (!reorderDrag) return { translateY: 0, isDragged: false };
+    if (reorderDrag.uid === exercise.uid) {
+      return {
+        translateY: reorderDrag.pointerY - reorderDrag.startY,
+        isDragged: true,
+      };
+    }
+    const sibling = reorderDrag.siblingRects.find((s) => s.uid === exercise.uid);
+    if (!sibling) return { translateY: 0, isDragged: false };
+    const draggedCenterY = reorderDrag.cardRect.top
+      + (reorderDrag.pointerY - reorderDrag.startY)
+      + reorderDrag.cardHeight / 2;
+    const siblingMidY = sibling.top + sibling.height / 2;
+    if (sibling.idx > reorderDrag.originIdx) {
+      if (draggedCenterY > siblingMidY) {
+        return { translateY: -reorderDrag.cardHeight, isDragged: false };
+      }
+    } else {
+      if (draggedCenterY < siblingMidY) {
+        return { translateY: reorderDrag.cardHeight, isDragged: false };
+      }
+    }
+    return { translateY: 0, isDragged: false };
+  })();
+
   return (
-    <div style={{
-      position: "relative",
-      paddingBottom: 18,
-      marginBottom: 18,
-      borderBottom: isLast ? "none" : `1px solid #1F1F1F`,
-    }}>
+    <div
+      ref={cardElRef}
+      data-exercise-card={exercise.uid}
+      style={{
+        position: "relative",
+        paddingBottom: 18,
+        marginBottom: 18,
+        borderBottom: isLast ? "none" : `1px solid #1F1F1F`,
+        // Reorder visual: dragged card lifts and follows pointer; siblings
+        // shift to make space. Only the dragged card uses zIndex+shadow;
+        // siblings get translate-only.
+        transform: `translateY(${reorderVisual.translateY}px)${reorderVisual.isDragged ? " scale(1.02)" : ""}`,
+        transition: reorderDrag ? (reorderVisual.isDragged ? "none" : "transform 0.18s ease") : "none",
+        zIndex: reorderVisual.isDragged ? 50 : "auto",
+        boxShadow: reorderVisual.isDragged ? "0 12px 32px rgba(0,0,0,0.6)" : "none",
+        opacity: reorderVisual.isDragged ? 0.96 : 1,
+      }}
+    >
       {/* Underlying action layer (revealed by swiping the entire exercise) */}
       <div style={{
         position: "absolute", top: 0, right: 0, bottom: 18,
@@ -3951,7 +4644,7 @@ function ExerciseCard({
         borderRadius: 10, overflow: "hidden",
       }}>
         <button
-          onClick={() => { closeSwipe(); /* TODO: open Coach alternatives picker */ }}
+          onClick={() => { closeSwipe(); onOpenAlternatives(); }}
           style={{
             flex: 1, background: "#1F1F14", border: "none", cursor: "pointer",
             color: COLORS.gold, fontSize: 11, fontWeight: 600,
@@ -3986,7 +4679,7 @@ function ExerciseCard({
         style={{
           background: COLORS.bg,
           transform: `translateX(${drag}px)`,
-          transition: dragRef.current.dragging ? "none" : "transform 0.22s ease",
+          transition: headerGestureRef.current.mode === "swipe" ? "none" : "transform 0.22s ease",
           touchAction: "pan-y", userSelect: "none",
         }}
       >
@@ -4172,13 +4865,23 @@ function ExerciseCard({
                         {setLabel}
                       </button>
 
-                      {/* Previous reference */}
+                      {/* Previous reference. Bodyweight variants show reps
+                          only — weight is meaningless or zero on most prev
+                          rows and clutters the column. If the user logged
+                          added weight on the prev set, fall back to the
+                          weighted format so the signal isn't lost. */}
                       <span style={{
                         flex: 1, color: COLORS.textSecondary,
                         fontSize: 12, textAlign: "center",
                         fontVariantNumeric: "tabular-nums",
                       }}>
-                        {prevSet ? `${prevSet.weight}×${prevSet.reps}` : "—"}
+                        {(() => {
+                          if (!prevSet) return "—";
+                          const isBw = isBodyweightVariant(exercise.variant);
+                          const hasWeight = prevSet.weight !== "" && prevSet.weight != null && prevSet.weight !== 0;
+                          if (isBw && !hasWeight) return `${prevSet.reps}`;
+                          return `${prevSet.weight}×${prevSet.reps}`;
+                        })()}
                       </span>
 
                       {/* Weight tap-target */}
@@ -4330,17 +5033,21 @@ function ExerciseCard({
                         </button>
                       </div>
 
-                      {/* Done checkbox. Gated: tapping with empty weight
-                          or reps shakes the empty field(s) instead of
-                          toggling. A field counts as empty if it has
-                          neither a real value nor a placeholder value. */}
+                      {/* Done checkbox. Gated: tapping with empty reps (or
+                          weight, on non-bodyweight variants) shakes the empty
+                          field(s) instead of toggling. A field counts as empty
+                          if it has neither a real value nor a placeholder. For
+                          bodyweight variants the lbs field is optional — the
+                          user can leave it blank and the set still completes. */}
                       <div style={{ width: 32, display: "flex", justifyContent: "center" }}>
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
                             // Allow un-checking a set regardless of field state
                             if (set.done) { onToggleSetDone(idx); return; }
+                            const isBw = isBodyweightVariant(exercise.variant);
                             const weightReady =
+                              isBw ||
                               (set.weight !== "" && set.weight != null) ||
                               (set.weightIsPlaceholder && set.placeholderWeight !== "" && set.placeholderWeight != null);
                             const repsReady =
@@ -4675,23 +5382,46 @@ function NumericKeypad({
   };
   useEffect(() => () => stopStep(), []);
 
-  const Btn = ({ children, onClick, style: s = {}, onPointerDown: pd, onPointerUp: pu }) => (
-    <button
-      onClick={onClick}
-      onPointerDown={pd}
-      onPointerUp={pu}
-      onPointerLeave={pu}
-      onPointerCancel={pu}
-      style={{
-        height: 46, background: "#1A1A1A", border: `1px solid #252525`,
-        borderRadius: 10, color: COLORS.text, fontSize: 18, fontWeight: 500,
-        cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
-        ...s,
-      }}
-    >
-      {children}
-    </button>
-  );
+  // Per-button press state for visual tap feedback. Without this the keypad
+  // is silent on tap — no haptic on web, no pseudo-class :active on most
+  // mobile browsers reliably. We track pressed locally and flash the bg.
+  // Real haptic feedback ships with the React Native port via expo-haptics.
+  const Btn = ({ children, onClick, style: s = {}, onPointerDown: pd, onPointerUp: pu }) => {
+    const [pressed, setPressed] = useState(false);
+    const baseBg = s.background || "#1A1A1A";
+    const baseBorder = s.border || `1px solid #252525`;
+    // Pressed visuals: lift bg one notch toward gold-tinted, brighten border.
+    // Stays subtle on the gold "Next" button (already bright) and gold RIR
+    // (already accented) — for those we just dim slightly instead.
+    const isAccent = baseBg === COLORS.gold || baseBg === "#1A1A0A";
+    const pressedBg = isAccent ? baseBg : "#2A2A2A";
+    const pressedBorder = isAccent ? baseBorder : `1px solid ${COLORS.gold}`;
+    return (
+      <button
+        onClick={onClick}
+        onPointerDown={(e) => { setPressed(true); if (pd) pd(e); }}
+        onPointerUp={(e) => { setPressed(false); if (pu) pu(e); }}
+        onPointerLeave={(e) => { setPressed(false); if (pu) pu(e); }}
+        onPointerCancel={(e) => { setPressed(false); if (pu) pu(e); }}
+        style={{
+          height: 46, background: "#1A1A1A", border: `1px solid #252525`,
+          borderRadius: 10, color: COLORS.text, fontSize: 18, fontWeight: 500,
+          cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+          transition: "background 0.08s ease, border-color 0.08s ease, transform 0.08s ease",
+          WebkitTapHighlightColor: "transparent",
+          ...s,
+          // Pressed overrides go after spread so they win against incoming style.
+          ...(pressed ? {
+            background: pressedBg,
+            border: pressedBorder,
+            transform: "scale(0.96)",
+          } : {}),
+        }}
+      >
+        {children}
+      </button>
+    );
+  };
 
   return (
     <div style={{
@@ -4854,6 +5584,7 @@ function SessionBar({ workout, onTap }) {
       onClick={onTap}
       style={{
         flexShrink: 0, width: "100%", padding: "10px 18px",
+        height: 52, boxSizing: "border-box",
         background: "#161616", border: "none", borderTop: `1px solid ${COLORS.gold}`,
         cursor: "pointer", display: "flex", alignItems: "center",
         gap: 12, textAlign: "left",
@@ -4868,7 +5599,7 @@ function SessionBar({ workout, onTap }) {
           color: COLORS.text, fontSize: 13, fontWeight: 600,
           whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
         }}>
-          {workout.workoutName}
+          {workout.workoutName || "Active Workout"}
         </div>
         <div style={{
           color: COLORS.gold, fontSize: 11, fontWeight: 500,
@@ -5066,17 +5797,17 @@ function AddExerciseSheet({ userEquipment, customExercises = [], workoutHistory 
                   key={e.id}
                   onClick={() => setPendingExId(e.id)}
                   style={{
-                    width: "100%", padding: "10px 0",
-                    display: "flex", alignItems: "center", gap: 12,
+                    width: "100%", padding: "14px 0",
+                    display: "flex", alignItems: "center", gap: 14,
                     background: "none", border: "none",
                     borderBottom: `1px solid ${COLORS.border}`,
                     cursor: "pointer", textAlign: "left",
                   }}
                 >
-                  <ExerciseThumbnail size={44} monogram={e.isCustom ? e.name.charAt(0) : undefined} />
+                  <ExerciseThumbnail size={52} monogram={e.isCustom ? e.name.charAt(0) : undefined} />
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ color: COLORS.text, fontSize: 14, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{e.name}</div>
-                    <div style={{ color: COLORS.textSecondary, fontSize: 11, marginTop: 2 }}>{e.primary}</div>
+                    <div style={{ color: COLORS.text, fontSize: 15, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{e.name}</div>
+                    <div style={{ color: COLORS.textSecondary, fontSize: 12, marginTop: 2 }}>{e.primary}</div>
                   </div>
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={COLORS.textSecondary} strokeWidth="2.5"><polyline points="9 18 15 12 9 6" /></svg>
                 </button>
@@ -5131,7 +5862,7 @@ function AddExerciseSheet({ userEquipment, customExercises = [], workoutHistory 
    Bottom sheet shown when tapping a history card. Shows full session
    detail: every exercise, every set with weight/reps and type marker.
    "Repeat This Workout" CTA is reserved for a future phase. */
-function HistoryRecapSheet({ session, onClose }) {
+function HistoryRecapSheet({ session, onClose, onRepeat }) {
   if (!session) return null;
   const volume = totalVolumeFromExercises(session.exercises);
   return (
@@ -5177,21 +5908,30 @@ function HistoryRecapSheet({ session, onClose }) {
                       display: "flex", alignItems: "center", justifyContent: "center", marginRight: 12,
                     }}>{marker}</span>
                     <span style={{ flex: 1, color: COLORS.text, fontSize: 13, fontVariantNumeric: "tabular-nums" }}>
-                      {s.weight} lbs × {s.reps}
+                      {hasMeaningfulWeight(s) ? `${s.weight} lbs × ${s.reps}` : `${s.reps} reps`}
                     </span>
                   </div>
                 );
               })}
             </div>
           ))}
-          {/* Reserved for a future phase per spec */}
+          {/* Repeat This Workout — spawns a new active workout from this
+              session's exercises with placeholders pulled from the user's
+              most-recent log of each variant. If a workout is already
+              active, App-level requestRepeatWorkout opens the conflict
+              modal first. */}
           <button
-            disabled
+            disabled={!onRepeat}
+            onClick={() => { if (onRepeat) onRepeat(session); }}
             style={{
               width: "100%", padding: 14, marginTop: 8,
-              background: "transparent", border: `1.5px solid ${COLORS.border}`,
-              borderRadius: 10, color: COLORS.inactive, fontSize: 14,
-              cursor: "not-allowed",
+              background: COLORS.gold,
+              border: `1.5px solid ${COLORS.gold}`,
+              borderRadius: 10,
+              color: "#000",
+              fontSize: 14,
+              fontWeight: 600,
+              cursor: onRepeat ? "pointer" : "not-allowed",
             }}
           >
             Repeat This Workout
@@ -5268,7 +6008,7 @@ function FinishSummaryScreen({ session, onDone, onDiscard }) {
                     <div style={{ color: COLORS.textSecondary, fontSize: 11, marginTop: 2 }}>{ex.variantLabel}</div>
                   </div>
                   <div style={{ color: COLORS.textSecondary, fontSize: 11, marginLeft: 8, fontVariantNumeric: "tabular-nums", flexShrink: 0 }}>
-                    {ex.sets.length} sets · Max: {top.weight}×{top.reps}
+                    {ex.sets.length} sets · Max: {formatSetSummary(top)}
                   </div>
                 </div>
               );
@@ -5387,7 +6127,20 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
     }, 800);
   };
 
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages.length, isThinking]);
+  // Auto-scroll to the latest message. We scroll the messages container
+  // directly (via its scrollTop) rather than calling scrollIntoView() on
+  // bottomRef. scrollIntoView walks all scrollable ancestors and scrolls
+  // each one, including the document body when the App wrapper exceeds
+  // viewport height — which pushes the Coach header out the top and the
+  // TabBar out the bottom. Scoping to the parent container's scrollTop
+  // keeps the scroll contained inside the messages area.
+  useEffect(() => {
+    const el = bottomRef.current;
+    if (!el) return;
+    const container = el.parentElement;
+    if (!container) return;
+    container.scrollTo({ top: container.scrollHeight, behavior: "smooth" });
+  }, [messages.length, isThinking]);
 
   const chatRelative = (c) => formatRelativeDate(new Date(c.createdAt).toISOString().slice(0, 10));
 
@@ -5410,7 +6163,7 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
   }, [onSetInputFocused]);
 
   return (
-    <div style={{ flex: 1, display: "flex", flexDirection: "column", position: "relative" }}>
+    <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", position: "relative" }}>
       {/* Header — hidden while composing a message, so the chat area feels
           full-height and the focus is entirely on the conversation. Matches
           the pattern in Claude / iMessage / every major chat app. Restores
@@ -5473,7 +6226,7 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
       )}
 
       {/* Messages */}
-      <div style={{ flex: 1, padding: "16px 24px", overflowY: "auto" }}>
+      <div style={{ flex: 1, minHeight: 0, padding: "16px 24px", overflowY: "auto", WebkitOverflowScrolling: "touch" }}>
         {messages.map((m, i) => (
           <div key={i} style={{ marginBottom: 12, display: "flex", justifyContent: m.role === "user" ? "flex-end" : "flex-start" }}>
             <div style={{
@@ -6511,6 +7264,11 @@ function CustomExerciseForm({ existing, existingNames = [], onSave, onCancel }) 
       id: existing ? existing.id : `custom_${Date.now()}`,
       name: trimmedName,
       primary,
+      // Explicitly null so the D-019 alternatives helper short-circuits
+      // to the empty-state (Ask Coach / Browse). Customs intentionally
+      // route through Coach rather than the algorithmic match — Session 31
+      // framing: "free-tier conversion moment, not a feature gap."
+      pattern: null,
       secondary: [],
       type: "Compound",
       variants: [{ label: variantLabel, equipment: equipIds }],
@@ -6681,6 +7439,170 @@ function CustomExerciseForm({ existing, existingNames = [], onSave, onCancel }) 
               ? "Changes only affect future workouts. Past sessions keep the name and equipment they were logged with."
               : "Custom exercises are yours to track, but Coach won't include them in programmed workouts."}
           </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+/* AlternativesSheet — D-019. Bottom sheet that opens when a swiped exercise's
+   "Alternative" action is tapped in the active logger. Strict same-primary +
+   same-pattern peers, with a same-primary fallback divider when peers are
+   sparse (1-2). Empty case → Ask Coach (primary CTA) + Browse Exercises
+   (secondary). Style mirrors ExerciseDetailSheet at 70% height — picker, not
+   detail viewer, so no need for the full 85%.
+
+   Picking an alternative replaces the swiped exercise in-place via onPick.
+   The picker only shows the exercise's name + primary; variant defaulting
+   happens in the parent via pickDefaultVariant when the swap commits, the
+   same way AddExerciseSheet's stage-2 confirm screen does for the add path.
+   For the alternatives flow we skip that confirm step — the user already
+   saw a smart default elsewhere and a swap mid-workout should be one tap. */
+function AlternativesSheet({
+  exercise, userEquipment, customExercises = [], workoutHistory = [],
+  onClose, onPick, onAskCoach, onBrowseAll,
+}) {
+  const { peers, fallback, bucket } = getAlternatives(exercise, userEquipment, customExercises);
+
+  // Pick-and-commit: choose a smart default variant for the new exercise
+  // using the same logic as the detail sheet, then hand it to the parent.
+  const handlePick = (libEx) => {
+    const variant = pickDefaultVariant(libEx, userEquipment, workoutHistory, customExercises);
+    onPick(libEx, variant);
+  };
+
+  const renderRow = (e) => {
+    // Dim + subline-swap for rows the user can't currently do. Tap still
+    // works — pickDefaultVariant falls through to first-variant-in-list, so
+    // the swap commits with a sensible variant the user can re-pick via the
+    // variant chip. Bodyweight-only exercises (Push-Up, Plank, etc.) always
+    // come back null here and render bright.
+    const missingLabel = getMissingEquipmentLabel(e, userEquipment);
+    const isAvailable = missingLabel === null;
+    return (
+      <button
+        key={e.id}
+        onClick={() => handlePick(e)}
+        style={{
+          width: "100%", padding: "14px 0",
+          display: "flex", alignItems: "center", gap: 14,
+          background: "none", border: "none",
+          borderBottom: `1px solid ${COLORS.border}`,
+          cursor: "pointer", textAlign: "left",
+          opacity: isAvailable ? 1 : 0.5,
+        }}
+      >
+        <ExerciseThumbnail size={52} monogram={e.isCustom ? e.name.charAt(0) : undefined} />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ color: COLORS.text, fontSize: 15, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{e.name}</div>
+          <div style={{ color: COLORS.textSecondary, fontSize: 12, marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+            {isAvailable ? e.primary : missingLabel}
+          </div>
+        </div>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={COLORS.textSecondary} strokeWidth="2.5"><polyline points="9 18 15 12 9 6" /></svg>
+      </button>
+    );
+  };
+
+  return (
+    <>
+      {/* Backdrop */}
+      <div
+        onClick={onClose}
+        style={{
+          position: "absolute", inset: 0,
+          background: "rgba(0,0,0,0.55)", zIndex: 32,
+        }}
+      />
+
+      {/* Sheet — sits ABOVE AddExerciseSheet's z-index (31) so it stacks
+          correctly if the user opens Browse from the empty-state. */}
+      <div style={{
+        position: "absolute", left: 0, right: 0, bottom: 0,
+        height: "70%", zIndex: 33,
+        background: COLORS.bg,
+        borderTopLeftRadius: 20, borderTopRightRadius: 20,
+        border: `1px solid ${COLORS.border}`,
+        borderBottom: "none",
+        display: "flex", flexDirection: "column",
+        boxShadow: "0 -12px 32px rgba(0,0,0,0.6)",
+      }}>
+        {/* Drag handle */}
+        <div style={{ display: "flex", justifyContent: "center", padding: "8px 0 2px", flexShrink: 0 }}>
+          <div style={{ width: 36, height: 4, borderRadius: 2, background: COLORS.border }} />
+        </div>
+
+        {/* Header */}
+        <div style={{ padding: "6px 20px 14px", flexShrink: 0, textAlign: "center" }}>
+          <div style={{ color: COLORS.textSecondary, fontSize: 11, fontWeight: 500, letterSpacing: 0.5, textTransform: "uppercase", marginBottom: 4 }}>
+            Alternatives to
+          </div>
+          <h2 style={{
+            fontFamily: "Georgia, 'Times New Roman', serif",
+            fontSize: 20, color: COLORS.text,
+            margin: 0, fontWeight: 400, lineHeight: 1.2,
+          }}>{exercise.name}</h2>
+        </div>
+
+        {/* Body — three render cases driven by `bucket`. */}
+        <div style={{ flex: 1, padding: "0 20px 20px", overflowY: "auto", overscrollBehavior: "contain", minHeight: 0 }}>
+          {bucket === "primary" && (
+            <>{peers.map(renderRow)}</>
+          )}
+
+          {bucket === "fallback" && (
+            <>
+              {peers.map(renderRow)}
+              <div style={{
+                color: COLORS.textSecondary, fontSize: 11, fontWeight: 500,
+                letterSpacing: 0.5, textTransform: "uppercase",
+                margin: "20px 0 6px", paddingTop: 12,
+                borderTop: `1px solid ${COLORS.border}`,
+              }}>
+                Other {exercise.primary.toLowerCase()} exercises
+              </div>
+              {fallback.map(renderRow)}
+            </>
+          )}
+
+          {bucket === "empty" && (
+            <div style={{
+              padding: "24px 16px", marginTop: 8,
+              background: COLORS.card, border: `1px solid ${COLORS.border}`,
+              borderRadius: 12,
+              display: "flex", flexDirection: "column", alignItems: "center", gap: 12,
+            }}>
+              <div style={{
+                color: COLORS.text, fontSize: 14, lineHeight: 1.5,
+                textAlign: "center", maxWidth: 280,
+              }}>
+                No direct swaps for {exercise.name}. Coach can suggest something based on what you have.
+              </div>
+              <button
+                onClick={onAskCoach}
+                style={{
+                  width: "100%", padding: "12px 16px",
+                  background: COLORS.gold, color: "#000",
+                  border: "none", borderRadius: 10,
+                  fontSize: 14, fontWeight: 600, cursor: "pointer",
+                  marginTop: 4,
+                }}
+              >
+                Ask Coach
+              </button>
+              <button
+                onClick={onBrowseAll}
+                style={{
+                  width: "100%", padding: "10px 16px",
+                  background: "transparent", color: COLORS.textSecondary,
+                  border: `1px solid ${COLORS.border}`, borderRadius: 10,
+                  fontSize: 13, fontWeight: 500, cursor: "pointer",
+                }}
+              >
+                Browse Exercises
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </>
@@ -6914,7 +7836,7 @@ function ExerciseDetailSheet({ exercise, userEquipment, workoutHistory = [], cus
                 if (hist.length > 0) {
                   const lastSession = hist[hist.length - 1];
                   const top = sessionTopSet(lastSession.sets);
-                  preview = `${hist.length} ${hist.length === 1 ? "session" : "sessions"} · last ${top.weight}×${top.reps}`;
+                  preview = `${hist.length} ${hist.length === 1 ? "session" : "sessions"} · last ${formatSetSummary(top)}`;
                 } else {
                   preview = "No history";
                 }
@@ -7178,7 +8100,7 @@ function HistoryTabContent({ history }) {
                       color: isTop ? COLORS.gold : COLORS.textSecondary,
                       fontSize: 11, fontVariantNumeric: "tabular-nums",
                       fontWeight: isTop ? 600 : 400,
-                    }}>{set.weight} × {set.reps}</span>
+                    }}>{formatSetSummary(set, " × ")}</span>
                   );
                 })}
               </div>
@@ -7310,7 +8232,7 @@ function RecordsTabContent({ history }) {
       label: "Best Est. 1RM",
       value: `${Math.round(bestE1rm.value)}`,
       unit: "lb",
-      sub: `${bestE1rm.weight}×${bestE1rm.reps} · ${formatShortDate(bestE1rm.date)}`,
+      sub: `${formatSetSummary({ weight: bestE1rm.weight, reps: bestE1rm.reps })} · ${formatShortDate(bestE1rm.date)}`,
     },
     {
       label: "Best Set Volume",
@@ -7888,6 +8810,69 @@ export default function MYGFitness() {
     setWorkoutMinimized(false);
   };
 
+  // ── Repeat This Workout (Bible §14, shipped this session) ──
+  // Spawns a fresh active workout from a past session. Each exercise comes
+  // back with the same number of sets it had in the source session, but the
+  // weight/reps fields are PLACEHOLDERS pulled from the user's most-recent
+  // log of that variant — not from the source session itself. That matches
+  // how the rest of the placeholder system works ("show me where I last
+  // left off"), and keeps Repeat consistent with Add Exercise.
+  //
+  // Exercises whose names no longer resolve (deleted custom exercises,
+  // hypothetical library renames) are silently skipped — by spec.
+  //
+  // Workout name auto-derives from the resolved exercise list, same as a
+  // fresh workout. The user can rename freely after spawn.
+  const repeatWorkoutFromSession = (session) => {
+    if (!session) return;
+    const now = new Date();
+    const newExercises = [];
+    for (const sessionEx of session.exercises) {
+      const exDef = findExerciseByName(sessionEx.name, customExercises);
+      if (!exDef) continue; // deleted custom or unresolved — skip
+      const variant =
+        exDef.variants.find((v) => v.label === sessionEx.variantLabel) ||
+        exDef.variants[0];
+      // Pull placeholder values from the most-recent log of this variant
+      // (NOT from the source session being repeated).
+      const hist = getVariantHistory(exDef.id, variantKey(variant), workoutHistory, customExercises);
+      const lastSession = hist[hist.length - 1];
+      const setCount = sessionEx.sets.length;
+      const sets = [];
+      for (let i = 0; i < setCount; i++) {
+        const refSet = lastSession ? (lastSession.sets[i] || lastSession.sets[lastSession.sets.length - 1]) : null;
+        const hasPrev = refSet != null;
+        sets.push({
+          weight: "", reps: "", done: false, type: "working", rir: null,
+          weightIsPlaceholder: hasPrev,
+          repsIsPlaceholder: hasPrev,
+          placeholderWeight: hasPrev ? refSet.weight : "",
+          placeholderReps: hasPrev ? refSet.reps : "",
+        });
+      }
+      newExercises.push({
+        uid: `e${Date.now()}_${Math.random().toString(36).slice(2, 6)}_${newExercises.length}`,
+        exerciseId: exDef.id,
+        name: exDef.name,
+        primary: exDef.primary,
+        variant,
+        sets,
+        collapsed: false,
+      });
+    }
+    setActiveWorkout({
+      exercises: newExercises,
+      workoutName: deriveWorkoutName(newExercises, now),
+      startTime: now,
+      restTimerMode: "countup",
+      restTimer: null,
+      nameWasEdited: false,
+    });
+    setWorkoutMinimized(false);
+    setOpenHistoryId(null); // dismiss the recap sheet
+    setActiveTab("workout"); // surface the new workout
+  };
+
   const updateActiveWorkout = (patch) => {
     setActiveWorkout((prev) => {
       if (!prev) return prev;
@@ -7913,6 +8898,97 @@ export default function MYGFitness() {
   const cancelActiveWorkout = () => {
     setActiveWorkout(null);
     setWorkoutMinimized(false);
+  };
+
+  // ── Start Empty / Repeat conflict modal (Bible §14, shipped this session) ──
+  // When the user tries to start a new workout (either Start Empty or Repeat)
+  // with an active workout already running, we surface a modal: save current
+  // and proceed, discard and proceed, or cancel.
+  //
+  // The modal is generic over "what comes next" — it stores a pending action
+  // (a function to run after save/discard resolves) so the same modal serves
+  // both Start Empty (post-action: spawn fresh empty) and Repeat (post-action:
+  // spawn from a specific source session).
+  //
+  // See Bible §15 trade-off note: "save current" bypasses the FinishSummaryScreen
+  // today (the real Finish flow doesn't exist yet), so this path commits
+  // directly to workoutHistory. When Finish flow ships, this should route
+  // through it instead.
+  const [pendingStartAction, setPendingStartAction] = useState(null);
+  const showStartConflict = pendingStartAction !== null;
+
+  // Builds a session object from the currently active workout in the same
+  // shape finishActiveWorkout produces, then pushes it into history without
+  // surfacing the FinishSummaryScreen. Returns true if a session was
+  // actually committed (>0 done sets), false if there was nothing to save.
+  const commitActiveWorkoutSilently = () => {
+    if (!activeWorkout) return false;
+    const endTime = new Date();
+    const durationSec = Math.max(1, Math.floor((endTime - activeWorkout.startTime) / 1000));
+    const session = {
+      id: `s${Date.now()}`,
+      name: activeWorkout.workoutName,
+      date: endTime.toISOString().slice(0, 10),
+      durationSec,
+      exercises: activeWorkout.exercises.map((ex) => ({
+        name: ex.name,
+        variantLabel: ex.variant.label,
+        sets: ex.sets
+          .filter((s) => s.done)
+          .map((s) => ({ weight: s.weight, reps: s.reps, type: s.type, rir: s.rir })),
+      })).filter((ex) => ex.sets.length > 0),
+    };
+    if (session.exercises.length === 0) return false;
+    setWorkoutHistory((h) => [session, ...h]);
+    return true;
+  };
+
+  // Entry point for Start Empty button on the Workout tab idle area.
+  // If a workout is already active, opens the conflict modal queued with
+  // the empty-spawn post-action; otherwise spawns straight away.
+  const requestStartEmptyWorkout = () => {
+    if (activeWorkout) {
+      setPendingStartAction({ type: "empty" });
+    } else {
+      startEmptyWorkout();
+    }
+  };
+
+  // Entry point for Repeat This Workout from HistoryRecapSheet.
+  // Same conflict-check pattern: if a workout is active, queue the repeat
+  // post-action behind the modal; otherwise spawn from the session directly.
+  const requestRepeatWorkout = (session) => {
+    if (activeWorkout) {
+      setPendingStartAction({ type: "repeat", session });
+    } else {
+      repeatWorkoutFromSession(session);
+    }
+  };
+
+  // Resolves the pending action by running whatever post-action was queued
+  // (empty spawn or repeat from session).
+  const runPendingStartAction = () => {
+    if (!pendingStartAction) return;
+    if (pendingStartAction.type === "empty") {
+      startEmptyWorkout();
+    } else if (pendingStartAction.type === "repeat") {
+      repeatWorkoutFromSession(pendingStartAction.session);
+    }
+  };
+
+  const handleSaveAndStartNew = () => {
+    commitActiveWorkoutSilently(); // silently no-ops if nothing to save
+    setActiveWorkout(null);
+    setWorkoutMinimized(false);
+    runPendingStartAction();
+    setPendingStartAction(null);
+  };
+
+  const handleDiscardAndStartNew = () => {
+    setActiveWorkout(null);
+    setWorkoutMinimized(false);
+    runPendingStartAction();
+    setPendingStartAction(null);
   };
 
   const finishActiveWorkout = () => {
@@ -7986,13 +9062,15 @@ export default function MYGFitness() {
           setOpenHistoryId={setOpenHistoryId}
           finishedSession={finishedSession}
           customExercises={customExercises}
-          onStartEmpty={startEmptyWorkout}
+          onStartEmpty={requestStartEmptyWorkout}
           onUpdateWorkout={updateActiveWorkout}
           onMinimize={minimizeWorkout}
           onCancel={cancelActiveWorkout}
           onFinish={finishActiveWorkout}
           onCommitFinished={commitFinishedSession}
           onDiscardFinished={discardFinishedSession}
+          onRepeatWorkout={requestRepeatWorkout}
+          onTabChange={setActiveTab}
         />
       );
       case "coach": return (
@@ -8057,6 +9135,59 @@ export default function MYGFitness() {
         {renderTab()}
         {showSessionBar && <SessionBar workout={activeWorkout} onTap={expandWorkoutFromBar} />}
         {!hideTabBar && <TabBar active={activeTab} onTab={setActiveTab} />}
+
+        {showStartConflict && (
+          <>
+            <div
+              onClick={() => setPendingStartAction(null)}
+              style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 100 }}
+            />
+            <div style={{
+              position: "fixed", top: "50%", left: "50%", transform: "translate(-50%,-50%)",
+              zIndex: 101, background: COLORS.card, border: `1px solid ${COLORS.border}`,
+              borderRadius: 14, padding: "22px 22px 18px", width: 300,
+              boxShadow: "0 12px 32px rgba(0,0,0,0.7)",
+            }}>
+              <div style={{ color: COLORS.text, fontSize: 16, fontWeight: 600, marginBottom: 8, textAlign: "center" }}>
+                You have a workout in progress
+              </div>
+              <div style={{ color: COLORS.textSecondary, fontSize: 13, lineHeight: 1.5, marginBottom: 18, textAlign: "center" }}>
+                What would you like to do with it?
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                <button
+                  onClick={handleSaveAndStartNew}
+                  style={{
+                    width: "100%", padding: "12px", background: COLORS.gold,
+                    border: `1px solid ${COLORS.gold}`, borderRadius: 8,
+                    color: "#000", fontSize: 13, fontWeight: 600, cursor: "pointer",
+                  }}
+                >
+                  Save current and start new
+                </button>
+                <button
+                  onClick={handleDiscardAndStartNew}
+                  style={{
+                    width: "100%", padding: "12px", background: "#3A1A1A",
+                    border: "1px solid #5A2A2A", borderRadius: 8,
+                    color: "#FF6B6B", fontSize: 13, fontWeight: 600, cursor: "pointer",
+                  }}
+                >
+                  Discard current and start new
+                </button>
+              </div>
+              <div
+                onClick={() => setPendingStartAction(null)}
+                style={{
+                  marginTop: 14, color: COLORS.textSecondary, fontSize: 12,
+                  textAlign: "center", cursor: "pointer", padding: "6px",
+                }}
+              >
+                Cancel
+              </div>
+            </div>
+          </>
+        )}
       </>
     );
   };
