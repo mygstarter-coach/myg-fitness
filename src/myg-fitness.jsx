@@ -1103,34 +1103,36 @@ function formatShortDate(isoDate) {
 /* ── Shared Components ───────────────────────────────────────── */
 
 function PhoneFrame({ children }) {
+  // Full-viewport container. Replaces the old fake-bezel mockup (375×812
+  // hardcoded box with fake status bar, signal/wifi/battery SVGs, and home
+  // indicator) that was useful for desktop previews but rendered as a
+  // "phone-in-a-phone" on real devices. On a real phone, the OS provides
+  // all of that chrome — we just need to fill the screen.
+  //
+  // Uses 100dvh (dynamic viewport height) so the layout adapts when mobile
+  // browser address bars show/hide. env(safe-area-inset-*) respects the
+  // notch and home indicator on iOS. paddingBottom keeps the tab bar above
+  // the home indicator without adding a fake one.
   return (
     <div
       style={{
-        width: 375, height: 812, borderRadius: 44, background: COLORS.bg,
-        position: "relative", overflow: "hidden",
-        boxShadow: "0 25px 80px rgba(0,0,0,0.6), 0 0 0 2px #333",
+        width: "100vw",
+        height: "100dvh",
+        minHeight: "100vh",
+        background: COLORS.bg,
+        position: "relative",
+        overflow: "hidden",
         fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-        display: "flex", flexDirection: "column",
+        display: "flex",
+        flexDirection: "column",
+        paddingTop: "env(safe-area-inset-top)",
+        paddingBottom: "env(safe-area-inset-bottom)",
+        paddingLeft: "env(safe-area-inset-left)",
+        paddingRight: "env(safe-area-inset-right)",
       }}
     >
-      <div
-        style={{
-          height: 50, display: "flex", alignItems: "center", justifyContent: "space-between",
-          padding: "0 28px", fontSize: 14, fontWeight: 600, color: COLORS.text, flexShrink: 0,
-        }}
-      >
-        <span>9:41</span>
-        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-          <svg width="17" height="12" viewBox="0 0 17 12" fill="white"><rect x="0" y="3" width="3" height="9" rx="1" /><rect x="4.5" y="2" width="3" height="10" rx="1" /><rect x="9" y="0" width="3" height="12" rx="1" /><rect x="13.5" y="1" width="3" height="11" rx="1" fillOpacity="0.3" /></svg>
-          <svg width="16" height="12" viewBox="0 0 16 12" fill="white"><path d="M8 2.4C10.6 2.4 13 3.5 14.7 5.3L16 4C14 1.9 11.1 .5 8 .5S2 1.9 0 4L1.3 5.3C3 3.5 5.4 2.4 8 2.4z" fillOpacity="0.3" /><path d="M8 5.4C9.8 5.4 11.4 6.1 12.6 7.3L13.9 6C12.4 4.5 10.3 3.5 8 3.5S3.6 4.5 2.1 6L3.4 7.3C4.6 6.1 6.2 5.4 8 5.4z" fillOpacity="0.6" /><path d="M8 8.4C9 8.4 9.9 8.8 10.5 9.5L8 12 5.5 9.5C6.1 8.8 7 8.4 8 8.4z" /></svg>
-          <svg width="27" height="13" viewBox="0 0 27 13" fill="white"><rect x="0" y="0.5" width="23" height="12" rx="3.5" stroke="white" strokeWidth="1" fill="none" /><rect x="24.5" y="4" width="2" height="5" rx="1" fillOpacity="0.4" /><rect x="1.5" y="2" width="18" height="9" rx="2" fill="white" /></svg>
-        </div>
-      </div>
       <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
         {children}
-      </div>
-      <div style={{ height: 34, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-        <div style={{ width: 134, height: 5, borderRadius: 3, background: "rgba(255,255,255,0.2)" }} />
       </div>
     </div>
   );
@@ -3771,23 +3773,6 @@ function ActiveLogger({
       transition: dragMinRef.current.dragging ? "none"
         : "top 0.25s ease, background 0.25s ease, border-color 0.25s ease",
     }}>
-      {/* ── DEV-ONLY: play fake drag-down (desktop testing) ──
-          Fixed-position so it stays visible during the morph.
-          Remove before launch. grep marker: DEV_MINIMIZE_BUTTON */}
-      <button
-        onClick={playFakeDrag}
-        style={{
-          position: "fixed", top: 12, right: 12, zIndex: 90,
-          padding: "6px 10px", fontSize: 11, fontWeight: 600,
-          background: "rgba(255,215,0,0.15)",
-          border: `1px dashed ${COLORS.gold}`,
-          borderRadius: 6, color: COLORS.gold, cursor: "pointer",
-          fontFamily: "monospace",
-        }}
-      >
-        DEV: play minimize ↓
-      </button>
-
       {/* ── Morph header — drag region + shared-element interpolation ──
           Container is 52px tall — exactly matches SessionBar. The whole
           surface is the drag-detection region (no separate drag pill).
@@ -9273,7 +9258,7 @@ export default function MYGFitness() {
   };
 
   return (
-    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#0a0a0a", padding: "40px 20px" }}>
+    <div style={{ width: "100vw", minHeight: "100vh", background: COLORS.bg }}>
       <style>{`
         input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 24px; height: 24px; border-radius: 50%; background: #FFD700; cursor: pointer; border: 3px solid #111111; box-shadow: 0 0 8px rgba(255,215,0,0.4); }
         input[type="range"]::-moz-range-thumb { width: 24px; height: 24px; border-radius: 50%; background: #FFD700; cursor: pointer; border: 3px solid #111111; box-shadow: 0 0 8px rgba(255,215,0,0.4); }
