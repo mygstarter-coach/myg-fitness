@@ -85,6 +85,12 @@ function saveSnapshot(state) {
       userName: state.userName,
       // Set → Array for JSON
       selectedEquipment: Array.from(state.selectedEquipment || []),
+      // Fitness level + time away. Bible §6.5 (v26) notes: persistence
+      // wires in with the Profile tab redesign session. Both are now
+      // mirrored to localStorage so the Plan section of Coach's File
+      // survives a reload. Null is a valid value (means "not yet set").
+      fitnessLevel: state.fitnessLevel || null,
+      timeAway: state.timeAway || null,
       activeTab: state.activeTab,
       activeWorkout: serializeActiveWorkout(state.activeWorkout),
       coachChats: state.coachChats,
@@ -95,6 +101,47 @@ function saveSnapshot(state) {
       customExercises: state.customExercises || [],
       // Exercises tab sort preference. { mode: "alpha"|"recent"|"frequency", dir: "asc"|"desc" }
       exerciseSort: state.exerciseSort || { mode: "alpha", dir: "asc" },
+      // Rest timer user preferences. Persisted across workouts and across
+      // logouts (cleared explicitly on logout, like other prefs). Will be
+      // exposed in the Profile tab redesign session as a Settings row;
+      // for now, the only change interface is the gear menu inside an
+      // active workout.
+      restTimerModePref: state.restTimerModePref || "countup",
+      restCountdownTargetPref: typeof state.restCountdownTargetPref === "number" ? state.restCountdownTargetPref : 90,
+      // ── Coach's File state (Bible §6.5, v26) ──
+      // The Profile tab is reframed as "Coach's File on Tyler". Each of
+      // these arrays/objects backs one section on the landing surface and
+      // its corresponding sub-screen. All are JSON-safe primitives.
+      //
+      // plan: the four fields Coach uses to build workouts. fitnessLevel
+      //   and timeAway already live in App state, but the Profile tab
+      //   reads them through this plan object for uniformity. Days-per-week
+      //   has no home in the current app and starts here.
+      // rules: list of standing orders user gave Coach via chat. Created
+      //   in Coach chat in a future session; for now seeded with mock data
+      //   that matches the HTML reference. Cap of 15 per Bible §12.6.
+      // observations: Coach-authored notes about how the user trains.
+      //   Coach writes these from observed behavior. User can delete
+      //   individual ones or "Reset all". Seeded with mocks.
+      // progressPRs: Coach-tracked PRs and notable lifts. Read-only.
+      //   Seeded with mocks; future session computes from workoutHistory.
+      // bodyStats: height/weight/age/gender. Lives in Settings for v1
+      //   per the §15 trade-off; weigh-in log is a v2 feature.
+      planGoal: state.planGoal || "build_muscle",
+      planDaysPerWeek: typeof state.planDaysPerWeek === "number" ? state.planDaysPerWeek : 3,
+      coachRules: Array.isArray(state.coachRules) ? state.coachRules : [],
+      coachObservations: Array.isArray(state.coachObservations) ? state.coachObservations : [],
+      progressPRs: Array.isArray(state.progressPRs) ? state.progressPRs : [],
+      bodyStats: state.bodyStats && typeof state.bodyStats === "object" ? state.bodyStats : null,
+      // Coach's File metadata. lastUpdatedAt is shown in the signed footer
+      // ("— C, updated 2d ago"). fileOpenedAt is shown on first-launch
+      // empty state ("— C, file opened today"). Both are epoch millis.
+      coachFileOpenedAt: typeof state.coachFileOpenedAt === "number" ? state.coachFileOpenedAt : null,
+      coachFileLastUpdatedAt: typeof state.coachFileLastUpdatedAt === "number" ? state.coachFileLastUpdatedAt : null,
+      // Settings prefs (Bible §6.5 Settings sub-screen).
+      unitsPref: state.unitsPref || "lbs",
+      streakRemindersOn: typeof state.streakRemindersOn === "boolean" ? state.streakRemindersOn : true,
+      leaderboardOn: typeof state.leaderboardOn === "boolean" ? state.leaderboardOn : false,
     };
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot));
   } catch {
@@ -125,6 +172,27 @@ function loadSnapshot() {
       exerciseSort: parsed.exerciseSort && typeof parsed.exerciseSort === "object"
         ? parsed.exerciseSort
         : { mode: "alpha", dir: "asc" },
+      restTimerModePref: ["countup", "countdown", "off"].includes(parsed.restTimerModePref) ? parsed.restTimerModePref : "countup",
+      restCountdownTargetPref: typeof parsed.restCountdownTargetPref === "number" && parsed.restCountdownTargetPref > 0 ? parsed.restCountdownTargetPref : 90,
+      // Fitness level + time away (v26). Validate against the same
+      // enumerations the onboarding screens accept; anything else falls
+      // back to null so the app doesn't get into a wedged state.
+      fitnessLevel: ["beginner", "intermediate", "advanced"].includes(parsed.fitnessLevel) ? parsed.fitnessLevel : null,
+      timeAway: ["current", "lt1yr", "1to3yr", "gt3yr"].includes(parsed.timeAway) ? parsed.timeAway : null,
+      // Coach's File state. Each is validated to a sane shape; mismatches
+      // fall back to defaults so a corrupted snapshot can't crash the
+      // landing page.
+      planGoal: ["build_muscle", "lose_weight", "gain_strength", "get_lean"].includes(parsed.planGoal) ? parsed.planGoal : "build_muscle",
+      planDaysPerWeek: typeof parsed.planDaysPerWeek === "number" && parsed.planDaysPerWeek >= 1 && parsed.planDaysPerWeek <= 7 ? parsed.planDaysPerWeek : 3,
+      coachRules: Array.isArray(parsed.coachRules) ? parsed.coachRules : null,
+      coachObservations: Array.isArray(parsed.coachObservations) ? parsed.coachObservations : null,
+      progressPRs: Array.isArray(parsed.progressPRs) ? parsed.progressPRs : null,
+      bodyStats: parsed.bodyStats && typeof parsed.bodyStats === "object" ? parsed.bodyStats : null,
+      coachFileOpenedAt: typeof parsed.coachFileOpenedAt === "number" ? parsed.coachFileOpenedAt : null,
+      coachFileLastUpdatedAt: typeof parsed.coachFileLastUpdatedAt === "number" ? parsed.coachFileLastUpdatedAt : null,
+      unitsPref: parsed.unitsPref === "kg" ? "kg" : "lbs",
+      streakRemindersOn: typeof parsed.streakRemindersOn === "boolean" ? parsed.streakRemindersOn : true,
+      leaderboardOn: typeof parsed.leaderboardOn === "boolean" ? parsed.leaderboardOn : false,
     };
   } catch {
     return null;
@@ -188,6 +256,7 @@ const EQUIPMENT_CATEGORIES = [
     items: [
       { id: "smith_machine", label: "Smith Machine" },
       { id: "hack_squat_machine", label: "Hack Squat Machine" },
+      { id: "leg_press_machine", label: "Leg Press (45°)" },
       { id: "tbar_row_machine", label: "T-Bar Row Machine" },
       { id: "hammer_strength_chest", label: "Hammer Strength Chest Press" },
       { id: "hammer_strength_incline", label: "Hammer Strength Incline Press" },
@@ -202,7 +271,6 @@ const EQUIPMENT_CATEGORIES = [
     id: "selectorized",
     label: "Selectorized Machines",
     items: [
-      { id: "leg_press_machine", label: "Leg Press (45°)" },
       { id: "seated_leg_press_machine", label: "Seated Leg Press" },
       { id: "lying_leg_curl_machine", label: "Lying Leg Curl Machine" },
       { id: "seated_leg_curl_machine", label: "Seated Leg Curl Machine" },
@@ -252,6 +320,14 @@ const EQUIPMENT_CATEGORIES = [
 
 const ALL_IDS = EQUIPMENT_CATEGORIES.flatMap((c) => c.items.map((i) => i.id));
 
+// Flat id → pretty label lookup. Used for the "Needs ___" subline in the
+// AlternativesSheet (D-019) when a row's variants aren't available with the
+// user's equipment. Built once at module load from the same source of truth
+// as ALL_IDS so labels can never drift.
+const EQUIPMENT_LABEL_BY_ID = Object.fromEntries(
+  EQUIPMENT_CATEGORIES.flatMap((c) => c.items.map((i) => [i.id, i.label]))
+);
+
 const PRESETS = {
   full: ALL_IDS,
   home: [
@@ -267,7 +343,7 @@ const PRESETS = {
 /* ── Exercise Library (117 exercises, source of truth: Project Bible §8) ──
    Each exercise: id, name, primary, secondary[], type, variants[].
    A variant is { label, equipment: [equipment_ids] } — user needs ALL ids in
-   the list to have access to that variant (e.g. "Barbell + Flat Bench").
+   the list to have access to that variant (e.g. "Barbell").
    Equipment ids map to EQUIPMENT_CATEGORIES above. Exercises spanning two
    muscle groups (Deadlift, RDL, Good Morning, Rack Pull, Back Extension)
    appear in both filters but are de-duped in "All" by id.
@@ -275,397 +351,397 @@ const PRESETS = {
 
 const EXERCISE_LIBRARY = [
   // LEGS (20)
-  { id: "squat", name: "Squat", primary: "Legs", secondary: ["Core"], type: "Compound", variants: [
+  { id: "squat", name: "Squat", primary: "Legs", pattern: "squat_bilateral", secondary: ["Core"], type: "Compound", variants: [
     { label: "Barbell + Squat Rack", equipment: ["barbell", "squat_rack"] },
     { label: "Dumbbells", equipment: ["dumbbells"] },
     { label: "Smith Machine", equipment: ["smith_machine"] },
   ]},
-  { id: "front_squat", name: "Front Squat", primary: "Legs", secondary: ["Core"], type: "Compound", variants: [
+  { id: "front_squat", name: "Front Squat", primary: "Legs", pattern: "squat_bilateral", secondary: ["Core"], type: "Compound", variants: [
     { label: "Barbell + Squat Rack", equipment: ["barbell", "squat_rack"] },
     { label: "Smith Machine", equipment: ["smith_machine"] },
   ]},
-  { id: "goblet_squat", name: "Goblet Squat", primary: "Legs", secondary: ["Core"], type: "Compound", variants: [
+  { id: "goblet_squat", name: "Goblet Squat", primary: "Legs", pattern: "squat_bilateral", secondary: ["Core"], type: "Compound", variants: [
     { label: "Dumbbells", equipment: ["dumbbells"] },
     { label: "Kettlebells", equipment: ["kettlebell"] },
   ]},
-  { id: "deadlift", name: "Deadlift", primary: "Legs", alsoIn: ["Back"], secondary: ["Back"], type: "Compound", variants: [
+  { id: "deadlift", name: "Deadlift", primary: "Legs", pattern: "hinge_compound", alsoIn: ["Back"], secondary: ["Back"], type: "Compound", variants: [
     { label: "Barbell", equipment: ["barbell"], key: "barbell_conventional" },
     { label: "Barbell (Sumo)", equipment: ["barbell"], key: "barbell_sumo" },
     { label: "Hex Bar", equipment: ["hex_bar"] },
     { label: "Dumbbells", equipment: ["dumbbells"] },
   ]},
-  { id: "romanian_deadlift", name: "Romanian Deadlift", primary: "Legs", alsoIn: ["Back"], secondary: ["Back"], type: "Compound", variants: [
+  { id: "romanian_deadlift", name: "Romanian Deadlift", primary: "Legs", pattern: "hinge_compound", alsoIn: ["Back"], secondary: ["Back"], type: "Compound", variants: [
     { label: "Barbell", equipment: ["barbell"] },
     { label: "Dumbbells", equipment: ["dumbbells"] },
   ]},
-  { id: "good_morning", name: "Good Morning", primary: "Legs", alsoIn: ["Back"], secondary: ["Back"], type: "Compound", variants: [
+  { id: "good_morning", name: "Good Morning", primary: "Legs", pattern: "hinge_compound", alsoIn: ["Back"], secondary: ["Back"], type: "Compound", variants: [
     { label: "Barbell", equipment: ["barbell"] },
     { label: "Resistance Bands", equipment: ["resistance_bands"] },
   ]},
-  { id: "hip_thrust", name: "Hip Thrust", primary: "Legs", secondary: ["Core"], type: "Compound", variants: [
-    { label: "Barbell + Flat Bench", equipment: ["barbell", "flat_bench"] },
-    { label: "Dumbbells + Flat Bench", equipment: ["dumbbells", "flat_bench"] },
+  { id: "hip_thrust", name: "Hip Thrust", primary: "Legs", pattern: "hinge_accessory", secondary: ["Core"], type: "Compound", variants: [
+    { label: "Barbell", equipment: ["barbell", "flat_bench"] },
+    { label: "Dumbbells", equipment: ["dumbbells", "flat_bench"] },
     { label: "Hip Thrust Machine", equipment: ["hip_thrust_machine"] },
   ]},
-  { id: "leg_press", name: "Leg Press", primary: "Legs", secondary: [], type: "Compound", variants: [
+  { id: "leg_press", name: "Leg Press", primary: "Legs", pattern: "squat_bilateral", secondary: [], type: "Compound", variants: [
     { label: "Leg Press (45°)", equipment: ["leg_press_machine"] },
     { label: "Seated Leg Press", equipment: ["seated_leg_press_machine"] },
   ]},
-  { id: "hack_squat", name: "Hack Squat", primary: "Legs", secondary: [], type: "Compound", variants: [
+  { id: "hack_squat", name: "Hack Squat", primary: "Legs", pattern: "squat_bilateral", secondary: [], type: "Compound", variants: [
     { label: "Hack Squat Machine", equipment: ["hack_squat_machine"] },
   ]},
-  { id: "bulgarian_split_squat", name: "Bulgarian Split Squat", primary: "Legs", secondary: ["Core"], type: "Compound", variants: [
+  { id: "bulgarian_split_squat", name: "Bulgarian Split Squat", primary: "Legs", pattern: "squat_unilateral", secondary: ["Core"], type: "Compound", variants: [
     { label: "Barbell", equipment: ["barbell"] },
     { label: "Dumbbells", equipment: ["dumbbells"] },
   ]},
-  { id: "lunge", name: "Lunge", primary: "Legs", secondary: ["Core"], type: "Compound", variants: [
+  { id: "lunge", name: "Lunge", primary: "Legs", pattern: "squat_unilateral", secondary: ["Core"], type: "Compound", variants: [
     { label: "Barbell", equipment: ["barbell"] },
     { label: "Dumbbells", equipment: ["dumbbells"] },
-    { label: "Bodyweight", equipment: [] },
+    { label: "Bodyweight", equipment: [], bodyweight: true },
   ]},
-  { id: "step_up", name: "Step-Up", primary: "Legs", secondary: ["Core"], type: "Compound", variants: [
+  { id: "step_up", name: "Step-Up", primary: "Legs", pattern: "squat_unilateral", secondary: ["Core"], type: "Compound", variants: [
     { label: "Dumbbells + Plyo Box", equipment: ["dumbbells", "plyo_box"] },
   ]},
-  { id: "glute_bridge", name: "Glute Bridge", primary: "Legs", secondary: ["Core"], type: "Compound", variants: [
+  { id: "glute_bridge", name: "Glute Bridge", primary: "Legs", pattern: "hinge_accessory", secondary: ["Core"], type: "Compound", variants: [
     { label: "Barbell", equipment: ["barbell"] },
     { label: "Dumbbells", equipment: ["dumbbells"] },
-    { label: "Bodyweight", equipment: [] },
+    { label: "Bodyweight", equipment: [], bodyweight: true },
   ]},
-  { id: "glute_kickback", name: "Glute Kickback", primary: "Legs", secondary: [], type: "Isolation", variants: [
+  { id: "glute_kickback", name: "Glute Kickback", primary: "Legs", pattern: "isolation_glutes", secondary: [], type: "Isolation", variants: [
     { label: "Cable (Low Pulley)", equipment: ["cable_low"] },
     { label: "Glute Kickback Machine", equipment: ["glute_kickback_machine"] },
-    { label: "Bodyweight", equipment: [] },
+    { label: "Bodyweight", equipment: [], bodyweight: true },
   ]},
-  { id: "leg_curl", name: "Leg Curl", primary: "Legs", secondary: [], type: "Isolation", variants: [
+  { id: "leg_curl", name: "Leg Curl", primary: "Legs", pattern: "isolation_hamstrings", secondary: [], type: "Isolation", variants: [
     { label: "Seated Leg Curl", equipment: ["seated_leg_curl_machine"] },
     { label: "Lying Leg Curl", equipment: ["lying_leg_curl_machine"] },
   ]},
-  { id: "leg_extension", name: "Leg Extension", primary: "Legs", secondary: [], type: "Isolation", variants: [
+  { id: "leg_extension", name: "Leg Extension", primary: "Legs", pattern: "isolation_quads", secondary: [], type: "Isolation", variants: [
     { label: "Leg Extension Machine", equipment: ["leg_extension_machine"] },
   ]},
-  { id: "standing_calf_raise", name: "Standing Calf Raise", primary: "Legs", secondary: [], type: "Isolation", variants: [
+  { id: "standing_calf_raise", name: "Standing Calf Raise", primary: "Legs", pattern: "isolation_calves", secondary: [], type: "Isolation", variants: [
     { label: "Barbell", equipment: ["barbell"] },
     { label: "Dumbbells", equipment: ["dumbbells"] },
     { label: "Smith Machine", equipment: ["smith_machine"] },
     { label: "Standing Calf Raise Machine", equipment: ["standing_calf_raise_machine"] },
-    { label: "Bodyweight", equipment: [] },
+    { label: "Bodyweight", equipment: [], bodyweight: true },
   ]},
-  { id: "seated_calf_raise", name: "Seated Calf Raise", primary: "Legs", secondary: [], type: "Isolation", variants: [
+  { id: "seated_calf_raise", name: "Seated Calf Raise", primary: "Legs", pattern: "isolation_calves", secondary: [], type: "Isolation", variants: [
     { label: "Seated Calf Raise Machine", equipment: ["seated_calf_raise_machine"] },
     { label: "Plate on Knees", equipment: ["weight_plates"] },
     { label: "Rotary Calf Machine", equipment: ["rotary_calf_machine"] },
     { label: "Calf Press on 45° Leg Press", equipment: ["leg_press_machine"] },
     { label: "Calf Press on Seated Leg Press", equipment: ["seated_leg_press_machine"] },
   ]},
-  { id: "hip_abductor", name: "Hip Abductor", primary: "Legs", secondary: [], type: "Isolation", variants: [
+  { id: "hip_abductor", name: "Hip Abductor", primary: "Legs", pattern: "isolation_hip_abductor", secondary: [], type: "Isolation", variants: [
     { label: "Hip Abductor Machine", equipment: ["hip_abductor_machine"] },
   ]},
-  { id: "hip_adductor", name: "Hip Adductor", primary: "Legs", secondary: [], type: "Isolation", variants: [
+  { id: "hip_adductor", name: "Hip Adductor", primary: "Legs", pattern: "isolation_hip_adductor", secondary: [], type: "Isolation", variants: [
     { label: "Hip Adductor Machine", equipment: ["hip_abductor_machine"] },
   ]},
-  { id: "box_jump", name: "Box Jump", primary: "Legs", secondary: ["Core"], type: "Compound", variants: [
-    { label: "Plyo Box", equipment: ["plyo_box"] },
+  { id: "box_jump", name: "Box Jump", primary: "Legs", pattern: "conditioning", secondary: ["Core"], type: "Compound", variants: [
+    { label: "Plyo Box", equipment: ["plyo_box"], bodyweight: true },
   ]},
 
   // BACK (18) — deadlift/RDL/good_morning already declared under Legs with alsoIn
-  { id: "rack_pull", name: "Rack Pull", primary: "Back", secondary: ["Legs"], type: "Compound", variants: [
+  { id: "rack_pull", name: "Rack Pull", primary: "Back", pattern: "hinge_compound", secondary: ["Legs"], type: "Compound", variants: [
     { label: "Barbell + Squat Rack", equipment: ["barbell", "squat_rack"] },
   ]},
-  { id: "bent_over_row", name: "Bent-Over Row", primary: "Back", secondary: ["Arms"], type: "Compound", variants: [
+  { id: "bent_over_row", name: "Bent-Over Row", primary: "Back", pattern: "horizontal_pull", secondary: ["Arms"], type: "Compound", variants: [
     { label: "Barbell", equipment: ["barbell"] },
     { label: "Dumbbells", equipment: ["dumbbells"] },
     { label: "Smith Machine", equipment: ["smith_machine"] },
   ]},
-  { id: "single_arm_row", name: "Single-Arm Row", primary: "Back", secondary: ["Arms"], type: "Compound", variants: [
+  { id: "single_arm_row", name: "Single-Arm Row", primary: "Back", pattern: "horizontal_pull", secondary: ["Arms"], type: "Compound", variants: [
     { label: "Dumbbells", equipment: ["dumbbells"] },
     { label: "Cable (Low Pulley)", equipment: ["cable_low"] },
   ]},
-  { id: "incline_row", name: "Incline Row", primary: "Back", secondary: ["Arms"], type: "Compound", variants: [
-    { label: "Barbell + Adjustable Bench", equipment: ["barbell", "adjustable_bench"] },
-    { label: "Dumbbells + Adjustable Bench", equipment: ["dumbbells", "adjustable_bench"] },
+  { id: "incline_row", name: "Incline Row", primary: "Back", pattern: "horizontal_pull", secondary: ["Arms"], type: "Compound", variants: [
+    { label: "Barbell", equipment: ["barbell", "adjustable_bench"] },
+    { label: "Dumbbells", equipment: ["dumbbells", "adjustable_bench"] },
   ]},
-  { id: "seated_row", name: "Seated Row", primary: "Back", secondary: ["Arms"], type: "Compound", variants: [
+  { id: "seated_row", name: "Seated Row", primary: "Back", pattern: "horizontal_pull", secondary: ["Arms"], type: "Compound", variants: [
     { label: "Seated Cable Row", equipment: ["seated_cable_row"] },
     { label: "Iso Lateral Row Machine", equipment: ["iso_lateral_row_machine"] },
     { label: "Cable (Low Pulley)", equipment: ["cable_low"] },
   ]},
-  { id: "tbar_row", name: "T-Bar Row", primary: "Back", secondary: ["Arms"], type: "Compound", variants: [
+  { id: "tbar_row", name: "T-Bar Row", primary: "Back", pattern: "horizontal_pull", secondary: ["Arms"], type: "Compound", variants: [
     { label: "T-Bar Row Machine", equipment: ["tbar_row_machine"] },
   ]},
-  { id: "upright_row", name: "Upright Row", primary: "Back", secondary: ["Shoulders"], type: "Compound", variants: [
+  { id: "upright_row", name: "Upright Row", primary: "Back", pattern: "isolation_traps", secondary: ["Shoulders"], type: "Compound", variants: [
     { label: "Barbell", equipment: ["barbell"] },
     { label: "Dumbbells", equipment: ["dumbbells"] },
     { label: "Resistance Bands", equipment: ["resistance_bands"] },
   ]},
-  { id: "lat_pulldown", name: "Lat Pulldown", primary: "Back", secondary: ["Arms"], type: "Compound", variants: [
+  { id: "lat_pulldown", name: "Lat Pulldown", primary: "Back", pattern: "vertical_pull", secondary: ["Arms"], type: "Compound", variants: [
     { label: "Cable Lat Pulldown", equipment: ["cable_lat_pulldown"] },
     { label: "Lat Pulldown Machine", equipment: ["lat_pulldown_machine"] },
     { label: "Single-Arm Cable", equipment: ["cable_high"], key: "cable_high_single_arm" },
   ]},
-  { id: "pull_up", name: "Pull-Up", primary: "Back", secondary: ["Arms"], type: "Compound", variants: [
-    { label: "Pull-Up Bar", equipment: ["pull_up_bar"] },
+  { id: "pull_up", name: "Pull-Up", primary: "Back", pattern: "vertical_pull", secondary: ["Arms"], type: "Compound", variants: [
+    { label: "Pull-Up Bar", equipment: ["pull_up_bar"], bodyweight: true },
     { label: "Assisted Pull-Up Machine", equipment: ["assisted_pullup_machine"] },
-    { label: "Resistance Bands", equipment: ["resistance_bands", "pull_up_bar"] },
+    { label: "Resistance Bands", equipment: ["resistance_bands", "pull_up_bar"], bodyweight: true },
   ]},
-  { id: "chin_up", name: "Chin-Up", primary: "Back", secondary: ["Arms"], type: "Compound", variants: [
-    { label: "Pull-Up Bar", equipment: ["pull_up_bar"] },
+  { id: "chin_up", name: "Chin-Up", primary: "Back", pattern: "vertical_pull", secondary: ["Arms"], type: "Compound", variants: [
+    { label: "Pull-Up Bar", equipment: ["pull_up_bar"], bodyweight: true },
     { label: "Assisted Pull-Up Machine", equipment: ["assisted_pullup_machine"] },
-    { label: "Resistance Bands", equipment: ["resistance_bands", "pull_up_bar"] },
+    { label: "Resistance Bands", equipment: ["resistance_bands", "pull_up_bar"], bodyweight: true },
   ]},
-  { id: "inverted_row", name: "Inverted Row", primary: "Back", secondary: ["Arms"], type: "Compound", variants: [
-    { label: "Bodyweight", equipment: [] },
+  { id: "inverted_row", name: "Inverted Row", primary: "Back", pattern: "horizontal_pull", secondary: ["Arms"], type: "Compound", variants: [
+    { label: "Bodyweight", equipment: [], bodyweight: true },
   ]},
-  { id: "straight_arm_pulldown", name: "Straight-Arm Pulldown", primary: "Back", secondary: [], type: "Isolation", variants: [
+  { id: "straight_arm_pulldown", name: "Straight-Arm Pulldown", primary: "Back", pattern: "isolation_lats", secondary: [], type: "Isolation", variants: [
     { label: "Cable (High Pulley)", equipment: ["cable_high"] },
   ]},
-  { id: "face_pull", name: "Face Pull", primary: "Back", secondary: ["Shoulders"], type: "Isolation", variants: [
+  { id: "face_pull", name: "Face Pull", primary: "Back", pattern: "isolation_rear_delt", secondary: ["Shoulders"], type: "Isolation", variants: [
     { label: "Cable (High Pulley)", equipment: ["cable_high"] },
   ]},
-  { id: "shrug", name: "Shrug", primary: "Back", secondary: [], type: "Isolation", variants: [
+  { id: "shrug", name: "Shrug", primary: "Back", pattern: "isolation_traps", secondary: [], type: "Isolation", variants: [
     { label: "Barbell", equipment: ["barbell"] },
     { label: "Dumbbells", equipment: ["dumbbells"] },
   ]},
-  { id: "back_extension", name: "Back Extension", primary: "Back", secondary: ["Legs"], type: "Compound", variants: [
-    { label: "Hyperextension Bench", equipment: ["hyperextension_bench"] },
+  { id: "back_extension", name: "Back Extension", primary: "Back", pattern: "hinge_accessory", secondary: ["Legs"], type: "Compound", variants: [
+    { label: "Hyperextension Bench", equipment: ["hyperextension_bench"], bodyweight: true },
     { label: "Back Extension Machine", equipment: ["back_extension_machine"] },
   ]},
 
   // CHEST (11)
-  { id: "bench_press", name: "Bench Press", primary: "Chest", secondary: ["Shoulders", "Arms"], type: "Compound", variants: [
-    { label: "Barbell + Flat Bench", equipment: ["barbell", "flat_bench"] },
-    { label: "Dumbbells + Flat Bench", equipment: ["dumbbells", "flat_bench"] },
-    { label: "Smith Machine + Flat Bench", equipment: ["smith_machine", "flat_bench"] },
+  { id: "bench_press", name: "Bench Press", primary: "Chest", pattern: "horizontal_press", secondary: ["Shoulders", "Arms"], type: "Compound", variants: [
+    { label: "Barbell", equipment: ["barbell", "flat_bench"] },
+    { label: "Dumbbells", equipment: ["dumbbells", "flat_bench"] },
+    { label: "Smith Machine", equipment: ["smith_machine", "flat_bench"] },
   ]},
-  { id: "incline_press", name: "Incline Press", primary: "Chest", secondary: ["Shoulders", "Arms"], type: "Compound", variants: [
-    { label: "Barbell + Adjustable Bench", equipment: ["barbell", "adjustable_bench"] },
-    { label: "Dumbbells + Adjustable Bench", equipment: ["dumbbells", "adjustable_bench"] },
-    { label: "Smith Machine + Adjustable Bench", equipment: ["smith_machine", "adjustable_bench"] },
+  { id: "incline_press", name: "Incline Bench Press", primary: "Chest", pattern: "horizontal_press", secondary: ["Shoulders", "Arms"], type: "Compound", variants: [
+    { label: "Barbell", equipment: ["barbell", "adjustable_bench"] },
+    { label: "Dumbbells", equipment: ["dumbbells", "adjustable_bench"] },
+    { label: "Smith Machine", equipment: ["smith_machine", "adjustable_bench"] },
   ]},
-  { id: "decline_press", name: "Decline Press", primary: "Chest", secondary: ["Arms"], type: "Compound", variants: [
-    { label: "Barbell + Adjustable Bench", equipment: ["barbell", "adjustable_bench"] },
-    { label: "Dumbbells + Adjustable Bench", equipment: ["dumbbells", "adjustable_bench"] },
+  { id: "decline_press", name: "Decline Bench Press", primary: "Chest", pattern: "horizontal_press", secondary: ["Arms"], type: "Compound", variants: [
+    { label: "Barbell", equipment: ["barbell", "adjustable_bench"] },
+    { label: "Dumbbells", equipment: ["dumbbells", "adjustable_bench"] },
   ]},
-  { id: "machine_press", name: "Machine Press", primary: "Chest", secondary: ["Shoulders", "Arms"], type: "Compound", variants: [
+  { id: "machine_press", name: "Machine Press", primary: "Chest", pattern: "horizontal_press", secondary: ["Shoulders", "Arms"], type: "Compound", variants: [
     { label: "Hammer Strength Chest Press", equipment: ["hammer_strength_chest"] },
     { label: "Hammer Strength Incline Press", equipment: ["hammer_strength_incline"] },
     { label: "Hammer Strength Decline Press", equipment: ["hammer_strength_decline"] },
   ]},
-  { id: "chest_fly", name: "Chest Fly", primary: "Chest", secondary: [], type: "Isolation", variants: [
-    { label: "Dumbbells + Flat Bench", equipment: ["dumbbells", "flat_bench"] },
+  { id: "chest_fly", name: "Chest Fly", primary: "Chest", pattern: "isolation_chest", secondary: [], type: "Isolation", variants: [
+    { label: "Dumbbells", equipment: ["dumbbells", "flat_bench"] },
     { label: "Pec Deck", equipment: ["pec_deck"] },
   ]},
-  { id: "incline_chest_fly", name: "Incline Chest Fly", primary: "Chest", secondary: [], type: "Isolation", variants: [
-    { label: "Dumbbells + Adjustable Bench", equipment: ["dumbbells", "adjustable_bench"] },
+  { id: "incline_chest_fly", name: "Incline Chest Fly", primary: "Chest", pattern: "isolation_chest", secondary: [], type: "Isolation", variants: [
+    { label: "Dumbbells", equipment: ["dumbbells", "adjustable_bench"] },
   ]},
-  { id: "cable_crossover", name: "Cable Crossover", primary: "Chest", secondary: [], type: "Isolation", variants: [
+  { id: "cable_crossover", name: "Cable Crossover", primary: "Chest", pattern: "isolation_chest", secondary: [], type: "Isolation", variants: [
     { label: "Cable Crossover", equipment: ["cable_crossover"] },
   ]},
-  { id: "push_up", name: "Push-Up", primary: "Chest", secondary: ["Arms", "Core"], type: "Compound", variants: [
-    { label: "Standard", equipment: [], key: "bodyweight_standard" },
-    { label: "Diamond", equipment: [], key: "bodyweight_diamond" },
+  { id: "push_up", name: "Push-Up", primary: "Chest", pattern: "horizontal_press", secondary: ["Arms", "Core"], type: "Compound", variants: [
+    { label: "Standard", equipment: [], key: "bodyweight_standard", bodyweight: true },
+    { label: "Diamond", equipment: [], key: "bodyweight_diamond", bodyweight: true },
   ]},
-  { id: "dip", name: "Dip", primary: "Chest", secondary: ["Arms"], type: "Compound", variants: [
-    { label: "Dip Station", equipment: ["dip_station"] },
+  { id: "dip", name: "Dip", primary: "Chest", pattern: "horizontal_press", secondary: ["Arms"], type: "Compound", variants: [
+    { label: "Dip Station", equipment: ["dip_station"], bodyweight: true },
     { label: "Assisted Dip Machine", equipment: ["assisted_pullup_machine"] },
   ]},
-  { id: "svend_press", name: "Svend Press", primary: "Chest", secondary: [], type: "Isolation", variants: [
+  { id: "svend_press", name: "Svend Press", primary: "Chest", pattern: "isolation_chest", secondary: [], type: "Isolation", variants: [
     { label: "Weight Plates", equipment: ["weight_plates"] },
   ]},
-  { id: "floor_press", name: "Floor Press", primary: "Chest", secondary: ["Arms"], type: "Compound", variants: [
+  { id: "floor_press", name: "Floor Press", primary: "Chest", pattern: "horizontal_press", secondary: ["Arms"], type: "Compound", variants: [
     { label: "Barbell", equipment: ["barbell"] },
     { label: "Dumbbells", equipment: ["dumbbells"] },
   ]},
-  { id: "pullover", name: "Pullover", primary: "Chest", secondary: ["Back"], type: "Isolation", variants: [
-    { label: "Dumbbells + Flat Bench", equipment: ["dumbbells", "flat_bench"] },
+  { id: "pullover", name: "Pullover", primary: "Chest", pattern: "isolation_chest", secondary: ["Back"], type: "Isolation", variants: [
+    { label: "Dumbbells", equipment: ["dumbbells", "flat_bench"] },
     { label: "Cable (High Pulley)", equipment: ["cable_high"] },
   ]},
 
   // SHOULDERS (9)
-  { id: "overhead_press", name: "Overhead Press", primary: "Shoulders", secondary: ["Arms", "Core"], type: "Compound", variants: [
+  { id: "overhead_press", name: "Overhead Press", primary: "Shoulders", pattern: "vertical_press", secondary: ["Arms", "Core"], type: "Compound", variants: [
     { label: "Barbell", equipment: ["barbell"] },
     { label: "Dumbbells", equipment: ["dumbbells"] },
     { label: "Smith Machine", equipment: ["smith_machine"] },
   ]},
-  { id: "arnold_press", name: "Arnold Press", primary: "Shoulders", secondary: ["Arms"], type: "Compound", variants: [
+  { id: "arnold_press", name: "Arnold Press", primary: "Shoulders", pattern: "vertical_press", secondary: ["Arms"], type: "Compound", variants: [
     { label: "Dumbbells", equipment: ["dumbbells"] },
   ]},
-  { id: "machine_shoulder_press", name: "Machine Shoulder Press", primary: "Shoulders", secondary: ["Arms"], type: "Compound", variants: [
+  { id: "machine_shoulder_press", name: "Machine Shoulder Press", primary: "Shoulders", pattern: "vertical_press", secondary: ["Arms"], type: "Compound", variants: [
     { label: "Hammer Strength Shoulder Press", equipment: ["hammer_strength_shoulder"] },
   ]},
-  { id: "lateral_raise", name: "Lateral Raise", primary: "Shoulders", secondary: [], type: "Isolation", variants: [
+  { id: "lateral_raise", name: "Lateral Raise", primary: "Shoulders", pattern: "isolation_side_delt", secondary: [], type: "Isolation", variants: [
     { label: "Dumbbells", equipment: ["dumbbells"] },
     { label: "Cable (Low Pulley)", equipment: ["cable_low"] },
     { label: "Lateral Raise Machine", equipment: ["lateral_raise_machine"] },
     { label: "Resistance Bands", equipment: ["resistance_bands"] },
   ]},
-  { id: "front_raise", name: "Front Raise", primary: "Shoulders", secondary: [], type: "Isolation", variants: [
+  { id: "front_raise", name: "Front Raise", primary: "Shoulders", pattern: "isolation_front_delt", secondary: [], type: "Isolation", variants: [
     { label: "Dumbbells", equipment: ["dumbbells"] },
     { label: "Barbell", equipment: ["barbell"] },
     { label: "Cable (Low Pulley)", equipment: ["cable_low"] },
   ]},
-  { id: "rear_delt_fly", name: "Rear Delt Fly", primary: "Shoulders", secondary: [], type: "Isolation", variants: [
+  { id: "rear_delt_fly", name: "Rear Delt Fly", primary: "Shoulders", pattern: "isolation_rear_delt", secondary: [], type: "Isolation", variants: [
     { label: "Dumbbells", equipment: ["dumbbells"] },
     { label: "Cable Crossover", equipment: ["cable_crossover"] },
     { label: "Pec Deck (Reverse)", equipment: ["pec_deck"] },
   ]},
-  { id: "landmine_press", name: "Landmine Press", primary: "Shoulders", secondary: ["Arms", "Core"], type: "Compound", variants: [
+  { id: "landmine_press", name: "Landmine Press", primary: "Shoulders", pattern: "vertical_press", secondary: ["Arms", "Core"], type: "Compound", variants: [
     { label: "Barbell", equipment: ["barbell"] },
   ]},
-  { id: "handstand_push_up", name: "Handstand Push-Up", primary: "Shoulders", secondary: ["Arms", "Core"], type: "Compound", variants: [
-    { label: "Bodyweight", equipment: [] },
+  { id: "handstand_push_up", name: "Handstand Push-Up", primary: "Shoulders", pattern: "vertical_press", secondary: ["Arms", "Core"], type: "Compound", variants: [
+    { label: "Bodyweight", equipment: [], bodyweight: true },
   ]},
 
   // ARMS (13)
-  { id: "bicep_curl", name: "Bicep Curl", primary: "Arms", secondary: [], type: "Isolation", variants: [
+  { id: "bicep_curl", name: "Bicep Curl", primary: "Arms", pattern: "isolation_biceps", secondary: [], type: "Isolation", variants: [
     { label: "Barbell", equipment: ["barbell"] },
     { label: "Dumbbells", equipment: ["dumbbells"] },
     { label: "Cable (Low Pulley)", equipment: ["cable_low"] },
     { label: "EZ Curl Bar", equipment: ["ez_curl_bar"] },
     { label: "Bicep Curl Machine", equipment: ["bicep_curl_machine"] },
   ]},
-  { id: "hammer_curl", name: "Hammer Curl", primary: "Arms", secondary: [], type: "Isolation", variants: [
+  { id: "hammer_curl", name: "Hammer Curl", primary: "Arms", pattern: "isolation_biceps", secondary: [], type: "Isolation", variants: [
     { label: "Dumbbells", equipment: ["dumbbells"] },
   ]},
-  { id: "preacher_curl", name: "Preacher Curl", primary: "Arms", secondary: [], type: "Isolation", variants: [
-    { label: "EZ Curl Bar + Preacher Bench", equipment: ["ez_curl_bar", "preacher_bench"] },
-    { label: "Dumbbells + Preacher Bench", equipment: ["dumbbells", "preacher_bench"] },
+  { id: "preacher_curl", name: "Preacher Curl", primary: "Arms", pattern: "isolation_biceps", secondary: [], type: "Isolation", variants: [
+    { label: "EZ Curl Bar", equipment: ["ez_curl_bar", "preacher_bench"] },
+    { label: "Dumbbells", equipment: ["dumbbells", "preacher_bench"] },
   ]},
-  { id: "concentration_curl", name: "Concentration Curl", primary: "Arms", secondary: [], type: "Isolation", variants: [
+  { id: "concentration_curl", name: "Concentration Curl", primary: "Arms", pattern: "isolation_biceps", secondary: [], type: "Isolation", variants: [
     { label: "Dumbbells", equipment: ["dumbbells"] },
   ]},
-  { id: "incline_curl", name: "Incline Curl", primary: "Arms", secondary: [], type: "Isolation", variants: [
-    { label: "Dumbbells + Adjustable Bench", equipment: ["dumbbells", "adjustable_bench"] },
+  { id: "incline_curl", name: "Incline Curl", primary: "Arms", pattern: "isolation_biceps", secondary: [], type: "Isolation", variants: [
+    { label: "Dumbbells", equipment: ["dumbbells", "adjustable_bench"] },
   ]},
-  { id: "tricep_pushdown", name: "Tricep Pushdown", primary: "Arms", secondary: [], type: "Isolation", variants: [
+  { id: "tricep_pushdown", name: "Tricep Pushdown", primary: "Arms", pattern: "isolation_triceps", secondary: [], type: "Isolation", variants: [
     { label: "Cable (High Pulley)", equipment: ["cable_high"] },
     { label: "Tricep Extension Machine", equipment: ["tricep_extension_machine"] },
     { label: "Resistance Bands", equipment: ["resistance_bands"] },
   ]},
-  { id: "overhead_tricep_extension", name: "Overhead Tricep Extension", primary: "Arms", secondary: [], type: "Isolation", variants: [
+  { id: "overhead_tricep_extension", name: "Overhead Tricep Extension", primary: "Arms", pattern: "isolation_triceps", secondary: [], type: "Isolation", variants: [
     { label: "Dumbbells", equipment: ["dumbbells"] },
     { label: "EZ Curl Bar", equipment: ["ez_curl_bar"] },
     { label: "Cable (High Pulley)", equipment: ["cable_high"] },
     { label: "Tricep Extension Machine", equipment: ["tricep_extension_machine"] },
   ]},
-  { id: "skull_crusher", name: "Skull Crusher", primary: "Arms", secondary: [], type: "Isolation", variants: [
-    { label: "EZ Curl Bar + Flat Bench", equipment: ["ez_curl_bar", "flat_bench"] },
-    { label: "Dumbbells + Flat Bench", equipment: ["dumbbells", "flat_bench"] },
+  { id: "skull_crusher", name: "Skull Crusher", primary: "Arms", pattern: "isolation_triceps", secondary: [], type: "Isolation", variants: [
+    { label: "EZ Curl Bar", equipment: ["ez_curl_bar", "flat_bench"] },
+    { label: "Dumbbells", equipment: ["dumbbells", "flat_bench"] },
   ]},
-  { id: "close_grip_bench", name: "Close-Grip Bench Press", primary: "Arms", secondary: ["Chest"], type: "Compound", variants: [
-    { label: "Barbell + Flat Bench", equipment: ["barbell", "flat_bench"] },
-    { label: "Smith Machine + Flat Bench", equipment: ["smith_machine", "flat_bench"] },
+  { id: "close_grip_bench", name: "Close-Grip Bench Press", primary: "Arms", pattern: "horizontal_press", secondary: ["Chest"], type: "Compound", variants: [
+    { label: "Barbell", equipment: ["barbell", "flat_bench"] },
+    { label: "Smith Machine", equipment: ["smith_machine", "flat_bench"] },
   ]},
-  { id: "tricep_kickback", name: "Tricep Kickback", primary: "Arms", secondary: [], type: "Isolation", variants: [
+  { id: "tricep_kickback", name: "Tricep Kickback", primary: "Arms", pattern: "isolation_triceps", secondary: [], type: "Isolation", variants: [
     { label: "Dumbbells", equipment: ["dumbbells"] },
     { label: "Cable (Low Pulley)", equipment: ["cable_low"] },
     { label: "Resistance Bands", equipment: ["resistance_bands"] },
   ]},
-  { id: "wrist_curl", name: "Wrist Curl", primary: "Arms", secondary: [], type: "Isolation", variants: [
+  { id: "wrist_curl", name: "Wrist Curl", primary: "Arms", pattern: "isolation_forearms", secondary: [], type: "Isolation", variants: [
     { label: "Barbell", equipment: ["barbell"] },
     { label: "Dumbbells", equipment: ["dumbbells"] },
   ]},
-  { id: "bench_dip", name: "Bench Dip", primary: "Arms", secondary: ["Chest"], type: "Compound", variants: [
-    { label: "Flat Bench", equipment: ["flat_bench"] },
+  { id: "bench_dip", name: "Bench Dip", primary: "Arms", pattern: "isolation_triceps", secondary: ["Chest"], type: "Compound", variants: [
+    { label: "Flat Bench", equipment: ["flat_bench"], bodyweight: true },
   ]},
 
   // CORE (19)
-  { id: "plank", name: "Plank", primary: "Core", secondary: [], type: "Compound", variants: [{ label: "Bodyweight", equipment: [] }]},
-  { id: "side_plank", name: "Side Plank", primary: "Core", secondary: [], type: "Compound", variants: [{ label: "Bodyweight", equipment: [] }]},
-  { id: "reverse_plank", name: "Reverse Plank", primary: "Core", secondary: [], type: "Compound", variants: [{ label: "Bodyweight", equipment: [] }]},
-  { id: "dead_bug", name: "Dead Bug", primary: "Core", secondary: [], type: "Compound", variants: [{ label: "Bodyweight", equipment: [] }]},
-  { id: "pallof_press", name: "Pallof Press", primary: "Core", secondary: [], type: "Compound", variants: [
+  { id: "plank", name: "Plank", primary: "Core", pattern: "isolation_abs", secondary: [], type: "Compound", variants: [{ label: "Bodyweight", equipment: [], bodyweight: true }]},
+  { id: "side_plank", name: "Side Plank", primary: "Core", pattern: "isolation_obliques", secondary: [], type: "Compound", variants: [{ label: "Bodyweight", equipment: [], bodyweight: true }]},
+  { id: "reverse_plank", name: "Reverse Plank", primary: "Core", pattern: "isolation_abs", secondary: [], type: "Compound", variants: [{ label: "Bodyweight", equipment: [], bodyweight: true }]},
+  { id: "dead_bug", name: "Dead Bug", primary: "Core", pattern: "isolation_abs", secondary: [], type: "Compound", variants: [{ label: "Bodyweight", equipment: [], bodyweight: true }]},
+  { id: "pallof_press", name: "Pallof Press", primary: "Core", pattern: "isolation_obliques", secondary: [], type: "Compound", variants: [
     { label: "Cable (Low Pulley)", equipment: ["cable_low"] },
     { label: "Resistance Bands", equipment: ["resistance_bands"] },
   ]},
-  { id: "ab_wheel_rollout", name: "Ab Wheel Rollout", primary: "Core", secondary: [], type: "Compound", variants: [{ label: "Ab Wheel", equipment: ["ab_wheel"] }]},
-  { id: "cable_twist", name: "Cable Twist", primary: "Core", secondary: [], type: "Compound", variants: [
+  { id: "ab_wheel_rollout", name: "Ab Wheel Rollout", primary: "Core", pattern: "isolation_abs", secondary: [], type: "Compound", variants: [{ label: "Ab Wheel", equipment: ["ab_wheel"], bodyweight: true }]},
+  { id: "cable_twist", name: "Cable Twist", primary: "Core", pattern: "isolation_obliques", secondary: [], type: "Compound", variants: [
     { label: "Cable (High Pulley)", equipment: ["cable_high"] },
     { label: "Torso Rotation Machine", equipment: ["torso_rotation_machine"] },
   ]},
-  { id: "mountain_climber", name: "Mountain Climber", primary: "Core", secondary: [], type: "Compound", variants: [{ label: "Bodyweight", equipment: [] }]},
-  { id: "crunch", name: "Crunch", primary: "Core", secondary: [], type: "Isolation", variants: [
-    { label: "Bodyweight", equipment: [] },
+  { id: "mountain_climber", name: "Mountain Climber", primary: "Core", pattern: "isolation_abs", secondary: [], type: "Compound", variants: [{ label: "Bodyweight", equipment: [], bodyweight: true }]},
+  { id: "crunch", name: "Crunch", primary: "Core", pattern: "isolation_abs", secondary: [], type: "Isolation", variants: [
+    { label: "Bodyweight", equipment: [], bodyweight: true },
     { label: "Ab Crunch Machine", equipment: ["ab_crunch_machine"] },
   ]},
-  { id: "cable_crunch", name: "Cable Crunch", primary: "Core", secondary: [], type: "Isolation", variants: [
+  { id: "cable_crunch", name: "Cable Crunch", primary: "Core", pattern: "isolation_abs", secondary: [], type: "Isolation", variants: [
     { label: "Cable (High Pulley)", equipment: ["cable_high"] },
   ]},
-  { id: "bicycle_crunch", name: "Bicycle Crunch", primary: "Core", secondary: [], type: "Isolation", variants: [{ label: "Bodyweight", equipment: [] }]},
-  { id: "oblique_crunch", name: "Oblique Crunch", primary: "Core", secondary: [], type: "Isolation", variants: [{ label: "Bodyweight", equipment: [] }]},
-  { id: "decline_crunch", name: "Decline Crunch", primary: "Core", secondary: [], type: "Isolation", variants: [
-    { label: "Adjustable Bench", equipment: ["adjustable_bench"] },
+  { id: "bicycle_crunch", name: "Bicycle Crunch", primary: "Core", pattern: "isolation_obliques", secondary: [], type: "Isolation", variants: [{ label: "Bodyweight", equipment: [], bodyweight: true }]},
+  { id: "oblique_crunch", name: "Oblique Crunch", primary: "Core", pattern: "isolation_obliques", secondary: [], type: "Isolation", variants: [{ label: "Bodyweight", equipment: [], bodyweight: true }]},
+  { id: "decline_crunch", name: "Decline Crunch", primary: "Core", pattern: "isolation_abs", secondary: [], type: "Isolation", variants: [
+    { label: "Adjustable Bench", equipment: ["adjustable_bench"], bodyweight: true },
   ]},
-  { id: "hanging_leg_raise", name: "Hanging Leg Raise", primary: "Core", secondary: [], type: "Isolation", variants: [
-    { label: "Pull-Up Bar", equipment: ["pull_up_bar"] },
+  { id: "hanging_leg_raise", name: "Hanging Leg Raise", primary: "Core", pattern: "isolation_abs", secondary: [], type: "Isolation", variants: [
+    { label: "Pull-Up Bar", equipment: ["pull_up_bar"], bodyweight: true },
   ]},
-  { id: "leg_raise", name: "Leg Raise", primary: "Core", secondary: [], type: "Isolation", variants: [
-    { label: "Bodyweight", equipment: [] },
+  { id: "leg_raise", name: "Leg Raise", primary: "Core", pattern: "isolation_abs", secondary: [], type: "Isolation", variants: [
+    { label: "Bodyweight", equipment: [], bodyweight: true },
   ]},
-  { id: "russian_twist", name: "Russian Twist", primary: "Core", secondary: [], type: "Isolation", variants: [
-    { label: "Bodyweight", equipment: [] },
+  { id: "russian_twist", name: "Russian Twist", primary: "Core", pattern: "isolation_obliques", secondary: [], type: "Isolation", variants: [
+    { label: "Bodyweight", equipment: [], bodyweight: true },
     { label: "Medicine Ball", equipment: ["medicine_ball"] },
     { label: "Weight Plates", equipment: ["weight_plates"] },
   ]},
-  { id: "side_bend", name: "Side Bend", primary: "Core", secondary: [], type: "Isolation", variants: [
+  { id: "side_bend", name: "Side Bend", primary: "Core", pattern: "isolation_obliques", secondary: [], type: "Isolation", variants: [
     { label: "Dumbbells", equipment: ["dumbbells"] },
     { label: "Cable (Low Pulley)", equipment: ["cable_low"] },
     { label: "Resistance Bands", equipment: ["resistance_bands"] },
   ]},
-  { id: "superman", name: "Superman", primary: "Core", secondary: [], type: "Isolation", variants: [{ label: "Bodyweight", equipment: [] }]},
-  { id: "v_up", name: "V-Up", primary: "Core", secondary: [], type: "Isolation", variants: [{ label: "Bodyweight", equipment: [] }]},
+  { id: "superman", name: "Superman", primary: "Core", pattern: "isolation_lower_back", secondary: [], type: "Isolation", variants: [{ label: "Bodyweight", equipment: [], bodyweight: true }]},
+  { id: "v_up", name: "V-Up", primary: "Core", pattern: "isolation_abs", secondary: [], type: "Isolation", variants: [{ label: "Bodyweight", equipment: [], bodyweight: true }]},
 
   // CARDIO (7)
-  { id: "treadmill", name: "Treadmill", primary: "Cardio", secondary: ["Legs"], type: "Compound", variants: [{ label: "Treadmill", equipment: ["treadmill"] }]},
-  { id: "stationary_bike", name: "Stationary Bike", primary: "Cardio", secondary: ["Legs"], type: "Compound", variants: [{ label: "Stationary Bike", equipment: ["stationary_bike"] }]},
-  { id: "rowing_machine", name: "Rowing Machine", primary: "Cardio", secondary: ["Back", "Arms"], type: "Compound", variants: [{ label: "Rowing Machine", equipment: ["rowing_machine"] }]},
-  { id: "elliptical", name: "Elliptical", primary: "Cardio", secondary: ["Legs"], type: "Compound", variants: [{ label: "Elliptical", equipment: ["elliptical"] }]},
-  { id: "stair_climber", name: "Stair Climber", primary: "Cardio", secondary: ["Legs"], type: "Compound", variants: [{ label: "Stair Climber", equipment: ["stair_climber"] }]},
-  { id: "jump_rope", name: "Jump Rope", primary: "Cardio", secondary: [], type: "Compound", variants: [{ label: "Jump Rope", equipment: ["jump_rope"] }]},
-  { id: "battle_ropes", name: "Battle Ropes", primary: "Cardio", secondary: ["Arms", "Shoulders"], type: "Compound", variants: [{ label: "Battle Ropes", equipment: ["battle_ropes"] }]},
+  { id: "treadmill", name: "Treadmill", primary: "Cardio", pattern: "cardio_steady", secondary: ["Legs"], type: "Compound", variants: [{ label: "Treadmill", equipment: ["treadmill"] }]},
+  { id: "stationary_bike", name: "Stationary Bike", primary: "Cardio", pattern: "cardio_steady", secondary: ["Legs"], type: "Compound", variants: [{ label: "Stationary Bike", equipment: ["stationary_bike"] }]},
+  { id: "rowing_machine", name: "Rowing Machine", primary: "Cardio", pattern: "cardio_steady", secondary: ["Back", "Arms"], type: "Compound", variants: [{ label: "Rowing Machine", equipment: ["rowing_machine"] }]},
+  { id: "elliptical", name: "Elliptical", primary: "Cardio", pattern: "cardio_steady", secondary: ["Legs"], type: "Compound", variants: [{ label: "Elliptical", equipment: ["elliptical"] }]},
+  { id: "stair_climber", name: "Stair Climber", primary: "Cardio", pattern: "cardio_steady", secondary: ["Legs"], type: "Compound", variants: [{ label: "Stair Climber", equipment: ["stair_climber"] }]},
+  { id: "jump_rope", name: "Jump Rope", primary: "Cardio", pattern: "conditioning", secondary: [], type: "Compound", variants: [{ label: "Jump Rope", equipment: ["jump_rope"] }]},
+  { id: "battle_ropes", name: "Battle Ropes", primary: "Cardio", pattern: "conditioning", secondary: ["Arms", "Shoulders"], type: "Compound", variants: [{ label: "Battle Ropes", equipment: ["battle_ropes"] }]},
 
   // FULL BODY (18)
-  { id: "power_clean", name: "Power Clean", primary: "Full Body", secondary: ["Legs", "Back", "Shoulders"], type: "Olympic", variants: [{ label: "Barbell", equipment: ["barbell"] }]},
-  { id: "hang_clean", name: "Hang Clean", primary: "Full Body", secondary: ["Legs", "Back", "Shoulders"], type: "Olympic", variants: [
+  { id: "power_clean", name: "Power Clean", primary: "Full Body", pattern: "olympic", secondary: ["Legs", "Back", "Shoulders"], type: "Olympic", variants: [{ label: "Barbell", equipment: ["barbell"] }]},
+  { id: "hang_clean", name: "Hang Clean", primary: "Full Body", pattern: "olympic", secondary: ["Legs", "Back", "Shoulders"], type: "Olympic", variants: [
     { label: "Barbell", equipment: ["barbell"] },
     { label: "Dumbbells", equipment: ["dumbbells"] },
   ]},
-  { id: "clean_and_press", name: "Clean and Press", primary: "Full Body", secondary: ["Legs", "Back", "Shoulders", "Arms"], type: "Olympic", variants: [
+  { id: "clean_and_press", name: "Clean and Press", primary: "Full Body", pattern: "olympic", secondary: ["Legs", "Back", "Shoulders", "Arms"], type: "Olympic", variants: [
     { label: "Barbell", equipment: ["barbell"] },
     { label: "Dumbbells", equipment: ["dumbbells"] },
   ]},
-  { id: "clean_and_jerk", name: "Clean and Jerk", primary: "Full Body", secondary: ["Legs", "Back", "Shoulders", "Arms"], type: "Olympic", variants: [{ label: "Barbell", equipment: ["barbell"] }]},
-  { id: "snatch", name: "Snatch", primary: "Full Body", secondary: ["Legs", "Back", "Shoulders"], type: "Olympic", variants: [{ label: "Barbell", equipment: ["barbell"] }]},
-  { id: "power_snatch", name: "Power Snatch", primary: "Full Body", secondary: ["Legs", "Back", "Shoulders"], type: "Olympic", variants: [{ label: "Barbell", equipment: ["barbell"] }]},
-  { id: "hang_snatch", name: "Hang Snatch", primary: "Full Body", secondary: ["Legs", "Back", "Shoulders"], type: "Olympic", variants: [{ label: "Barbell", equipment: ["barbell"] }]},
-  { id: "deadlift_high_pull", name: "Deadlift High Pull", primary: "Full Body", secondary: ["Back", "Shoulders"], type: "Olympic", variants: [
-    { label: "Barbell", equipment: ["barbell"] },
-    { label: "Dumbbells", equipment: ["dumbbells"] },
-    { label: "Kettlebells", equipment: ["kettlebell"] },
-  ]},
-  { id: "muscle_up", name: "Muscle-Up", primary: "Full Body", secondary: ["Back", "Chest", "Arms"], type: "Olympic", variants: [
-    { label: "Pull-Up Bar", equipment: ["pull_up_bar"] },
-    { label: "Gymnastics Rings", equipment: ["gymnastics_rings"] },
-  ]},
-  { id: "kettlebell_swing", name: "Kettlebell Swing", primary: "Full Body", secondary: ["Legs", "Back"], type: "Compound", variants: [{ label: "Kettlebells", equipment: ["kettlebell"] }]},
-  { id: "turkish_get_up", name: "Turkish Get-Up", primary: "Full Body", secondary: ["Shoulders", "Core"], type: "Compound", variants: [
-    { label: "Dumbbells", equipment: ["dumbbells"] },
-    { label: "Kettlebells", equipment: ["kettlebell"] },
-  ]},
-  { id: "thruster", name: "Thruster", primary: "Full Body", secondary: ["Legs", "Shoulders"], type: "Compound", variants: [
+  { id: "clean_and_jerk", name: "Clean and Jerk", primary: "Full Body", pattern: "olympic", secondary: ["Legs", "Back", "Shoulders", "Arms"], type: "Olympic", variants: [{ label: "Barbell", equipment: ["barbell"] }]},
+  { id: "snatch", name: "Snatch", primary: "Full Body", pattern: "olympic", secondary: ["Legs", "Back", "Shoulders"], type: "Olympic", variants: [{ label: "Barbell", equipment: ["barbell"] }]},
+  { id: "power_snatch", name: "Power Snatch", primary: "Full Body", pattern: "olympic", secondary: ["Legs", "Back", "Shoulders"], type: "Olympic", variants: [{ label: "Barbell", equipment: ["barbell"] }]},
+  { id: "hang_snatch", name: "Hang Snatch", primary: "Full Body", pattern: "olympic", secondary: ["Legs", "Back", "Shoulders"], type: "Olympic", variants: [{ label: "Barbell", equipment: ["barbell"] }]},
+  { id: "deadlift_high_pull", name: "Deadlift High Pull", primary: "Full Body", pattern: "olympic", secondary: ["Back", "Shoulders"], type: "Olympic", variants: [
     { label: "Barbell", equipment: ["barbell"] },
     { label: "Dumbbells", equipment: ["dumbbells"] },
     { label: "Kettlebells", equipment: ["kettlebell"] },
   ]},
-  { id: "farmer_carry", name: "Farmer Carry", primary: "Full Body", secondary: ["Back", "Core"], type: "Compound", variants: [
+  { id: "muscle_up", name: "Muscle-Up", primary: "Full Body", pattern: "olympic", secondary: ["Back", "Chest", "Arms"], type: "Olympic", variants: [
+    { label: "Pull-Up Bar", equipment: ["pull_up_bar"], bodyweight: true },
+    { label: "Gymnastics Rings", equipment: ["gymnastics_rings"], bodyweight: true },
+  ]},
+  { id: "kettlebell_swing", name: "Kettlebell Swing", primary: "Full Body", pattern: "conditioning", secondary: ["Legs", "Back"], type: "Compound", variants: [{ label: "Kettlebells", equipment: ["kettlebell"] }]},
+  { id: "turkish_get_up", name: "Turkish Get-Up", primary: "Full Body", pattern: "conditioning", secondary: ["Shoulders", "Core"], type: "Compound", variants: [
+    { label: "Dumbbells", equipment: ["dumbbells"] },
+    { label: "Kettlebells", equipment: ["kettlebell"] },
+  ]},
+  { id: "thruster", name: "Thruster", primary: "Full Body", pattern: "conditioning", secondary: ["Legs", "Shoulders"], type: "Compound", variants: [
+    { label: "Barbell", equipment: ["barbell"] },
+    { label: "Dumbbells", equipment: ["dumbbells"] },
+    { label: "Kettlebells", equipment: ["kettlebell"] },
+  ]},
+  { id: "farmer_carry", name: "Farmer Carry", primary: "Full Body", pattern: "carry", secondary: ["Back", "Core"], type: "Compound", variants: [
     { label: "Dumbbells", equipment: ["dumbbells"] },
     { label: "Kettlebells", equipment: ["kettlebell"] },
     { label: "Weight Plates", equipment: ["weight_plates"] },
   ]},
-  { id: "sled_push", name: "Sled Push", primary: "Full Body", secondary: ["Legs", "Core"], type: "Compound", variants: [{ label: "Sled", equipment: ["sled"] }]},
-  { id: "sled_pull", name: "Sled Pull", primary: "Full Body", secondary: ["Legs", "Back"], type: "Compound", variants: [{ label: "Sled", equipment: ["sled"] }]},
-  { id: "bear_crawl", name: "Bear Crawl", primary: "Full Body", secondary: ["Core", "Shoulders"], type: "Compound", variants: [{ label: "Bodyweight", equipment: [] }]},
-  { id: "burpee", name: "Burpee", primary: "Full Body", secondary: ["Core", "Legs"], type: "Compound", variants: [{ label: "Bodyweight", equipment: [] }]},
-  { id: "ball_slam", name: "Ball Slam", primary: "Full Body", secondary: ["Core", "Shoulders"], type: "Compound", variants: [{ label: "Medicine Ball", equipment: ["medicine_ball"] }]},
+  { id: "sled_push", name: "Sled Push", primary: "Full Body", pattern: "conditioning", secondary: ["Legs", "Core"], type: "Compound", variants: [{ label: "Sled", equipment: ["sled"] }]},
+  { id: "sled_pull", name: "Sled Pull", primary: "Full Body", pattern: "conditioning", secondary: ["Legs", "Back"], type: "Compound", variants: [{ label: "Sled", equipment: ["sled"] }]},
+  { id: "bear_crawl", name: "Bear Crawl", primary: "Full Body", pattern: "conditioning", secondary: ["Core", "Shoulders"], type: "Compound", variants: [{ label: "Bodyweight", equipment: [], bodyweight: true }]},
+  { id: "burpee", name: "Burpee", primary: "Full Body", pattern: "conditioning", secondary: ["Core", "Legs"], type: "Compound", variants: [{ label: "Bodyweight", equipment: [], bodyweight: true }]},
+  { id: "ball_slam", name: "Ball Slam", primary: "Full Body", pattern: "conditioning", secondary: ["Core", "Shoulders"], type: "Compound", variants: [{ label: "Medicine Ball", equipment: ["medicine_ball"] }]},
 ];
 
 /* Variant key helper: deterministic string derived from a variant's equipment
@@ -716,11 +792,45 @@ function exerciseHasAnyAvailableVariant(ex, userEquip) {
   return ex.variants.some((v) => variantAvailable(v, userEquip));
 }
 
+/* For the AlternativesSheet (D-019) row dim state. Returns a short label
+   like "Needs flat bench" or "Needs barbell + adjustable bench" describing
+   what the user is missing. Strategy: pick the variant with the FEWEST
+   missing equipment ids (the cheapest path to "I can do this today"), then
+   join their pretty labels with " + ". Returns null when the user has at
+   least one variant fully covered (i.e. nothing is missing — not dimmed).
+   Falls back to "Needs equipment" when the joined label would exceed ~28
+   chars, since the row is one-line and ellipsis on this string reads worse
+   than a generic message. */
+function getMissingEquipmentLabel(exercise, userEquip) {
+  if (exerciseHasAnyAvailableVariant(exercise, userEquip)) return null;
+  // Cheapest-missing variant
+  let best = null;
+  for (const v of exercise.variants) {
+    const missing = v.equipment.filter((id) => !userEquip.has(id));
+    if (missing.length === 0) return null; // safety; covered by the early return above
+    if (best === null || missing.length < best.length) best = missing;
+  }
+  if (!best) return "Needs equipment";
+  const labels = best.map((id) => (EQUIPMENT_LABEL_BY_ID[id] || id).toLowerCase());
+  const joined = `Needs ${labels.join(" + ")}`;
+  return joined.length > 28 ? "Needs equipment" : joined;
+}
+
+/* A variant is "bodyweight" if its data carries the explicit bodyweight: true
+   flag. Used by the active logger to decide whether the lbs field is required
+   for completing a set. Bodyweight variants still render the lbs tap-target
+   so the user can optionally log added weight (belt, plate held, etc.); the
+   flag only affects checkbox gating. Coalesce to false defensively — older
+   persisted variant snapshots may not carry the field. */
+function isBodyweightVariant(variant) {
+  return !!(variant && variant.bodyweight);
+}
+
 /* Multi-field search matcher. Matches if the query is a substring of any of:
    - exercise name ("Bench Press")
    - primary muscle group ("Chest")
    - secondary muscles ("Arms", "Shoulders")
-   - variant labels ("Barbell + Flat Bench", "Dumbbells", "Smith Machine")
+   - variant labels ("Barbell", "Dumbbells", "Smith Machine")
 
    This lets users search by equipment ("dumbbell"), muscle ("chest"), or
    name ("bench") and get sensible results instead of only name matching.
@@ -767,25 +877,40 @@ const SEARCH_ALIASES = {
   "pushups": "push-up",
   "chinup": "chin-up",
   "chinups": "chin-up",
+  // Bench press short forms — exercises were renamed to "Incline Bench Press"
+  // and "Decline Bench Press", but plenty of users will still type the
+  // shorter "Incline Press" / "Decline Press". Keys are normalized form
+  // (no spaces/hyphens) to match the alias-lookup key.
+  "inclinepress": "incline bench press",
+  "declinepress": "decline bench press",
 };
 
+// Normalize for search matching: lowercase, strip hyphens and whitespace.
+// Lets "Pull Up" match "Pull-Up", "push-up" match "push up", "chinup" match
+// "Chin-Up", etc. Applied symmetrically to query and haystack.
+function normalizeForSearch(s) {
+  return s.toLowerCase().replace(/[-\s]+/g, "");
+}
+
 function exerciseMatchesSearch(ex, query) {
-  const q = query.trim().toLowerCase();
+  const q = normalizeForSearch(query);
   if (!q) return true;
   // Direct match against name, primary, secondary, variants.
-  if (ex.name.toLowerCase().includes(q)) return true;
-  if (ex.primary.toLowerCase().includes(q)) return true;
-  if (ex.secondary && ex.secondary.some((m) => m.toLowerCase().includes(q))) return true;
-  if (ex.variants.some((v) => v.label.toLowerCase().includes(q))) return true;
+  if (normalizeForSearch(ex.name).includes(q)) return true;
+  if (normalizeForSearch(ex.primary).includes(q)) return true;
+  if (ex.secondary && ex.secondary.some((m) => normalizeForSearch(m).includes(q))) return true;
+  if (ex.variants.some((v) => normalizeForSearch(v.label).includes(q))) return true;
   // Alias match — if the query is a known abbreviation, also try its
   // expansion against the same fields. Avoids false negatives like "rdl"
-  // returning zero results.
+  // returning zero results. Lookup key is normalized so "Incline Press",
+  // "incline press", "incline-press", and "InclinePress" all resolve.
   const alias = SEARCH_ALIASES[q];
   if (alias) {
-    if (ex.name.toLowerCase().includes(alias)) return true;
-    if (ex.primary.toLowerCase().includes(alias)) return true;
-    if (ex.secondary && ex.secondary.some((m) => m.toLowerCase().includes(alias))) return true;
-    if (ex.variants.some((v) => v.label.toLowerCase().includes(alias))) return true;
+    const a = normalizeForSearch(alias);
+    if (normalizeForSearch(ex.name).includes(a)) return true;
+    if (normalizeForSearch(ex.primary).includes(a)) return true;
+    if (ex.secondary && ex.secondary.some((m) => normalizeForSearch(m).includes(a))) return true;
+    if (ex.variants.some((v) => normalizeForSearch(v.label).includes(a))) return true;
   }
   return false;
 }
@@ -882,6 +1007,58 @@ function pickDefaultVariant(exercise, userEquipment, workoutHistory = [], custom
   return exercise.variants[0];
 }
 
+/* Alternatives lookup for D-019. Strict same-primary + same-pattern filter,
+   with a same-primary fallback when the strict bucket is sparse (<3 peers).
+   Returns:
+     { peers, fallback, bucket }
+   where bucket ∈ "primary" | "fallback" | "empty":
+     • "primary":  3+ peers — show peers only
+     • "fallback": 1-2 peers — show peers, divider, then fallback ("Other <muscle> exercises")
+     • "empty":    0 peers — caller renders the Ask Coach / Browse empty state
+   Custom exercises (pattern: null) and orphan isolations (Lateral Raise,
+   Wrist Curl, etc — bucket size 1) intentionally trigger empty-state per
+   Session 31. The Coach paywall is a designed conversion moment, not a gap.
+   No equipment filter: all peers/fallback are returned regardless of what
+   the user owns. The traveling-user / drop-in-gym case is real — we don't
+   hide options. AlternativesSheet dims rows for un-owned exercises and
+   surfaces the missing equipment in the row's subline.
+*/
+function getAlternatives(exercise, userEquipment, customExercises = []) {
+  // No pattern means the exercise opted out of algorithmic alternatives —
+  // route to Coach. Customs land here, plus any future library entries we
+  // explicitly leave untagged.
+  if (!exercise.pattern) {
+    return { peers: [], fallback: [], bucket: "empty" };
+  }
+
+  const pool = [...EXERCISE_LIBRARY, ...customExercises];
+
+  const peers = pool.filter((e) =>
+    e.id !== exercise.id &&
+    e.pattern === exercise.pattern &&
+    e.primary === exercise.primary
+  );
+
+  // Fallback only matters when peers are sparse. Same primary, different
+  // pattern, not the exercise itself.
+  let fallback = [];
+  if (peers.length < 3) {
+    const peerIds = new Set(peers.map((e) => e.id));
+    fallback = pool.filter((e) =>
+      e.id !== exercise.id &&
+      !peerIds.has(e.id) &&
+      e.primary === exercise.primary
+    );
+  }
+
+  let bucket;
+  if (peers.length >= 3) bucket = "primary";
+  else if (peers.length >= 1) bucket = "fallback";
+  else bucket = "empty";
+
+  return { peers, fallback, bucket };
+}
+
 /* For the list row display: last max of the user's most-recently-logged
    variant of this exercise. Returns { value, date, variantLabel } or null.
    Falls back to null for exercises with no logged history at all. */
@@ -917,7 +1094,7 @@ function getRowLastMax(exerciseId, exercise, workoutHistory = [], customs = []) 
   }
 
   return {
-    value: `${topSet.weight} × ${topSet.reps}`,
+    value: formatSetSummary(topSet, " × "),
     date: latestDate,
     variantLabel,
   };
@@ -971,6 +1148,20 @@ function sessionTopSet(sets) {
   return best;
 }
 
+/* Render a "weight × reps" summary, collapsing the weight portion when the
+   set has no meaningful weight (bodyweight sets stored as 0 in older mock
+   history, or "" in new sessions where the user left the optional lbs field
+   blank). Returns formatted string for display in history rows, recaps, and
+   PR cards. Caller controls separator (`×` vs ` × ` vs ` lbs × `). */
+function hasMeaningfulWeight(set) {
+  return set && set.weight !== "" && set.weight != null && set.weight !== 0;
+}
+function formatSetSummary(set, sep = "×") {
+  if (!set) return "—";
+  if (!hasMeaningfulWeight(set)) return `${set.reps}`;
+  return `${set.weight}${sep}${set.reps}`;
+}
+
 /* Format a date string (YYYY-MM-DD) into a short display label like "Mar 22" */
 function formatShortDate(isoDate) {
   const d = new Date(isoDate + "T00:00:00");
@@ -980,27 +1171,34 @@ function formatShortDate(isoDate) {
 /* ── Shared Components ───────────────────────────────────────── */
 
 function PhoneFrame({ children }) {
-  // Stripped-down passthrough wrapper for real-device rendering.
-  // Previously this rendered a fake 375×812 phone bezel with a fake "9:41"
-  // status bar and home indicator — fine for the artifact preview, but on
-  // a real iPhone it produced a phone-in-a-phone effect. Now it just
-  // provides a flex column container; the surrounding outer wrapper sets
-  // the height, and the existing screen flex layout fills it correctly.
   return (
     <div
       style={{
-        width: "100%",
-        height: "100%",
-        background: COLORS.bg,
-        position: "relative",
-        overflow: "hidden",
+        width: 375, height: 812, borderRadius: 44, background: COLORS.bg,
+        position: "relative", overflow: "hidden",
+        boxShadow: "0 25px 80px rgba(0,0,0,0.6), 0 0 0 2px #333",
         fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-        display: "flex",
-        flexDirection: "column",
+        display: "flex", flexDirection: "column",
       }}
     >
+      <div
+        style={{
+          height: 50, display: "flex", alignItems: "center", justifyContent: "space-between",
+          padding: "0 28px", fontSize: 14, fontWeight: 600, color: COLORS.text, flexShrink: 0,
+        }}
+      >
+        <span>9:41</span>
+        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          <svg width="17" height="12" viewBox="0 0 17 12" fill="white"><rect x="0" y="3" width="3" height="9" rx="1" /><rect x="4.5" y="2" width="3" height="10" rx="1" /><rect x="9" y="0" width="3" height="12" rx="1" /><rect x="13.5" y="1" width="3" height="11" rx="1" fillOpacity="0.3" /></svg>
+          <svg width="16" height="12" viewBox="0 0 16 12" fill="white"><path d="M8 2.4C10.6 2.4 13 3.5 14.7 5.3L16 4C14 1.9 11.1 .5 8 .5S2 1.9 0 4L1.3 5.3C3 3.5 5.4 2.4 8 2.4z" fillOpacity="0.3" /><path d="M8 5.4C9.8 5.4 11.4 6.1 12.6 7.3L13.9 6C12.4 4.5 10.3 3.5 8 3.5S3.6 4.5 2.1 6L3.4 7.3C4.6 6.1 6.2 5.4 8 5.4z" fillOpacity="0.6" /><path d="M8 8.4C9 8.4 9.9 8.8 10.5 9.5L8 12 5.5 9.5C6.1 8.8 7 8.4 8 8.4z" /></svg>
+          <svg width="27" height="13" viewBox="0 0 27 13" fill="white"><rect x="0" y="0.5" width="23" height="12" rx="3.5" stroke="white" strokeWidth="1" fill="none" /><rect x="24.5" y="4" width="2" height="5" rx="1" fillOpacity="0.4" /><rect x="1.5" y="2" width="18" height="9" rx="2" fill="white" /></svg>
+        </div>
+      </div>
       <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
         {children}
+      </div>
+      <div style={{ height: 34, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+        <div style={{ width: 134, height: 5, borderRadius: 3, background: "rgba(255,255,255,0.2)" }} />
       </div>
     </div>
   );
@@ -1122,9 +1320,6 @@ function WelcomeScreen({ onGetStarted, onSignIn }) {
   useEffect(() => { setTimeout(() => setLogoV(true), 200); setTimeout(() => setContentV(true), 900); }, []);
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "0 32px", position: "relative" }}>
-      {/* V.7 marker — temporary build indicator. Bump with each push to
-          verify cache isn't serving stale code. Remove before shipping. */}
-      <div style={{ position: "absolute", top: 16, right: 20, color: COLORS.textSecondary, fontSize: 11, fontWeight: 500, letterSpacing: 1, opacity: 0.7 }}>V.7</div>
       <div style={{ position: "absolute", top: "40%", textAlign: "center", opacity: logoV ? 1 : 0, transform: logoV ? "translateY(-50%) scale(1)" : "translateY(-50%) scale(1.08)", transition: "all 0.9s cubic-bezier(0.22,1,0.36,1)" }}>
         <h1 style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 92, fontWeight: 700, color: COLORS.gold, margin: 0, letterSpacing: 8 }}>MYG</h1>
       </div>
@@ -1186,12 +1381,13 @@ function GoalsScreen({ onNext, onBack, onSkip }) {
   );
 }
 
-function FitnessLevelScreen({ onNext, onBack, onSkip }) {
-  const [level, setLevel] = useState(null);
+function FitnessLevelScreen({ value, onChange, onNext, onBack, onSkip }) {
+  const level = value;
+  const setLevel = onChange;
   const levels = [
-    { id: "beginner", label: "Beginner", desc: "New to working out or getting back into it" },
-    { id: "intermediate", label: "Intermediate", desc: "Consistent training for 6+ months" },
-    { id: "advanced", label: "Advanced", desc: "Years of structured training experience" },
+    { id: "beginner", label: "Beginner", desc: "New to lifting" },
+    { id: "intermediate", label: "Intermediate", desc: "Some experience in the gym" },
+    { id: "advanced", label: "Advanced", desc: "Lifted seriously, know your way around the gym" },
   ];
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
@@ -1204,6 +1400,42 @@ function FitnessLevelScreen({ onNext, onBack, onSkip }) {
             <button key={l.id} onClick={() => setLevel(l.id)} style={{ padding: 20, borderRadius: 10, border: `1.5px solid ${level === l.id ? COLORS.gold : COLORS.border}`, background: level === l.id ? COLORS.goldHighlight : COLORS.card, cursor: "pointer", textAlign: "left", transition: "all 0.2s ease" }}>
               <div style={{ color: level === l.id ? COLORS.gold : COLORS.text, fontSize: 16, fontWeight: 600, marginBottom: 4 }}>{l.label}</div>
               <div style={{ color: COLORS.textSecondary, fontSize: 13, lineHeight: 1.4 }}>{l.desc}</div>
+            </button>
+          ))}
+        </div>
+        <div style={{ height: 16 }} />
+      </div>
+      <div style={{ padding: "12px 24px 16px", flexShrink: 0, borderTop: `1px solid ${COLORS.border}`, background: COLORS.bg }}>
+        <GoldButton onClick={onNext}>Continue</GoldButton>
+      </div>
+    </div>
+  );
+}
+
+/* TimeAwayScreen (Screen 3b) — only shown to Intermediate / Advanced.
+   Beginner skips this screen entirely (not applicable). The selected
+   value lives on App state as `timeAway` and feeds the future Coach
+   AI context packet (returning-lifter awareness — Bible §10). */
+function TimeAwayScreen({ value, onChange, onNext, onBack, onSkip }) {
+  const selected = value;
+  const setSelected = onChange;
+  const options = [
+    { id: "current", label: "Currently training", desc: "I'm in the gym right now" },
+    { id: "lt1yr", label: "Less than a year off", desc: "Took a break, getting back into it" },
+    { id: "1to3yr", label: "1–3 years off", desc: "Been a while since I was consistent" },
+    { id: "gt3yr", label: "3+ years off", desc: "It's been a long time" },
+  ];
+  return (
+    <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
+      <TopBar onBack={onBack} onSkip={onSkip} />
+      <div style={{ flex: 1, minHeight: 0, padding: "0 24px", overflowY: "auto", WebkitOverflowScrolling: "touch" }}>
+        <h2 style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 28, color: COLORS.text, margin: "12px 0 8px", fontWeight: 400 }}>How long since you trained?</h2>
+        <p style={{ color: COLORS.textSecondary, fontSize: 15, margin: "0 0 28px" }}>Helps your Coach ramp up at the right pace.</p>
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {options.map((o) => (
+            <button key={o.id} onClick={() => setSelected(o.id)} style={{ padding: 20, borderRadius: 10, border: `1.5px solid ${selected === o.id ? COLORS.gold : COLORS.border}`, background: selected === o.id ? COLORS.goldHighlight : COLORS.card, cursor: "pointer", textAlign: "left", transition: "all 0.2s ease" }}>
+              <div style={{ color: selected === o.id ? COLORS.gold : COLORS.text, fontSize: 16, fontWeight: 600, marginBottom: 4 }}>{o.label}</div>
+              <div style={{ color: COLORS.textSecondary, fontSize: 13, lineHeight: 1.4 }}>{o.desc}</div>
             </button>
           ))}
         </div>
@@ -1519,15 +1751,15 @@ function EquipmentDetailScreen({ presetId, existingSelection, onDone, onBack }) 
               <button
                 onClick={() => toggleSection(cat.id)}
                 style={{
-                  width: "100%", padding: "12px 24px",
+                  width: "100%", padding: "16px 24px",
                   background: "transparent",
                   border: "none",
                   cursor: "pointer", display: "flex", alignItems: "center", gap: 14,
                 }}
               >
-                <EquipThumb size={40} />
+                <EquipThumb size={48} />
                 <div style={{ flex: 1, textAlign: "left", minWidth: 0 }}>
-                  <div style={{ color: COLORS.text, fontSize: 15, fontWeight: 500 }}>{cat.label}</div>
+                  <div style={{ color: COLORS.text, fontSize: 16, fontWeight: 500 }}>{cat.label}</div>
                   {catState === "partial" && (
                     <div style={{ color: COLORS.textSecondary, fontSize: 12, marginTop: 2 }}>
                       {catCount} selected
@@ -1555,18 +1787,18 @@ function EquipmentDetailScreen({ presetId, existingSelection, onDone, onBack }) 
                     key={item.id}
                     onClick={(e) => toggleItem(item.id, e)}
                     style={{
-                      width: "100%", padding: "10px 24px 10px 48px",
+                      width: "100%", padding: "14px 24px 14px 48px",
                       background: "rgba(255,255,255,0.02)",
                       border: "none",
                       borderTop: idx === 0 ? `1px solid ${COLORS.border}` : "none",
                       cursor: "pointer", display: "flex", alignItems: "center", gap: 12,
                     }}
                   >
-                    <EquipThumb size={32} small />
+                    <EquipThumb size={38} small />
                     <span style={{
                       flex: 1, textAlign: "left",
                       color: isSel ? COLORS.text : COLORS.textSecondary,
-                      fontSize: 14, fontWeight: isSel ? 500 : 400,
+                      fontSize: 15, fontWeight: isSel ? 500 : 400,
                     }}>
                       {item.label}
                     </span>
@@ -1826,7 +2058,7 @@ const MOCK_WORKOUT_HISTORY = [
         { weight: 245, reps: 6, type: "working" },
         { weight: 255, reps: 5, type: "working" },
       ]},
-      { name: "Bench Press", variantLabel: "Barbell + Flat Bench", sets: [
+      { name: "Bench Press", variantLabel: "Barbell", sets: [
         { weight: 95, reps: 10, type: "warmup" },
         { weight: 170, reps: 7, type: "working" },
         { weight: 180, reps: 6, type: "working" },
@@ -1871,12 +2103,12 @@ const MOCK_WORKOUT_HISTORY = [
         { weight: 305, reps: 6, type: "working" },
         { weight: 325, reps: 5, type: "working" },
       ]},
-      { name: "Incline Press", variantLabel: "Dumbbells + Adjustable Bench", sets: [
+      { name: "Incline Bench Press", variantLabel: "Dumbbells", sets: [
         { weight: 60, reps: 8, type: "working" },
         { weight: 60, reps: 7, type: "working" },
         { weight: 60, reps: 6, type: "working" },
       ]},
-      { name: "Incline Row", variantLabel: "Dumbbells + Adjustable Bench", sets: [
+      { name: "Incline Row", variantLabel: "Dumbbells", sets: [
         { weight: 60, reps: 10, type: "working" },
         { weight: 60, reps: 9, type: "working" },
         { weight: 60, reps: 8, type: "working" },
@@ -1916,7 +2148,7 @@ const MOCK_WORKOUT_HISTORY = [
         { weight: 245, reps: 6, type: "working" },
         { weight: 255, reps: 5, type: "working" },
       ]},
-      { name: "Bench Press", variantLabel: "Barbell + Flat Bench", sets: [
+      { name: "Bench Press", variantLabel: "Barbell", sets: [
         { weight: 95, reps: 10, type: "warmup" },
         { weight: 170, reps: 7, type: "working" },
         { weight: 180, reps: 6, type: "working" },
@@ -1963,7 +2195,7 @@ const MOCK_WORKOUT_HISTORY = [
         { weight: 240, reps: 7, type: "working" },
         { weight: 250, reps: 6, type: "working" },
       ]},
-      { name: "Bench Press", variantLabel: "Barbell + Flat Bench", sets: [
+      { name: "Bench Press", variantLabel: "Barbell", sets: [
         { weight: 95, reps: 10, type: "warmup" },
         { weight: 170, reps: 8, type: "working" },
         { weight: 180, reps: 7, type: "working" },
@@ -2008,12 +2240,12 @@ const MOCK_WORKOUT_HISTORY = [
         { weight: 295, reps: 6, type: "working" },
         { weight: 315, reps: 5, type: "working" },
       ]},
-      { name: "Incline Press", variantLabel: "Dumbbells + Adjustable Bench", sets: [
+      { name: "Incline Bench Press", variantLabel: "Dumbbells", sets: [
         { weight: 60, reps: 8, type: "working" },
         { weight: 60, reps: 7, type: "working" },
         { weight: 60, reps: 6, type: "working" },
       ]},
-      { name: "Incline Row", variantLabel: "Dumbbells + Adjustable Bench", sets: [
+      { name: "Incline Row", variantLabel: "Dumbbells", sets: [
         { weight: 60, reps: 10, type: "working" },
         { weight: 60, reps: 9, type: "working" },
         { weight: 60, reps: 8, type: "working" },
@@ -2053,7 +2285,7 @@ const MOCK_WORKOUT_HISTORY = [
         { weight: 235, reps: 7, type: "working" },
         { weight: 245, reps: 6, type: "working" },
       ]},
-      { name: "Bench Press", variantLabel: "Barbell + Flat Bench", sets: [
+      { name: "Bench Press", variantLabel: "Barbell", sets: [
         { weight: 95, reps: 10, type: "warmup" },
         { weight: 165, reps: 8, type: "working" },
         { weight: 175, reps: 7, type: "working" },
@@ -2100,7 +2332,7 @@ const MOCK_WORKOUT_HISTORY = [
         { weight: 190, reps: 9, type: "working" },
         { weight: 200, reps: 8, type: "working" },
       ]},
-      { name: "Bench Press", variantLabel: "Barbell + Flat Bench", sets: [
+      { name: "Bench Press", variantLabel: "Barbell", sets: [
         { weight: 80, reps: 10, type: "warmup" },
         { weight: 135, reps: 10, type: "working" },
         { weight: 145, reps: 9, type: "working" },
@@ -2145,12 +2377,12 @@ const MOCK_WORKOUT_HISTORY = [
         { weight: 240, reps: 8, type: "working" },
         { weight: 260, reps: 7, type: "working" },
       ]},
-      { name: "Incline Press", variantLabel: "Dumbbells + Adjustable Bench", sets: [
+      { name: "Incline Bench Press", variantLabel: "Dumbbells", sets: [
         { weight: 45, reps: 10, type: "working" },
         { weight: 45, reps: 9, type: "working" },
         { weight: 45, reps: 8, type: "working" },
       ]},
-      { name: "Incline Row", variantLabel: "Dumbbells + Adjustable Bench", sets: [
+      { name: "Incline Row", variantLabel: "Dumbbells", sets: [
         { weight: 45, reps: 12, type: "working" },
         { weight: 45, reps: 11, type: "working" },
         { weight: 45, reps: 10, type: "working" },
@@ -2190,7 +2422,7 @@ const MOCK_WORKOUT_HISTORY = [
         { weight: 190, reps: 9, type: "working" },
         { weight: 200, reps: 8, type: "working" },
       ]},
-      { name: "Bench Press", variantLabel: "Barbell + Flat Bench", sets: [
+      { name: "Bench Press", variantLabel: "Barbell", sets: [
         { weight: 80, reps: 10, type: "warmup" },
         { weight: 135, reps: 10, type: "working" },
         { weight: 145, reps: 9, type: "working" },
@@ -2237,7 +2469,7 @@ const MOCK_WORKOUT_HISTORY = [
         { weight: 215, reps: 7, type: "working" },
         { weight: 225, reps: 6, type: "working" },
       ]},
-      { name: "Bench Press", variantLabel: "Barbell + Flat Bench", sets: [
+      { name: "Bench Press", variantLabel: "Barbell", sets: [
         { weight: 90, reps: 10, type: "warmup" },
         { weight: 155, reps: 8, type: "working" },
         { weight: 165, reps: 7, type: "working" },
@@ -2282,12 +2514,12 @@ const MOCK_WORKOUT_HISTORY = [
         { weight: 275, reps: 6, type: "working" },
         { weight: 285, reps: 4, type: "working" },
       ]},
-      { name: "Incline Press", variantLabel: "Dumbbells + Adjustable Bench", sets: [
+      { name: "Incline Bench Press", variantLabel: "Dumbbells", sets: [
         { weight: 55, reps: 8, type: "working" },
         { weight: 55, reps: 7, type: "working" },
         { weight: 55, reps: 6, type: "working" },
       ]},
-      { name: "Incline Row", variantLabel: "Dumbbells + Adjustable Bench", sets: [
+      { name: "Incline Row", variantLabel: "Dumbbells", sets: [
         { weight: 55, reps: 10, type: "working" },
         { weight: 55, reps: 9, type: "working" },
         { weight: 55, reps: 8, type: "working" },
@@ -2327,7 +2559,7 @@ const MOCK_WORKOUT_HISTORY = [
         { weight: 215, reps: 7, type: "working" },
         { weight: 225, reps: 6, type: "working" },
       ]},
-      { name: "Bench Press", variantLabel: "Barbell + Flat Bench", sets: [
+      { name: "Bench Press", variantLabel: "Barbell", sets: [
         { weight: 90, reps: 10, type: "warmup" },
         { weight: 155, reps: 8, type: "working" },
         { weight: 165, reps: 7, type: "working" },
@@ -2374,7 +2606,7 @@ const MOCK_WORKOUT_HISTORY = [
         { weight: 205, reps: 7, type: "working" },
         { weight: 215, reps: 6, type: "working" },
       ]},
-      { name: "Bench Press", variantLabel: "Barbell + Flat Bench", sets: [
+      { name: "Bench Press", variantLabel: "Barbell", sets: [
         { weight: 85, reps: 10, type: "warmup" },
         { weight: 150, reps: 8, type: "working" },
         { weight: 160, reps: 7, type: "working" },
@@ -2419,12 +2651,12 @@ const MOCK_WORKOUT_HISTORY = [
         { weight: 265, reps: 6, type: "working" },
         { weight: 285, reps: 5, type: "working" },
       ]},
-      { name: "Incline Press", variantLabel: "Dumbbells + Adjustable Bench", sets: [
+      { name: "Incline Bench Press", variantLabel: "Dumbbells", sets: [
         { weight: 50, reps: 8, type: "working" },
         { weight: 50, reps: 7, type: "working" },
         { weight: 50, reps: 6, type: "working" },
       ]},
-      { name: "Incline Row", variantLabel: "Dumbbells + Adjustable Bench", sets: [
+      { name: "Incline Row", variantLabel: "Dumbbells", sets: [
         { weight: 50, reps: 10, type: "working" },
         { weight: 50, reps: 9, type: "working" },
         { weight: 50, reps: 8, type: "working" },
@@ -2464,7 +2696,7 @@ const MOCK_WORKOUT_HISTORY = [
         { weight: 205, reps: 7, type: "working" },
         { weight: 215, reps: 6, type: "working" },
       ]},
-      { name: "Bench Press", variantLabel: "Barbell + Flat Bench", sets: [
+      { name: "Bench Press", variantLabel: "Barbell", sets: [
         { weight: 85, reps: 10, type: "warmup" },
         { weight: 150, reps: 8, type: "working" },
         { weight: 160, reps: 7, type: "working" },
@@ -2511,7 +2743,7 @@ const MOCK_WORKOUT_HISTORY = [
         { weight: 195, reps: 7, type: "working" },
         { weight: 205, reps: 6, type: "working" },
       ]},
-      { name: "Bench Press", variantLabel: "Barbell + Flat Bench", sets: [
+      { name: "Bench Press", variantLabel: "Barbell", sets: [
         { weight: 85, reps: 10, type: "warmup" },
         { weight: 145, reps: 8, type: "working" },
         { weight: 155, reps: 7, type: "working" },
@@ -2556,12 +2788,12 @@ const MOCK_WORKOUT_HISTORY = [
         { weight: 255, reps: 6, type: "working" },
         { weight: 275, reps: 5, type: "working" },
       ]},
-      { name: "Incline Press", variantLabel: "Dumbbells + Adjustable Bench", sets: [
+      { name: "Incline Bench Press", variantLabel: "Dumbbells", sets: [
         { weight: 50, reps: 8, type: "working" },
         { weight: 50, reps: 7, type: "working" },
         { weight: 50, reps: 6, type: "working" },
       ]},
-      { name: "Incline Row", variantLabel: "Dumbbells + Adjustable Bench", sets: [
+      { name: "Incline Row", variantLabel: "Dumbbells", sets: [
         { weight: 50, reps: 10, type: "working" },
         { weight: 50, reps: 9, type: "working" },
         { weight: 50, reps: 8, type: "working" },
@@ -2601,7 +2833,7 @@ const MOCK_WORKOUT_HISTORY = [
         { weight: 195, reps: 7, type: "working" },
         { weight: 205, reps: 6, type: "working" },
       ]},
-      { name: "Bench Press", variantLabel: "Barbell + Flat Bench", sets: [
+      { name: "Bench Press", variantLabel: "Barbell", sets: [
         { weight: 85, reps: 10, type: "warmup" },
         { weight: 145, reps: 8, type: "working" },
         { weight: 155, reps: 7, type: "working" },
@@ -2637,6 +2869,62 @@ const MOCK_WORKOUT_HISTORY = [
     ],
   },
 ];
+
+/* ── Coach's File mock seed data (Bible §6.5, v26) ────────────────
+   The Coach's File landing surfaces four kinds of data that don't yet
+   exist anywhere else in the app: rules the user has set via Coach,
+   observations Coach has authored from training patterns, PRs Coach
+   has tracked, and body stats. Until the Coach LLM is wired up these
+   come from the seed below, which exactly matches the locked HTML
+   reference from Session 35 so what Tyler sees in the prototype
+   matches what was designed.
+
+   Schema:
+   - rule: { id, text, createdAt (epoch ms) }
+   - observation: { id, text, createdAt (epoch ms) }
+   - progressPR: { id, exerciseName, value (display string), isPR, isNew, achievedAt (epoch ms) }
+   - bodyStats: { heightIn (number), weightLb (number), ageYears (number), gender ("M"|"F"|"X") }
+
+   All createdAt / achievedAt values are computed at module load relative
+   to "now" so they read as "12D", "22D", etc. on first run. The signed-
+   footer "updated 2d ago" is the most recent of any of these timestamps.
+*/
+const NOW_FOR_SEED = Date.now();
+const DAY = 24 * 60 * 60 * 1000;
+
+const MOCK_COACH_RULES = [
+  { id: "r1", text: "No deadlifts on Mondays", createdAt: NOW_FOR_SEED - 12 * DAY },
+  { id: "r2", text: "Keep sessions under 60 minutes", createdAt: NOW_FOR_SEED - 22 * DAY },
+  { id: "r3", text: "Always start with a compound lift", createdAt: NOW_FOR_SEED - 30 * DAY },
+  { id: "r4", text: "Prefer dumbbells over barbells for chest", createdAt: NOW_FOR_SEED - 35 * DAY },
+];
+
+const MOCK_COACH_OBSERVATIONS = [
+  { id: "o1", text: "Tests heavy on isolation sets, settles 10-15% lower", createdAt: NOW_FOR_SEED - 3 * DAY },
+  { id: "o2", text: "Pyramid pattern on plate-loaded compounds", createdAt: NOW_FOR_SEED - 5 * DAY },
+  { id: "o3", text: "Often 5+ min between sets on heavy compounds", createdAt: NOW_FOR_SEED - 7 * DAY },
+  { id: "o4", text: "Prefers free weights over machines for upper body", createdAt: NOW_FOR_SEED - 9 * DAY },
+  { id: "o5", text: "Skips warm-up sets on Leg Day primaries", createdAt: NOW_FOR_SEED - 12 * DAY },
+  { id: "o6", text: "Tends to schedule Push days for Mondays", createdAt: NOW_FOR_SEED - 15 * DAY },
+  { id: "o7", text: "Cuts sessions short when over 50 minutes", createdAt: NOW_FOR_SEED - 18 * DAY },
+];
+
+const MOCK_PROGRESS_PRS = [
+  // THIS WEEK
+  { id: "p1", exerciseName: "Squat", value: "225 × 5", isPR: true, isNew: false, achievedAt: NOW_FOR_SEED - 2 * DAY },
+  { id: "p2", exerciseName: "RDL", value: "225 × 8", isPR: false, isNew: true, achievedAt: NOW_FOR_SEED - 4 * DAY },
+  { id: "p3", exerciseName: "Bench Press", value: "205 × 8", isPR: false, isNew: false, achievedAt: NOW_FOR_SEED - 5 * DAY },
+  // EARLIER THIS MONTH
+  { id: "p4", exerciseName: "Bent Row", value: "205 × 8", isPR: false, isNew: false, achievedAt: NOW_FOR_SEED - 12 * DAY },
+  { id: "p5", exerciseName: "Hip Thrust", value: "450 × 8", isPR: true, isNew: false, achievedAt: NOW_FOR_SEED - 14 * DAY },
+  // LAST MONTH
+  { id: "p6", exerciseName: "Squat", value: "215 × 5", isPR: false, isNew: false, achievedAt: NOW_FOR_SEED - 40 * DAY },
+  { id: "p7", exerciseName: "Leg Press", value: "630 × 8", isPR: false, isNew: false, achievedAt: NOW_FOR_SEED - 42 * DAY },
+  { id: "p8", exerciseName: "Bulgarian Split Squat", value: "155 × 8", isPR: false, isNew: true, achievedAt: NOW_FOR_SEED - 45 * DAY },
+];
+
+const MOCK_BODY_STATS = { heightIn: 70, weightLb: 178, ageYears: 28, gender: "M" };
+
 /* Auto-naming logic per spec: derived from primary muscle groups of
    exercises in the session. Empty session → date + time-of-day fallback.
 
@@ -2689,9 +2977,10 @@ function totalVolumeFromExercises(exercises) {
 function WorkoutTab({
   userEquipment, workout, minimized, history, openHistoryId, setOpenHistoryId,
   finishedSession, customExercises = [],
+  restTimerMode, restCountdownTarget, onChangeRestTimerMode, onChangeRestCountdownTarget,
   onStartEmpty, onUpdateWorkout, onMinimize, onCancel, onFinish,
   onCommitFinished, onDiscardFinished,
-  onRepeatWorkout,
+  onRepeatWorkout, onTabChange,
 }) {
 
   // Finish summary screen takes priority — once user taps Finish, that's
@@ -2789,7 +3078,7 @@ function WorkoutTab({
                       {ex.name} <span style={{ color: COLORS.textSecondary }}>({ex.variantLabel})</span>
                     </span>
                     <span style={{ color: COLORS.textSecondary, marginLeft: 8, flexShrink: 0, fontVariantNumeric: "tabular-nums" }}>
-                      {ex.sets.length} sets · Max: {top.weight}×{top.reps}
+                      {ex.sets.length} sets · Max: {formatSetSummary(top)}
                     </span>
                   </div>
                 );
@@ -2827,9 +3116,14 @@ function WorkoutTab({
           userEquipment={userEquipment}
           customExercises={customExercises}
           workoutHistory={history}
+          restTimerMode={restTimerMode}
+          restCountdownTarget={restCountdownTarget}
+          onChangeRestTimerMode={onChangeRestTimerMode}
+          onChangeRestCountdownTarget={onChangeRestCountdownTarget}
           onMinimize={onMinimize}
           onCancel={onCancel}
           onFinish={onFinish}
+          onTabChange={onTabChange}
           containerRef={containerRef}
         />
       )}
@@ -2845,11 +3139,15 @@ function WorkoutTab({
 */
 function ActiveLogger({
   workout, onUpdateWorkout, userEquipment, customExercises = [], workoutHistory = [], onMinimize, onCancel, onFinish,
+  onTabChange,
+  restTimerMode, restCountdownTarget, onChangeRestTimerMode, onChangeRestCountdownTarget,
   containerRef,
 }) {
   // Pull session state out of the workout prop. We mutate via onUpdateWorkout
   // (which writes through to App-level state, so it survives tab switches).
-  const { exercises, workoutName, startTime, restTimerMode, restTimer } = workout;
+  // restTimerMode and restCountdownTarget are App-level prefs (props), not
+  // workout-level state — they persist across workouts.
+  const { exercises, workoutName, startTime, restTimer } = workout;
 
   // Helper that hands a transformed exercises array back to the parent.
   // When given an updater function, we resolve it against the current ref
@@ -2864,12 +3162,27 @@ function ActiveLogger({
     onUpdateWorkout({ exercises: next });
   };
   const setWorkoutName = (n) => onUpdateWorkout({ workoutName: n, nameWasEdited: true });
-  const setRestTimerMode = (m) => onUpdateWorkout({ restTimerMode: m });
+  const setRestTimerMode = (m) => onChangeRestTimerMode(m);
+  const setRestCountdownTarget = (s) => onChangeRestCountdownTarget(s);
 
   const [elapsed, setElapsed] = useState(0);
   const [editingName, setEditingName] = useState(false);
   const [settingsMenuOpen, setSettingsMenuOpen] = useState(false);
+  // Two-level menu: "main" shows the top-level options (Count up / Countdown / Off /
+  // Cancel). "countdownDuration" shows the duration submenu (preset durations + Custom).
+  // Reset to "main" whenever the menu closes so re-opens always start at the top.
+  const [settingsMenuView, setSettingsMenuView] = useState("main");
+  // Custom-duration modal state. customDurationOpen controls visibility; the m/s
+  // values are local string state so the user can edit either field freely.
+  const [customDurationOpen, setCustomDurationOpen] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
+  // D-019: which exercise's alternatives sheet is open. The uid of the
+  // exercise whose row was swiped, or null when no sheet is open.
+  const [alternativesFor, setAlternativesFor] = useState(null);
+  // When the user opens AddExerciseSheet via the empty-state "Browse
+  // Exercises" CTA, we're in swap mode — picking an exercise replaces the
+  // target, doesn't append. uid of the swap target, or null for normal add.
+  const [pickerSwapTargetUid, setPickerSwapTargetUid] = useState(null);
   const [confirmCancel, setConfirmCancel] = useState(false);
   const [rirHelpOpen, setRirHelpOpen] = useState(false);
 
@@ -2912,6 +3225,117 @@ function ActiveLogger({
   // (e.g. after onUpdateWorkout commits and React re-renders).
   useEffect(() => { exercisesRef.current = exercises; }, [exercises]);
 
+  // ── Reorder drag state ────────────────────────────────────────
+  // When a card is being long-press-dragged for reorder, this object holds
+  // the live drag info. null when no drag is in progress.
+  //   uid         — which card is being dragged (stable across renders)
+  //   originIdx   — its index when the drag started
+  //   pointerY    — current pointer Y in viewport coords
+  //   startY      — pointer Y when drag started; used to compute translate
+  //   cardHeight  — measured height of dragged card (siblings shift by this)
+  //   cardRect    — original bounding rect of dragged card (top is fixed
+  //                 in viewport space; translate offset = pointerY - startY)
+  // Live reflow is computed in ExerciseCard from this prop — siblings shift
+  // when the dragged card's center crosses their midpoint. The actual array
+  // mutation happens once on drop, in onReorderEnd.
+  const [reorderDrag, setReorderDrag] = useState(null);
+  const reorderDragRef = useRef(null);
+  useEffect(() => { reorderDragRef.current = reorderDrag; }, [reorderDrag]);
+
+  // Auto-scroll the list when the dragged card is near the top or bottom.
+  // Active only during a drag; tick at ~30fps via rAF.
+  const autoScrollRafRef = useRef(null);
+  useEffect(() => {
+    if (!reorderDrag) {
+      if (autoScrollRafRef.current) cancelAnimationFrame(autoScrollRafRef.current);
+      autoScrollRafRef.current = null;
+      return;
+    }
+    const tick = () => {
+      const drag = reorderDragRef.current;
+      const scroller = scrollRef.current;
+      if (!drag || !scroller) return;
+      const rect = scroller.getBoundingClientRect();
+      const EDGE = 60; // px from edge that triggers auto-scroll
+      const SPEED = 8; // px per frame
+      let dy = 0;
+      if (drag.pointerY < rect.top + EDGE) dy = -SPEED;
+      else if (drag.pointerY > rect.bottom - EDGE) dy = SPEED;
+      if (dy !== 0) scroller.scrollTop += dy;
+      autoScrollRafRef.current = requestAnimationFrame(tick);
+    };
+    autoScrollRafRef.current = requestAnimationFrame(tick);
+    return () => {
+      if (autoScrollRafRef.current) cancelAnimationFrame(autoScrollRafRef.current);
+    };
+  }, [reorderDrag]);
+
+  // Compute the index the dragged card would land at given current pointerY.
+  // Uses the baseline rects snapshotted at drag start (siblingRects), so
+  // computation stays stable even as siblings visually shift during reflow.
+  const computeTargetIdx = (drag) => {
+    if (!drag || !drag.siblingRects) return drag ? drag.originIdx : -1;
+    const draggedCenterY = drag.cardRect.top + (drag.pointerY - drag.startY) + drag.cardHeight / 2;
+    // Walk baseline rects (already in DOM order, dragged card excluded).
+    // Each entry: { uid, top, height, idx }. We find the slot the dragged
+    // card's center falls into. With N siblings there are N+1 possible
+    // landing slots (before each sibling, plus after the last).
+    let target = drag.originIdx;
+    for (let i = 0; i < drag.siblingRects.length; i += 1) {
+      const r = drag.siblingRects[i];
+      if (draggedCenterY < r.top + r.height / 2) {
+        // Land just before this sibling. Sibling's array index is r.idx;
+        // because we excluded the dragged card from siblingRects, target
+        // index in the post-removal array is just r.idx adjusted for
+        // whether the dragged card was originally above or below this
+        // sibling.
+        target = r.idx > drag.originIdx ? r.idx - 1 : r.idx;
+        return target;
+      }
+    }
+    // Past every sibling — land at end.
+    return exercisesRef.current.length - 1;
+  };
+
+  const onReorderStart = (uid, originIdx, pointerY, cardEl) => {
+    if (!cardEl) return;
+    const rect = cardEl.getBoundingClientRect();
+    // Snapshot every sibling's baseline rect so reflow math is stable
+    // even after siblings start visually shifting.
+    const scroller = scrollRef.current;
+    const siblingRects = [];
+    if (scroller) {
+      const allCards = scroller.querySelectorAll("[data-exercise-card]");
+      allCards.forEach((card, i) => {
+        const cardUid = card.getAttribute("data-exercise-card");
+        if (cardUid === uid) return;
+        const r = card.getBoundingClientRect();
+        siblingRects.push({ uid: cardUid, top: r.top, height: r.height, idx: i });
+      });
+    }
+    setReorderDrag({
+      uid,
+      originIdx,
+      pointerY,
+      startY: pointerY,
+      cardHeight: rect.height,
+      cardRect: { top: rect.top, left: rect.left, width: rect.width },
+      siblingRects,
+    });
+  };
+  const onReorderMove = (pointerY) => {
+    setReorderDrag((prev) => (prev ? { ...prev, pointerY } : prev));
+  };
+  const onReorderEnd = () => {
+    const drag = reorderDragRef.current;
+    if (!drag) return;
+    const targetIdx = computeTargetIdx(drag);
+    if (targetIdx !== drag.originIdx) {
+      reorderExercise(drag.originIdx, targetIdx);
+    }
+    setReorderDrag(null);
+  };
+
   // Live timer — ticks once per second while logger is mounted
   useEffect(() => {
     const tick = () => setElapsed(Math.floor((Date.now() - startTime.getTime()) / 1000));
@@ -2920,15 +3344,34 @@ function ActiveLogger({
     return () => clearInterval(id);
   }, [startTime]);
 
-  // When the active field changes, scroll its row into view above the keypad.
+  // When the active field changes, scroll its row to a comfortable position
+  // above the keypad. We can't use scrollIntoView({ block: "center" }) here
+  // because "center" centers the row in the FULL scroll container — but the
+  // keypad occludes the bottom ~280px of that container, so a centered row
+  // can still end up partially under the keypad on shorter content lists.
+  // Manual math: compute the visible area above the keypad and place the row's
+  // top at ~30% of that area (Strong-style comfortable position — clearly above
+  // the keypad, plenty of breathing room above to confirm context). The
+  // paddingBottom on the scroll container is 280px to match the keypad.
   useEffect(() => {
     if (!activeField) return;
     const key = `${activeField.exerciseUid}_${activeField.setIdx}`;
     const node = setRowRefs.current[key];
-    if (node && node.scrollIntoView) {
-      // Use a small timeout so React has committed any layout changes first.
-      setTimeout(() => node.scrollIntoView({ behavior: "smooth", block: "center" }), 30);
-    }
+    const scroller = scrollRef.current;
+    if (!node || !scroller) return;
+    // Small timeout so React has committed any layout changes first
+    // (e.g. paddingBottom: 280 transition just kicked in).
+    setTimeout(() => {
+      const KEYPAD_ZONE = 260; // ~keypad height + small gap
+      const COMFORT_RATIO = 0.3; // row top sits at 30% of visible-above-keypad
+      const visibleAbove = scroller.clientHeight - KEYPAD_ZONE;
+      // Row's current top relative to the scroll container.
+      const nodeTop = node.offsetTop - scroller.offsetTop;
+      // Target scrollTop puts the row's top at COMFORT_RATIO of the visible area.
+      const target = nodeTop - visibleAbove * COMFORT_RATIO;
+      const clamped = Math.max(0, Math.min(target, scroller.scrollHeight - scroller.clientHeight));
+      scroller.scrollTo({ top: clamped, behavior: "smooth" });
+    }, 30);
   }, [activeField]);
 
   // ── Single global rest timer ──
@@ -2943,40 +3386,84 @@ function ActiveLogger({
   const clearRestTimer = () => onUpdateWorkout({ restTimer: null });
 
   // ── Exercise mutators ──
-  const addExercise = (libraryEx, variant) => {
-    // Pre-fill the first set as a placeholder from the previous workout's
-    // first set, if any history exists for this variant.
+
+  // Build a fresh in-workout exercise object. Same first-set placeholder
+  // logic shared by addExercise and swapExercise so the swap path doesn't
+  // drift from the add path's behavior. New uid every time so activeField,
+  // restTimer, and reorderDrag (all uid-keyed) cleanly detach from any
+  // prior incarnation.
+  const buildExerciseEntry = (libraryEx, variant) => {
     const hist = getVariantHistory(libraryEx.id, variantKey(variant), workoutHistory, customExercises);
     const lastSession = hist[hist.length - 1];
     const prevFirstSet = lastSession && lastSession.sets[0];
     const hasPrev = prevFirstSet != null;
+    return {
+      uid: `e${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      exerciseId: libraryEx.id,
+      name: libraryEx.name,
+      primary: libraryEx.primary,
+      variant,
+      sets: [
+        {
+          weight: "", reps: "", done: false, type: "working", rir: null,
+          weightIsPlaceholder: hasPrev,
+          repsIsPlaceholder: hasPrev,
+          placeholderWeight: hasPrev ? prevFirstSet.weight : "",
+          placeholderReps: hasPrev ? prevFirstSet.reps : "",
+        },
+      ],
+      collapsed: false,
+    };
+  };
 
-    setExercises((prev) => [
-      ...prev,
-      {
-        uid: `e${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-        exerciseId: libraryEx.id,
-        name: libraryEx.name,
-        primary: libraryEx.primary,
-        variant,
-        sets: [
-          {
-            weight: "", reps: "", done: false, type: "working", rir: null,
-            weightIsPlaceholder: hasPrev,
-            repsIsPlaceholder: hasPrev,
-            placeholderWeight: hasPrev ? prevFirstSet.weight : "",
-            placeholderReps: hasPrev ? prevFirstSet.reps : "",
-          },
-        ],
-        collapsed: false,
-      },
-    ]);
+  const addExercise = (libraryEx, variant) => {
+    // If the picker was opened from the alternatives empty-state's
+    // "Browse Exercises" CTA, picking an exercise SWAPS the target
+    // instead of appending. Detect via pickerSwapTargetUid.
+    if (pickerSwapTargetUid) {
+      swapExercise(pickerSwapTargetUid, libraryEx, variant);
+      setPickerSwapTargetUid(null);
+      setPickerOpen(false);
+      return;
+    }
+    setExercises((prev) => [...prev, buildExerciseEntry(libraryEx, variant)]);
     setPickerOpen(false);
+  };
+
+  // D-019: replace the exercise at `uid` with a fresh entry built from
+  // libraryEx + variant. Order preserved. Sets reset (a different exercise
+  // means the prior sets are no longer meaningful — same shape as the
+  // add path). Cleans up any uid-keyed state that referenced the old row.
+  const swapExercise = (uid, libraryEx, variant) => {
+    setExercises((prev) => {
+      const idx = prev.findIndex((e) => e.uid === uid);
+      if (idx === -1) return prev;
+      const next = prev.slice();
+      next[idx] = buildExerciseEntry(libraryEx, variant);
+      return next;
+    });
+    if (restTimer && restTimer.exerciseUid === uid) clearRestTimer();
+    if (activeField && activeField.exerciseUid === uid) setActiveField(null);
   };
 
   const removeExercise = (uid) => {
     setExercises((prev) => prev.filter((e) => e.uid !== uid));
     if (restTimer && restTimer.exerciseUid === uid) clearRestTimer();
+  };
+
+  // Move the exercise at `fromIdx` to `toIdx` in the active workout list.
+  // No-op if either index is out of range or fromIdx === toIdx. Set state,
+  // rest timer, and active field are all uid-keyed and pass through unchanged.
+  const reorderExercise = (fromIdx, toIdx) => {
+    setExercises((prev) => {
+      if (fromIdx < 0 || fromIdx >= prev.length) return prev;
+      if (toIdx < 0 || toIdx >= prev.length) return prev;
+      if (fromIdx === toIdx) return prev;
+      const next = prev.slice();
+      const [moved] = next.splice(fromIdx, 1);
+      next.splice(toIdx, 0, moved);
+      return next;
+    });
   };
 
   const toggleExerciseCollapsed = (uid) => {
@@ -3673,59 +4160,202 @@ function ActiveLogger({
         );
       })()}
 
-      {/* Settings menu (gear icon) — rest timer + cancel */}
+      {/* Settings menu (gear icon) — two-level: main + countdown duration submenu.
+          Main view: timer mode picker + Cancel Workout. Countdown submenu:
+          preset durations + Custom. Selecting anything that changes timer
+          state closes the menu; the user can always re-open it. */}
       {settingsMenuOpen && (
         <>
-          <div onClick={() => setSettingsMenuOpen(false)} style={{ position: "absolute", inset: 0, zIndex: 15 }} />
+          <div onClick={() => { setSettingsMenuOpen(false); setSettingsMenuView("main"); }} style={{ position: "absolute", inset: 0, zIndex: 15 }} />
           <div style={{
             position: "absolute", top: 70, left: 20, zIndex: 16,
             background: COLORS.card, border: `1px solid ${COLORS.border}`,
             borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.6)",
-            minWidth: 200, padding: 6,
+            minWidth: 170, padding: 6,
           }}>
-            <div style={{ padding: "6px 10px 4px", color: COLORS.textSecondary, fontSize: 10, textTransform: "uppercase", letterSpacing: 1 }}>Rest Timer</div>
-            {[
-              { id: "countup",   label: "Count up" },
-              { id: "countdown", label: "Countdown (90s)" },
-              { id: "off",       label: "Off" },
-            ].map((opt) => {
-              const isActive = restTimerMode === opt.id;
-              return (
+            {settingsMenuView === "main" && (
+              <>
+                <div style={{ padding: "6px 10px 4px", color: COLORS.textSecondary, fontSize: 10, textTransform: "uppercase", letterSpacing: 1 }}>Rest Timer</div>
+                {/* Count up */}
                 <button
-                  key={opt.id}
-                  onClick={() => { setRestTimerMode(opt.id); }}
+                  onClick={() => { setRestTimerMode("countup"); setSettingsMenuOpen(false); setSettingsMenuView("main"); }}
                   style={{
                     width: "100%", padding: "9px 10px", borderRadius: 6,
-                    background: isActive ? COLORS.goldHighlight : "transparent",
+                    background: restTimerMode === "countup" ? COLORS.goldHighlight : "transparent",
                     border: "none", cursor: "pointer", textAlign: "left",
-                    color: isActive ? COLORS.gold : COLORS.text, fontSize: 13,
-                    fontWeight: isActive ? 600 : 400,
+                    color: restTimerMode === "countup" ? COLORS.gold : COLORS.text, fontSize: 13,
+                    fontWeight: restTimerMode === "countup" ? 600 : 400,
                     display: "flex", justifyContent: "space-between", alignItems: "center",
+                    fontFamily: "inherit",
                   }}
                 >
-                  <span>{opt.label}</span>
-                  {isActive && <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={COLORS.gold} strokeWidth="2.5"><polyline points="20 6 9 17 4 12" /></svg>}
+                  <span>Count up</span>
+                  {restTimerMode === "countup" && <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={COLORS.gold} strokeWidth="2.5"><polyline points="20 6 9 17 4 12" /></svg>}
                 </button>
-              );
-            })}
-            <div style={{ height: 1, background: COLORS.border, margin: "6px 4px" }} />
-            <button
-              onClick={() => { setSettingsMenuOpen(false); setConfirmCancel(true); }}
-              style={{
-                width: "100%", padding: "10px 10px", borderRadius: 6,
-                background: "transparent", border: "none", cursor: "pointer",
-                textAlign: "left", color: "#FF6B6B", fontSize: 13, fontWeight: 500,
-                display: "flex", alignItems: "center", gap: 8,
-              }}
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <polyline points="3 6 5 6 21 6" />
-                <path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6" />
-              </svg>
-              Cancel Workout
-            </button>
+                {/* Countdown → opens submenu */}
+                <button
+                  onClick={() => setSettingsMenuView("countdownDuration")}
+                  style={{
+                    width: "100%", padding: "9px 10px", borderRadius: 6,
+                    background: restTimerMode === "countdown" ? COLORS.goldHighlight : "transparent",
+                    border: "none", cursor: "pointer", textAlign: "left",
+                    color: restTimerMode === "countdown" ? COLORS.gold : COLORS.text, fontSize: 13,
+                    fontWeight: restTimerMode === "countdown" ? 600 : 400,
+                    display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8,
+                    fontFamily: "inherit",
+                  }}
+                >
+                  <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    Countdown
+                    {restTimerMode === "countdown" && (
+                      <span style={{ color: COLORS.textSecondary, fontSize: 12, fontWeight: 400, fontVariantNumeric: "tabular-nums" }}>
+                        · {formatDuration(restCountdownTarget)}
+                      </span>
+                    )}
+                  </span>
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={restTimerMode === "countdown" ? COLORS.gold : COLORS.textSecondary} strokeWidth="2.2">
+                    <polyline points="9 6 15 12 9 18" />
+                  </svg>
+                </button>
+                {/* Off */}
+                <button
+                  onClick={() => { setRestTimerMode("off"); setSettingsMenuOpen(false); setSettingsMenuView("main"); }}
+                  style={{
+                    width: "100%", padding: "9px 10px", borderRadius: 6,
+                    background: restTimerMode === "off" ? COLORS.goldHighlight : "transparent",
+                    border: "none", cursor: "pointer", textAlign: "left",
+                    color: restTimerMode === "off" ? COLORS.gold : COLORS.text, fontSize: 13,
+                    fontWeight: restTimerMode === "off" ? 600 : 400,
+                    display: "flex", justifyContent: "space-between", alignItems: "center",
+                    fontFamily: "inherit",
+                  }}
+                >
+                  <span>Off</span>
+                  {restTimerMode === "off" && <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={COLORS.gold} strokeWidth="2.5"><polyline points="20 6 9 17 4 12" /></svg>}
+                </button>
+                <div style={{ height: 1, background: COLORS.border, margin: "6px 4px" }} />
+                <button
+                  onClick={() => { setSettingsMenuOpen(false); setSettingsMenuView("main"); setConfirmCancel(true); }}
+                  style={{
+                    width: "100%", padding: "10px 10px", borderRadius: 6,
+                    background: "transparent", border: "none", cursor: "pointer",
+                    textAlign: "left", color: "#FF6B6B", fontSize: 13, fontWeight: 500,
+                    display: "flex", alignItems: "center", gap: 8,
+                    fontFamily: "inherit",
+                  }}
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <polyline points="3 6 5 6 21 6" />
+                    <path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6" />
+                  </svg>
+                  Cancel Workout
+                </button>
+              </>
+            )}
+
+            {settingsMenuView === "countdownDuration" && (
+              <>
+                {/* Submenu header — back chevron + title. Tap the whole strip to go back. */}
+                <button
+                  onClick={() => setSettingsMenuView("main")}
+                  style={{
+                    width: "100%", padding: "6px 10px 6px 4px",
+                    background: "transparent", border: "none", cursor: "pointer",
+                    display: "flex", alignItems: "center", gap: 6,
+                    color: COLORS.textSecondary, fontSize: 10, textTransform: "uppercase", letterSpacing: 1,
+                    fontFamily: "inherit",
+                  }}
+                >
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                    <polyline points="15 18 9 12 15 6" />
+                  </svg>
+                  Duration
+                </button>
+                {/* Preset durations. Tapping a preset selects countdown mode AND sets
+                    the target value, then closes the menu. */}
+                {[
+                  { seconds: 60,  label: "1:00" },
+                  { seconds: 90,  label: "1:30" },
+                  { seconds: 120, label: "2:00" },
+                  { seconds: 180, label: "3:00" },
+                ].map((opt) => {
+                  const isActive = restTimerMode === "countdown" && restCountdownTarget === opt.seconds;
+                  return (
+                    <button
+                      key={opt.seconds}
+                      onClick={() => {
+                        setRestCountdownTarget(opt.seconds);
+                        setRestTimerMode("countdown");
+                        setSettingsMenuOpen(false);
+                        setSettingsMenuView("main");
+                      }}
+                      style={{
+                        width: "100%", padding: "9px 10px", borderRadius: 6,
+                        background: isActive ? COLORS.goldHighlight : "transparent",
+                        border: "none", cursor: "pointer", textAlign: "left",
+                        color: isActive ? COLORS.gold : COLORS.text, fontSize: 13,
+                        fontWeight: isActive ? 600 : 400,
+                        display: "flex", justifyContent: "space-between", alignItems: "center",
+                        fontVariantNumeric: "tabular-nums",
+                        fontFamily: "inherit",
+                      }}
+                    >
+                      <span>{opt.label}</span>
+                      {isActive && <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={COLORS.gold} strokeWidth="2.5"><polyline points="20 6 9 17 4 12" /></svg>}
+                    </button>
+                  );
+                })}
+                {/* Custom — opens modal. If the current target isn't one of the
+                    presets, this row also shows as active with the current value. */}
+                {(() => {
+                  const presets = [60, 90, 120, 180];
+                  const isCustomActive = restTimerMode === "countdown" && !presets.includes(restCountdownTarget);
+                  return (
+                    <button
+                      onClick={() => {
+                        setCustomDurationOpen(true);
+                        setSettingsMenuOpen(false);
+                        setSettingsMenuView("main");
+                      }}
+                      style={{
+                        width: "100%", padding: "9px 10px", borderRadius: 6,
+                        background: isCustomActive ? COLORS.goldHighlight : "transparent",
+                        border: "none", cursor: "pointer", textAlign: "left",
+                        color: isCustomActive ? COLORS.gold : COLORS.text, fontSize: 13,
+                        fontWeight: isCustomActive ? 600 : 400,
+                        display: "flex", justifyContent: "space-between", alignItems: "center",
+                        fontFamily: "inherit",
+                      }}
+                    >
+                      <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        Custom
+                        {isCustomActive && (
+                          <span style={{ color: COLORS.textSecondary, fontSize: 12, fontWeight: 400, fontVariantNumeric: "tabular-nums" }}>
+                            · {formatDuration(restCountdownTarget)}
+                          </span>
+                        )}
+                      </span>
+                      {isCustomActive && <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={COLORS.gold} strokeWidth="2.5"><polyline points="20 6 9 17 4 12" /></svg>}
+                    </button>
+                  );
+                })()}
+              </>
+            )}
           </div>
         </>
+      )}
+
+      {/* Custom duration modal */}
+      {customDurationOpen && (
+        <CustomDurationModal
+          initialSeconds={restCountdownTarget}
+          onCancel={() => setCustomDurationOpen(false)}
+          onConfirm={(seconds) => {
+            setRestCountdownTarget(seconds);
+            setRestTimerMode("countdown");
+            setCustomDurationOpen(false);
+          }}
+        />
       )}
 
       {/* ── Scrollable exercise list ──
@@ -3760,20 +4390,27 @@ function ActiveLogger({
           <ExerciseCard
             key={ex.uid}
             exercise={ex}
+            exIdx={exIdx}
             isLast={exIdx === exercises.length - 1}
             restTimerMode={restTimerMode}
+            restCountdownTarget={restCountdownTarget}
             restTimer={restTimer}
             activeField={activeField}
             caretPos={caretPos}
             setCaretPos={setCaretPos}
             workoutHistory={workoutHistory}
             customExercises={customExercises}
+            reorderDrag={reorderDrag}
+            onReorderStart={onReorderStart}
+            onReorderMove={onReorderMove}
+            onReorderEnd={onReorderEnd}
             onUpdateSet={(setIdx, patch) => updateSet(ex.uid, setIdx, patch)}
             onToggleSetDone={(setIdx) => toggleSetDone(ex.uid, setIdx)}
             onAddSet={() => addSet(ex.uid)}
             onRemoveSet={(setIdx) => removeSet(ex.uid, setIdx)}
             onClearRestTimer={clearRestTimer}
             onRemove={() => removeExercise(ex.uid)}
+            onOpenAlternatives={() => setAlternativesFor(ex.uid)}
             onToggleCollapsed={() => toggleExerciseCollapsed(ex.uid)}
             onOpenSetTypePopover={(setIdx) => setTypePopover({ uid: ex.uid, setIdx })}
             onOpenVariantMenu={() => setVariantMenuFor(ex.uid)}
@@ -3995,10 +4632,44 @@ function ActiveLogger({
           userEquipment={userEquipment}
           customExercises={customExercises}
           workoutHistory={workoutHistory}
-          onClose={() => setPickerOpen(false)}
+          onClose={() => { setPickerOpen(false); setPickerSwapTargetUid(null); }}
           onAdd={addExercise}
         />
       )}
+
+      {/* ── Alternatives sheet (D-019) ── */}
+      {alternativesFor && (() => {
+        const activeEntry = exercises.find((e) => e.uid === alternativesFor);
+        if (!activeEntry) return null;
+        // Resolve to the library/custom record so the sheet has access to
+        // pattern, variants, primary, etc. Customs route through findExerciseById
+        // and arrive with pattern: undefined → empty-state per getAlternatives.
+        const libEntry = findExerciseById(activeEntry.exerciseId, customExercises);
+        if (!libEntry) return null;
+        return (
+          <AlternativesSheet
+            exercise={libEntry}
+            userEquipment={userEquipment}
+            customExercises={customExercises}
+            workoutHistory={workoutHistory}
+            onClose={() => setAlternativesFor(null)}
+            onPick={(libEx, variant) => {
+              swapExercise(alternativesFor, libEx, variant);
+              setAlternativesFor(null);
+            }}
+            onAskCoach={() => {
+              setAlternativesFor(null);
+              if (onTabChange) onTabChange("coach");
+            }}
+            onBrowseAll={() => {
+              // Hand off to the existing AddExerciseSheet in swap-mode.
+              setPickerSwapTargetUid(alternativesFor);
+              setAlternativesFor(null);
+              setPickerOpen(true);
+            }}
+          />
+        );
+      })()}
     </div>
   );
 }
@@ -4009,36 +4680,125 @@ function ActiveLogger({
    collapse-on-complete behavior, and add-set button.
 */
 function ExerciseCard({
-  exercise, isLast, restTimerMode, restTimer, activeField, caretPos, setCaretPos,
+  exercise, exIdx, isLast, restTimerMode, restCountdownTarget, restTimer, activeField, caretPos, setCaretPos,
   workoutHistory = [], customExercises = [],
+  reorderDrag, onReorderStart, onReorderMove, onReorderEnd,
   onUpdateSet, onToggleSetDone, onAddSet, onRemoveSet, onClearRestTimer,
-  onRemove, onToggleCollapsed,
+  onRemove, onOpenAlternatives, onToggleCollapsed,
   onOpenSetTypePopover, onOpenVariantMenu,
   onFocusField, registerSetRef,
 }) {
-  // Swipe-to-reveal Remove/Alternative actions on the entire exercise
+  // Header pointer handler: a single point of entry that disambiguates
+  // between three gestures from rest:
+  //   • Hold still ≥300ms  → long-press → reorder begins (card lifts)
+  //   • Move horizontal ≥6px first → swipe-to-reveal Remove/Alternative
+  //   • Move vertical ≥6px first → release the gesture so the list scrolls
+  // Quick tap-and-release before any motion is a no-op (header has no
+  // primary tap action; the buttons inside it stop-propagation themselves).
   const REVEAL_WIDTH = 140;
+  const HOLD_MS = 300;
+  const SLOP = 6;
   const [drag, setDrag] = useState(0);
   const [revealed, setRevealed] = useState(false);
-  const dragRef = useRef({ startX: null, dragging: false });
+  const cardElRef = useRef(null);
+  const headerGestureRef = useRef({
+    mode: "idle",     // "idle" | "pending" | "swipe" | "reorder" | "vscroll"
+    startX: 0,
+    startY: 0,
+    holdTimer: null,
+  });
+
+  const cancelHoldTimer = () => {
+    if (headerGestureRef.current.holdTimer) {
+      clearTimeout(headerGestureRef.current.holdTimer);
+      headerGestureRef.current.holdTimer = null;
+    }
+  };
 
   const onPointerDown = (e) => {
-    dragRef.current = { startX: e.clientX, dragging: true };
+    // If the card is already swiped open (Remove/Alternative actions
+    // visible), enter a "closing" gesture mode: any pointerup will
+    // snap the card closed. No long-press, no reorder, no further swipe.
+    if (revealed) {
+      headerGestureRef.current.startX = e.clientX;
+      headerGestureRef.current.startY = e.clientY;
+      headerGestureRef.current.mode = "closing";
+      return;
+    }
+    // Capture the pointer to this element so subsequent move/up events
+    // continue to fire here even if the visible card translates out from
+    // under the finger during reorder. Without capture, the move events
+    // would route to whatever's under the actual cursor position, which
+    // for a card translated 100px down means the next card down.
+    if (e.currentTarget && e.currentTarget.setPointerCapture) {
+      try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_) { /* noop */ }
+    }
+    headerGestureRef.current.startX = e.clientX;
+    headerGestureRef.current.startY = e.clientY;
+    headerGestureRef.current.mode = "pending";
+    // Arm the long-press timer — fires only if no SLOP-exceeding motion
+    // and pointer hasn't released by then.
+    headerGestureRef.current.holdTimer = setTimeout(() => {
+      headerGestureRef.current.holdTimer = null;
+      // Confirm we're still pending (didn't transition to swipe/vscroll
+      // or pointerUp) before firing reorder.
+      if (headerGestureRef.current.mode !== "pending") return;
+      headerGestureRef.current.mode = "reorder";
+      onReorderStart(exercise.uid, exIdx, headerGestureRef.current.startY, cardElRef.current);
+    }, HOLD_MS);
   };
+
   const onPointerMove = (e) => {
-    if (!dragRef.current.dragging) return;
-    const dx = e.clientX - dragRef.current.startX;
-    let next = revealed ? -REVEAL_WIDTH + dx : dx;
-    if (next > 0) next = 0;
-    if (next < -REVEAL_WIDTH) next = -REVEAL_WIDTH;
-    setDrag(next);
+    const g = headerGestureRef.current;
+    if (g.mode === "idle") return;
+
+    if (g.mode === "pending") {
+      const dx = e.clientX - g.startX;
+      const dy = e.clientY - g.startY;
+      if (Math.abs(dx) >= SLOP && Math.abs(dx) > Math.abs(dy)) {
+        // Horizontal-first → commit to swipe-to-reveal.
+        cancelHoldTimer();
+        g.mode = "swipe";
+      } else if (Math.abs(dy) >= SLOP) {
+        // Vertical-first before hold fires → release the gesture so the
+        // list scrolls naturally. Reorder requires the user to hold still.
+        cancelHoldTimer();
+        g.mode = "vscroll";
+        return;
+      } else {
+        return; // still inside slop
+      }
+    }
+
+    if (g.mode === "swipe") {
+      const dx = e.clientX - g.startX;
+      let next = revealed ? -REVEAL_WIDTH + dx : dx;
+      if (next > 0) next = 0;
+      if (next < -REVEAL_WIDTH) next = -REVEAL_WIDTH;
+      setDrag(next);
+      return;
+    }
+
+    if (g.mode === "reorder") {
+      onReorderMove(e.clientY);
+      return;
+    }
+    // vscroll: nothing to do — let the browser handle scroll
   };
+
   const onPointerUp = () => {
-    if (!dragRef.current.dragging) return;
-    dragRef.current.dragging = false;
-    const open = drag < -REVEAL_WIDTH / 2;
-    setRevealed(open);
-    setDrag(open ? -REVEAL_WIDTH : 0);
+    const g = headerGestureRef.current;
+    cancelHoldTimer();
+    if (g.mode === "closing") {
+      closeSwipe();
+    } else if (g.mode === "swipe") {
+      const open = drag < -REVEAL_WIDTH / 2;
+      setRevealed(open);
+      setDrag(open ? -REVEAL_WIDTH : 0);
+    } else if (g.mode === "reorder") {
+      onReorderEnd();
+    }
+    g.mode = "idle";
   };
   const closeSwipe = () => { setRevealed(false); setDrag(0); };
 
@@ -4146,13 +4906,58 @@ function ExerciseCard({
     setCaretPos(pos);
   };
 
+  // Reorder visual state for THIS card. Three possibilities:
+  //   • This card is being dragged → translateY tracks pointer; isDragged=true
+  //   • A sibling is being dragged and would displace this card → translateY
+  //     equals ±cardHeight depending on whether displaced sibling moves
+  //     above or below this card's original slot
+  //   • No drag active → translateY=0
+  // Computed every render; cheap (one find + a couple of comparisons).
+  const reorderVisual = (() => {
+    if (!reorderDrag) return { translateY: 0, isDragged: false };
+    if (reorderDrag.uid === exercise.uid) {
+      return {
+        translateY: reorderDrag.pointerY - reorderDrag.startY,
+        isDragged: true,
+      };
+    }
+    const sibling = reorderDrag.siblingRects.find((s) => s.uid === exercise.uid);
+    if (!sibling) return { translateY: 0, isDragged: false };
+    const draggedCenterY = reorderDrag.cardRect.top
+      + (reorderDrag.pointerY - reorderDrag.startY)
+      + reorderDrag.cardHeight / 2;
+    const siblingMidY = sibling.top + sibling.height / 2;
+    if (sibling.idx > reorderDrag.originIdx) {
+      if (draggedCenterY > siblingMidY) {
+        return { translateY: -reorderDrag.cardHeight, isDragged: false };
+      }
+    } else {
+      if (draggedCenterY < siblingMidY) {
+        return { translateY: reorderDrag.cardHeight, isDragged: false };
+      }
+    }
+    return { translateY: 0, isDragged: false };
+  })();
+
   return (
-    <div style={{
-      position: "relative",
-      paddingBottom: 18,
-      marginBottom: 18,
-      borderBottom: isLast ? "none" : `1px solid #1F1F1F`,
-    }}>
+    <div
+      ref={cardElRef}
+      data-exercise-card={exercise.uid}
+      style={{
+        position: "relative",
+        paddingBottom: 18,
+        marginBottom: 18,
+        borderBottom: isLast ? "none" : `1px solid #1F1F1F`,
+        // Reorder visual: dragged card lifts and follows pointer; siblings
+        // shift to make space. Only the dragged card uses zIndex+shadow;
+        // siblings get translate-only.
+        transform: `translateY(${reorderVisual.translateY}px)${reorderVisual.isDragged ? " scale(1.02)" : ""}`,
+        transition: reorderDrag ? (reorderVisual.isDragged ? "none" : "transform 0.18s ease") : "none",
+        zIndex: reorderVisual.isDragged ? 50 : "auto",
+        boxShadow: reorderVisual.isDragged ? "0 12px 32px rgba(0,0,0,0.6)" : "none",
+        opacity: reorderVisual.isDragged ? 0.96 : 1,
+      }}
+    >
       {/* Underlying action layer (revealed by swiping the entire exercise) */}
       <div style={{
         position: "absolute", top: 0, right: 0, bottom: 18,
@@ -4160,7 +4965,7 @@ function ExerciseCard({
         borderRadius: 10, overflow: "hidden",
       }}>
         <button
-          onClick={() => { closeSwipe(); /* TODO: open Coach alternatives picker */ }}
+          onClick={() => { closeSwipe(); onOpenAlternatives(); }}
           style={{
             flex: 1, background: "#1F1F14", border: "none", cursor: "pointer",
             color: COLORS.gold, fontSize: 11, fontWeight: 600,
@@ -4195,7 +5000,7 @@ function ExerciseCard({
         style={{
           background: COLORS.bg,
           transform: `translateX(${drag}px)`,
-          transition: dragRef.current.dragging ? "none" : "transform 0.22s ease",
+          transition: headerGestureRef.current.mode === "swipe" ? "none" : "transform 0.22s ease",
           touchAction: "pan-y", userSelect: "none",
         }}
       >
@@ -4381,13 +5186,23 @@ function ExerciseCard({
                         {setLabel}
                       </button>
 
-                      {/* Previous reference */}
+                      {/* Previous reference. Bodyweight variants show reps
+                          only — weight is meaningless or zero on most prev
+                          rows and clutters the column. If the user logged
+                          added weight on the prev set, fall back to the
+                          weighted format so the signal isn't lost. */}
                       <span style={{
                         flex: 1, color: COLORS.textSecondary,
                         fontSize: 12, textAlign: "center",
                         fontVariantNumeric: "tabular-nums",
                       }}>
-                        {prevSet ? `${prevSet.weight}×${prevSet.reps}` : "—"}
+                        {(() => {
+                          if (!prevSet) return "—";
+                          const isBw = isBodyweightVariant(exercise.variant);
+                          const hasWeight = prevSet.weight !== "" && prevSet.weight != null && prevSet.weight !== 0;
+                          if (isBw && !hasWeight) return `${prevSet.reps}`;
+                          return `${prevSet.weight}×${prevSet.reps}`;
+                        })()}
                       </span>
 
                       {/* Weight tap-target */}
@@ -4539,17 +5354,21 @@ function ExerciseCard({
                         </button>
                       </div>
 
-                      {/* Done checkbox. Gated: tapping with empty weight
-                          or reps shakes the empty field(s) instead of
-                          toggling. A field counts as empty if it has
-                          neither a real value nor a placeholder value. */}
+                      {/* Done checkbox. Gated: tapping with empty reps (or
+                          weight, on non-bodyweight variants) shakes the empty
+                          field(s) instead of toggling. A field counts as empty
+                          if it has neither a real value nor a placeholder. For
+                          bodyweight variants the lbs field is optional — the
+                          user can leave it blank and the set still completes. */}
                       <div style={{ width: 32, display: "flex", justifyContent: "center" }}>
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
                             // Allow un-checking a set regardless of field state
                             if (set.done) { onToggleSetDone(idx); return; }
+                            const isBw = isBodyweightVariant(exercise.variant);
                             const weightReady =
+                              isBw ||
                               (set.weight !== "" && set.weight != null) ||
                               (set.weightIsPlaceholder && set.placeholderWeight !== "" && set.placeholderWeight != null);
                             const repsReady =
@@ -4610,6 +5429,7 @@ function ExerciseCard({
                       <InlineRestTimer
                         startTs={restTimer.startTs}
                         mode={restTimerMode}
+                        countdownTarget={restCountdownTarget}
                         onDismiss={onClearRestTimer}
                       />
                     )}
@@ -4744,8 +5564,10 @@ function SwipeableRestDivider({ seconds, onDelete }) {
    was most recently checked). Counts based on a startTs prop so the
    elapsed value survives re-renders without resetting. Swipeable left
    to dismiss. */
-function InlineRestTimer({ startTs, mode, onDismiss }) {
-  const COUNTDOWN_TARGET = 90;
+function InlineRestTimer({ startTs, mode, countdownTarget, onDismiss }) {
+  // countdownTarget comes in as seconds (App-level pref). Default 90 if
+  // somehow undefined, but the prop should always be supplied by the parent.
+  const COUNTDOWN_TARGET = typeof countdownTarget === "number" && countdownTarget > 0 ? countdownTarget : 90;
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 1000);
@@ -4795,7 +5617,7 @@ function InlineRestTimer({ startTs, mode, onDismiss }) {
       color = COLORS.gold;
     } else {
       display = formatDuration(remaining);
-      color = COLORS.textSecondary;
+      color = COLORS.gold;
     }
   }
 
@@ -4851,6 +5673,175 @@ function InlineRestTimer({ startTs, mode, onDismiss }) {
   );
 }
 
+/* ── Custom Duration Modal ────────────────────────────────────────
+   Lightweight modal for entering a custom countdown duration (mm:ss).
+   Two tappable fields and a self-contained mini-keypad. Self-contained
+   rather than reusing NumericKeypad because that component is tightly
+   coupled to set-row weight/reps state. Validates: total seconds must
+   be > 0 and < 600 (9:59 max). Digit entry appends to the focused field
+   (capped at 2 digits per field; seconds capped at 59). */
+function CustomDurationModal({ initialSeconds, onCancel, onConfirm }) {
+  const initMin = Math.floor(initialSeconds / 60);
+  const initSec = initialSeconds % 60;
+  const [minStr, setMinStr] = useState(String(initMin));
+  const [secStr, setSecStr] = useState(String(initSec).padStart(2, "0"));
+  const [focused, setFocused] = useState("min"); // "min" | "sec"
+
+  const totalSeconds = (parseInt(minStr || "0", 10) || 0) * 60 + (parseInt(secStr || "0", 10) || 0);
+  const isValid = totalSeconds > 0 && totalSeconds < 600;
+
+  // Tapping a digit appends to the focused field. Min caps at 9 (single digit;
+  // 10+ minutes is the long-rest case but we cap at 9:59 = 599s). Sec caps at
+  // 59. When a field reaches its cap, focus auto-advances to the next field.
+  const handleDigit = (d) => {
+    if (focused === "min") {
+      // Replace if currently "0", else append. Cap at one digit (0-9).
+      const next = minStr === "0" ? String(d) : (minStr.length >= 1 ? String(d) : minStr + String(d));
+      setMinStr(next);
+      // Auto-advance to seconds after typing the minutes digit
+      setFocused("sec");
+      // When advancing, clear the seconds so the user can type fresh
+      setSecStr("");
+    } else {
+      // Append to seconds. Cap at 2 digits; reject if would push > 59.
+      const candidate = secStr.length >= 2 ? String(d) : (secStr === "0" || secStr === "00" ? String(d) : secStr + String(d));
+      if (parseInt(candidate, 10) > 59) {
+        // Replace with just the digit instead of appending
+        setSecStr(String(d));
+      } else {
+        setSecStr(candidate);
+      }
+    }
+  };
+
+  const handleBackspace = () => {
+    if (focused === "min") {
+      setMinStr("0");
+    } else {
+      if (secStr.length > 1) {
+        setSecStr(secStr.slice(0, -1));
+      } else {
+        setSecStr("0");
+        // Move focus back to minutes
+        setFocused("min");
+      }
+    }
+  };
+
+  const handleSave = () => {
+    if (!isValid) return;
+    onConfirm(totalSeconds);
+  };
+
+  // Field display: minutes shows as-is; seconds left-pads to 2 digits when not focused
+  // so "1:30" reads naturally. While focused on seconds, show what user typed (e.g. "3"
+  // before they finish typing "30").
+  const minDisplay = minStr || "0";
+  const secDisplay = focused === "sec" ? (secStr || "0") : String(parseInt(secStr || "0", 10)).padStart(2, "0");
+
+  const fieldStyle = (isFocused) => ({
+    flex: 1, padding: "16px 0", borderRadius: 8,
+    background: isFocused ? COLORS.goldHighlight : COLORS.bg,
+    border: `1.5px solid ${isFocused ? COLORS.gold : COLORS.border}`,
+    cursor: "pointer",
+    fontFamily: "Georgia, 'Times New Roman', serif",
+    fontSize: 36, fontWeight: 700,
+    color: isFocused ? COLORS.gold : COLORS.text,
+    textAlign: "center",
+    fontVariantNumeric: "tabular-nums",
+    transition: "all 0.15s ease",
+  });
+
+  const digitBtnStyle = {
+    padding: "14px 0", borderRadius: 8,
+    background: "#2A2A2A", border: "none",
+    color: COLORS.text, fontSize: 20, fontWeight: 500,
+    cursor: "pointer", fontFamily: "inherit",
+    fontVariantNumeric: "tabular-nums",
+  };
+
+  return (
+    <>
+      {/* Scrim — taps outside cancel */}
+      <div onClick={onCancel} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 100 }} />
+      {/* Modal card */}
+      <div style={{
+        position: "fixed", left: "50%", top: "50%", transform: "translate(-50%, -50%)",
+        zIndex: 101,
+        background: COLORS.card, border: `1px solid ${COLORS.border}`,
+        borderRadius: 14, boxShadow: "0 12px 32px rgba(0,0,0,0.7)",
+        padding: 18, width: 280, maxWidth: "calc(100vw - 32px)",
+      }}>
+        <div style={{ color: COLORS.text, fontSize: 14, fontWeight: 600, textAlign: "center", marginBottom: 4 }}>
+          Custom Duration
+        </div>
+        <div style={{ color: COLORS.textSecondary, fontSize: 11, textAlign: "center", marginBottom: 14 }}>
+          Up to 9:59
+        </div>
+
+        {/* Fields */}
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+          <button onClick={() => setFocused("min")} style={fieldStyle(focused === "min")}>{minDisplay}</button>
+          <div style={{ fontSize: 32, color: COLORS.textSecondary, fontWeight: 700, lineHeight: 1 }}>:</div>
+          <button onClick={() => setFocused("sec")} style={fieldStyle(focused === "sec")}>{secDisplay}</button>
+        </div>
+        <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+          <div style={{ flex: 1, textAlign: "center", color: COLORS.textSecondary, fontSize: 10, textTransform: "uppercase", letterSpacing: 1 }}>min</div>
+          <div style={{ width: 12 }} />
+          <div style={{ flex: 1, textAlign: "center", color: COLORS.textSecondary, fontSize: 10, textTransform: "uppercase", letterSpacing: 1 }}>sec</div>
+        </div>
+
+        {/* Mini keypad — 3x4 grid: 1-9, then 0 and backspace in the bottom row */}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6 }}>
+          {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((d) => (
+            <button key={d} onClick={() => handleDigit(d)} style={digitBtnStyle}>{d}</button>
+          ))}
+          <div /> {/* spacer for 7-8-9 → 0-bksp layout */}
+          <button onClick={() => handleDigit(0)} style={digitBtnStyle}>0</button>
+          <button onClick={handleBackspace} style={{ ...digitBtnStyle, fontSize: 16 }}>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ verticalAlign: "middle" }}>
+              <path d="M21 4H8l-7 8 7 8h13a2 2 0 002-2V6a2 2 0 00-2-2z" />
+              <line x1="18" y1="9" x2="12" y2="15" />
+              <line x1="12" y1="9" x2="18" y2="15" />
+            </svg>
+          </button>
+        </div>
+
+        {/* Actions */}
+        <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
+          <button
+            onClick={onCancel}
+            style={{
+              flex: 1, padding: "12px 0", borderRadius: 8,
+              background: "transparent", border: `1px solid ${COLORS.border}`,
+              color: COLORS.text, fontSize: 14, fontWeight: 500,
+              cursor: "pointer", fontFamily: "inherit",
+            }}
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleSave}
+            disabled={!isValid}
+            style={{
+              flex: 1, padding: "12px 0", borderRadius: 8,
+              background: isValid ? COLORS.gold : COLORS.border,
+              border: "none",
+              color: isValid ? "#000" : COLORS.textSecondary,
+              fontSize: 14, fontWeight: 700,
+              cursor: isValid ? "pointer" : "not-allowed",
+              fontFamily: "inherit",
+              opacity: isValid ? 1 : 0.6,
+            }}
+          >
+            Save
+          </button>
+        </div>
+      </div>
+    </>
+  );
+}
+
 /* ── Numeric Keypad ───────────────────────────────────────────────
    Custom in-app numeric pad that replaces the native keyboard for
    weight/reps editing. Mounts at the bottom of the workout tab when a
@@ -4884,23 +5875,46 @@ function NumericKeypad({
   };
   useEffect(() => () => stopStep(), []);
 
-  const Btn = ({ children, onClick, style: s = {}, onPointerDown: pd, onPointerUp: pu }) => (
-    <button
-      onClick={onClick}
-      onPointerDown={pd}
-      onPointerUp={pu}
-      onPointerLeave={pu}
-      onPointerCancel={pu}
-      style={{
-        height: 46, background: "#1A1A1A", border: `1px solid #252525`,
-        borderRadius: 10, color: COLORS.text, fontSize: 18, fontWeight: 500,
-        cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
-        ...s,
-      }}
-    >
-      {children}
-    </button>
-  );
+  // Per-button press state for visual tap feedback. Without this the keypad
+  // is silent on tap — no haptic on web, no pseudo-class :active on most
+  // mobile browsers reliably. We track pressed locally and flash the bg.
+  // Real haptic feedback ships with the React Native port via expo-haptics.
+  const Btn = ({ children, onClick, style: s = {}, onPointerDown: pd, onPointerUp: pu }) => {
+    const [pressed, setPressed] = useState(false);
+    const baseBg = s.background || "#1A1A1A";
+    const baseBorder = s.border || `1px solid #252525`;
+    // Pressed visuals: lift bg one notch toward gold-tinted, brighten border.
+    // Stays subtle on the gold "Next" button (already bright) and gold RIR
+    // (already accented) — for those we just dim slightly instead.
+    const isAccent = baseBg === COLORS.gold || baseBg === "#1A1A0A";
+    const pressedBg = isAccent ? baseBg : "#2A2A2A";
+    const pressedBorder = isAccent ? baseBorder : `1px solid ${COLORS.gold}`;
+    return (
+      <button
+        onClick={onClick}
+        onPointerDown={(e) => { setPressed(true); if (pd) pd(e); }}
+        onPointerUp={(e) => { setPressed(false); if (pu) pu(e); }}
+        onPointerLeave={(e) => { setPressed(false); if (pu) pu(e); }}
+        onPointerCancel={(e) => { setPressed(false); if (pu) pu(e); }}
+        style={{
+          height: 46, background: "#1A1A1A", border: `1px solid #252525`,
+          borderRadius: 10, color: COLORS.text, fontSize: 18, fontWeight: 500,
+          cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+          transition: "background 0.08s ease, border-color 0.08s ease, transform 0.08s ease",
+          WebkitTapHighlightColor: "transparent",
+          ...s,
+          // Pressed overrides go after spread so they win against incoming style.
+          ...(pressed ? {
+            background: pressedBg,
+            border: pressedBorder,
+            transform: "scale(0.96)",
+          } : {}),
+        }}
+      >
+        {children}
+      </button>
+    );
+  };
 
   return (
     <div style={{
@@ -5026,7 +6040,7 @@ function NumericKeypad({
    Slim persistent bar that lives above the TabBar whenever an active
    workout exists AND (the user is not on the workout tab OR the workout
    is minimized). Tap → un-minimize and switch to the workout tab. */
-function SessionBar({ workout, onTap }) {
+function SessionBar({ workout, restTimerMode, restCountdownTarget, onTap }) {
   const [elapsed, setElapsed] = useState(0);
   const [restElapsed, setRestElapsed] = useState(0);
   useEffect(() => {
@@ -5044,13 +6058,14 @@ function SessionBar({ workout, onTap }) {
 
   if (!workout) return null;
 
-  // Compute rest timer display if active
+  // Compute rest timer display if active. mode + target are now App-level
+  // prefs threaded through from App.
   let restPill = null;
   if (workout.restTimer) {
-    const COUNTDOWN_TARGET = 90;
-    let display, isCountdown = workout.restTimerMode === "countdown";
+    const target = typeof restCountdownTarget === "number" && restCountdownTarget > 0 ? restCountdownTarget : 90;
+    let display, isCountdown = restTimerMode === "countdown";
     if (isCountdown) {
-      const remaining = COUNTDOWN_TARGET - restElapsed;
+      const remaining = target - restElapsed;
       display = remaining <= 0 ? "Time!" : formatDuration(remaining);
     } else {
       display = formatDuration(restElapsed);
@@ -5276,17 +6291,17 @@ function AddExerciseSheet({ userEquipment, customExercises = [], workoutHistory 
                   key={e.id}
                   onClick={() => setPendingExId(e.id)}
                   style={{
-                    width: "100%", padding: "10px 0",
-                    display: "flex", alignItems: "center", gap: 12,
+                    width: "100%", padding: "14px 0",
+                    display: "flex", alignItems: "center", gap: 14,
                     background: "none", border: "none",
                     borderBottom: `1px solid ${COLORS.border}`,
                     cursor: "pointer", textAlign: "left",
                   }}
                 >
-                  <ExerciseThumbnail size={44} monogram={e.isCustom ? e.name.charAt(0) : undefined} />
+                  <ExerciseThumbnail size={52} monogram={e.isCustom ? e.name.charAt(0) : undefined} />
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ color: COLORS.text, fontSize: 14, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{e.name}</div>
-                    <div style={{ color: COLORS.textSecondary, fontSize: 11, marginTop: 2 }}>{e.primary}</div>
+                    <div style={{ color: COLORS.text, fontSize: 15, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{e.name}</div>
+                    <div style={{ color: COLORS.textSecondary, fontSize: 12, marginTop: 2 }}>{e.primary}</div>
                   </div>
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={COLORS.textSecondary} strokeWidth="2.5"><polyline points="9 18 15 12 9 6" /></svg>
                 </button>
@@ -5387,7 +6402,7 @@ function HistoryRecapSheet({ session, onClose, onRepeat }) {
                       display: "flex", alignItems: "center", justifyContent: "center", marginRight: 12,
                     }}>{marker}</span>
                     <span style={{ flex: 1, color: COLORS.text, fontSize: 13, fontVariantNumeric: "tabular-nums" }}>
-                      {s.weight} lbs × {s.reps}
+                      {hasMeaningfulWeight(s) ? `${s.weight} lbs × ${s.reps}` : `${s.reps} reps`}
                     </span>
                   </div>
                 );
@@ -5487,7 +6502,7 @@ function FinishSummaryScreen({ session, onDone, onDiscard }) {
                     <div style={{ color: COLORS.textSecondary, fontSize: 11, marginTop: 2 }}>{ex.variantLabel}</div>
                   </div>
                   <div style={{ color: COLORS.textSecondary, fontSize: 11, marginLeft: 8, fontVariantNumeric: "tabular-nums", flexShrink: 0 }}>
-                    {ex.sets.length} sets · Max: {top.weight}×{top.reps}
+                    {ex.sets.length} sets · Max: {formatSetSummary(top)}
                   </div>
                 </div>
               );
@@ -6743,6 +7758,11 @@ function CustomExerciseForm({ existing, existingNames = [], onSave, onCancel }) 
       id: existing ? existing.id : `custom_${Date.now()}`,
       name: trimmedName,
       primary,
+      // Explicitly null so the D-019 alternatives helper short-circuits
+      // to the empty-state (Ask Coach / Browse). Customs intentionally
+      // route through Coach rather than the algorithmic match — Session 31
+      // framing: "free-tier conversion moment, not a feature gap."
+      pattern: null,
       secondary: [],
       type: "Compound",
       variants: [{ label: variantLabel, equipment: equipIds }],
@@ -6913,6 +7933,170 @@ function CustomExerciseForm({ existing, existingNames = [], onSave, onCancel }) 
               ? "Changes only affect future workouts. Past sessions keep the name and equipment they were logged with."
               : "Custom exercises are yours to track, but Coach won't include them in programmed workouts."}
           </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+/* AlternativesSheet — D-019. Bottom sheet that opens when a swiped exercise's
+   "Alternative" action is tapped in the active logger. Strict same-primary +
+   same-pattern peers, with a same-primary fallback divider when peers are
+   sparse (1-2). Empty case → Ask Coach (primary CTA) + Browse Exercises
+   (secondary). Style mirrors ExerciseDetailSheet at 70% height — picker, not
+   detail viewer, so no need for the full 85%.
+
+   Picking an alternative replaces the swiped exercise in-place via onPick.
+   The picker only shows the exercise's name + primary; variant defaulting
+   happens in the parent via pickDefaultVariant when the swap commits, the
+   same way AddExerciseSheet's stage-2 confirm screen does for the add path.
+   For the alternatives flow we skip that confirm step — the user already
+   saw a smart default elsewhere and a swap mid-workout should be one tap. */
+function AlternativesSheet({
+  exercise, userEquipment, customExercises = [], workoutHistory = [],
+  onClose, onPick, onAskCoach, onBrowseAll,
+}) {
+  const { peers, fallback, bucket } = getAlternatives(exercise, userEquipment, customExercises);
+
+  // Pick-and-commit: choose a smart default variant for the new exercise
+  // using the same logic as the detail sheet, then hand it to the parent.
+  const handlePick = (libEx) => {
+    const variant = pickDefaultVariant(libEx, userEquipment, workoutHistory, customExercises);
+    onPick(libEx, variant);
+  };
+
+  const renderRow = (e) => {
+    // Dim + subline-swap for rows the user can't currently do. Tap still
+    // works — pickDefaultVariant falls through to first-variant-in-list, so
+    // the swap commits with a sensible variant the user can re-pick via the
+    // variant chip. Bodyweight-only exercises (Push-Up, Plank, etc.) always
+    // come back null here and render bright.
+    const missingLabel = getMissingEquipmentLabel(e, userEquipment);
+    const isAvailable = missingLabel === null;
+    return (
+      <button
+        key={e.id}
+        onClick={() => handlePick(e)}
+        style={{
+          width: "100%", padding: "14px 0",
+          display: "flex", alignItems: "center", gap: 14,
+          background: "none", border: "none",
+          borderBottom: `1px solid ${COLORS.border}`,
+          cursor: "pointer", textAlign: "left",
+          opacity: isAvailable ? 1 : 0.5,
+        }}
+      >
+        <ExerciseThumbnail size={52} monogram={e.isCustom ? e.name.charAt(0) : undefined} />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ color: COLORS.text, fontSize: 15, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{e.name}</div>
+          <div style={{ color: COLORS.textSecondary, fontSize: 12, marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+            {isAvailable ? e.primary : missingLabel}
+          </div>
+        </div>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={COLORS.textSecondary} strokeWidth="2.5"><polyline points="9 18 15 12 9 6" /></svg>
+      </button>
+    );
+  };
+
+  return (
+    <>
+      {/* Backdrop */}
+      <div
+        onClick={onClose}
+        style={{
+          position: "absolute", inset: 0,
+          background: "rgba(0,0,0,0.55)", zIndex: 32,
+        }}
+      />
+
+      {/* Sheet — sits ABOVE AddExerciseSheet's z-index (31) so it stacks
+          correctly if the user opens Browse from the empty-state. */}
+      <div style={{
+        position: "absolute", left: 0, right: 0, bottom: 0,
+        height: "70%", zIndex: 33,
+        background: COLORS.bg,
+        borderTopLeftRadius: 20, borderTopRightRadius: 20,
+        border: `1px solid ${COLORS.border}`,
+        borderBottom: "none",
+        display: "flex", flexDirection: "column",
+        boxShadow: "0 -12px 32px rgba(0,0,0,0.6)",
+      }}>
+        {/* Drag handle */}
+        <div style={{ display: "flex", justifyContent: "center", padding: "8px 0 2px", flexShrink: 0 }}>
+          <div style={{ width: 36, height: 4, borderRadius: 2, background: COLORS.border }} />
+        </div>
+
+        {/* Header */}
+        <div style={{ padding: "6px 20px 14px", flexShrink: 0, textAlign: "center" }}>
+          <div style={{ color: COLORS.textSecondary, fontSize: 11, fontWeight: 500, letterSpacing: 0.5, textTransform: "uppercase", marginBottom: 4 }}>
+            Alternatives to
+          </div>
+          <h2 style={{
+            fontFamily: "Georgia, 'Times New Roman', serif",
+            fontSize: 20, color: COLORS.text,
+            margin: 0, fontWeight: 400, lineHeight: 1.2,
+          }}>{exercise.name}</h2>
+        </div>
+
+        {/* Body — three render cases driven by `bucket`. */}
+        <div style={{ flex: 1, padding: "0 20px 20px", overflowY: "auto", overscrollBehavior: "contain", minHeight: 0 }}>
+          {bucket === "primary" && (
+            <>{peers.map(renderRow)}</>
+          )}
+
+          {bucket === "fallback" && (
+            <>
+              {peers.map(renderRow)}
+              <div style={{
+                color: COLORS.textSecondary, fontSize: 11, fontWeight: 500,
+                letterSpacing: 0.5, textTransform: "uppercase",
+                margin: "20px 0 6px", paddingTop: 12,
+                borderTop: `1px solid ${COLORS.border}`,
+              }}>
+                Other {exercise.primary.toLowerCase()} exercises
+              </div>
+              {fallback.map(renderRow)}
+            </>
+          )}
+
+          {bucket === "empty" && (
+            <div style={{
+              padding: "24px 16px", marginTop: 8,
+              background: COLORS.card, border: `1px solid ${COLORS.border}`,
+              borderRadius: 12,
+              display: "flex", flexDirection: "column", alignItems: "center", gap: 12,
+            }}>
+              <div style={{
+                color: COLORS.text, fontSize: 14, lineHeight: 1.5,
+                textAlign: "center", maxWidth: 280,
+              }}>
+                No direct swaps for {exercise.name}. Coach can suggest something based on what you have.
+              </div>
+              <button
+                onClick={onAskCoach}
+                style={{
+                  width: "100%", padding: "12px 16px",
+                  background: COLORS.gold, color: "#000",
+                  border: "none", borderRadius: 10,
+                  fontSize: 14, fontWeight: 600, cursor: "pointer",
+                  marginTop: 4,
+                }}
+              >
+                Ask Coach
+              </button>
+              <button
+                onClick={onBrowseAll}
+                style={{
+                  width: "100%", padding: "10px 16px",
+                  background: "transparent", color: COLORS.textSecondary,
+                  border: `1px solid ${COLORS.border}`, borderRadius: 10,
+                  fontSize: 13, fontWeight: 500, cursor: "pointer",
+                }}
+              >
+                Browse Exercises
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </>
@@ -7146,7 +8330,7 @@ function ExerciseDetailSheet({ exercise, userEquipment, workoutHistory = [], cus
                 if (hist.length > 0) {
                   const lastSession = hist[hist.length - 1];
                   const top = sessionTopSet(lastSession.sets);
-                  preview = `${hist.length} ${hist.length === 1 ? "session" : "sessions"} · last ${top.weight}×${top.reps}`;
+                  preview = `${hist.length} ${hist.length === 1 ? "session" : "sessions"} · last ${formatSetSummary(top)}`;
                 } else {
                   preview = "No history";
                 }
@@ -7410,7 +8594,7 @@ function HistoryTabContent({ history }) {
                       color: isTop ? COLORS.gold : COLORS.textSecondary,
                       fontSize: 11, fontVariantNumeric: "tabular-nums",
                       fontWeight: isTop ? 600 : 400,
-                    }}>{set.weight} × {set.reps}</span>
+                    }}>{formatSetSummary(set, " × ")}</span>
                   );
                 })}
               </div>
@@ -7542,7 +8726,7 @@ function RecordsTabContent({ history }) {
       label: "Best Est. 1RM",
       value: `${Math.round(bestE1rm.value)}`,
       unit: "lb",
-      sub: `${bestE1rm.weight}×${bestE1rm.reps} · ${formatShortDate(bestE1rm.date)}`,
+      sub: `${formatSetSummary({ weight: bestE1rm.weight, reps: bestE1rm.reps })} · ${formatShortDate(bestE1rm.date)}`,
     },
     {
       label: "Best Set Volume",
@@ -7622,170 +8806,796 @@ function EmptyTabState({ message }) {
   );
 }
 
-/* ── Profile Tab ─────────────────────────────────────────────────
-   Single scrolling page per Bible §6.5. Two sections separated by a
-   gold rule divider:
+/* ── Profile Tab — Coach's File (Bible §6.5, v26) ─────────────────
+   The Profile tab is reframed as Coach's File — the page Coach keeps
+   on you. Third-person notation in Coach's voice. Five fixed sections
+   on the landing (PLAN, EQUIPMENT, RULES, PROGRESS, OBSERVATIONS) plus
+   a vitals strip and a signed footer. Administrative settings (Email,
+   Membership, Body Stats, Units, Workout Preferences, Notifications,
+   Leaderboard, Logout) are displaced to a Settings sub-screen reached
+   via gear icon top-right.
 
-     Section 1 — Settings (standard register)
-       Avatar/name/level header, settings rows, Log Out
+   Typography deliberately departs from the rest of the app: Georgia
+   13px body, sans-serif 9px metadata, italic Georgia subtitles + page
+   titles. Profile is a display surface, not a navigation surface.
+   See Bible §6.5 "Typography conventions (Profile-specific)" table.
 
-     Section 2 — Coach Profile (themed register)
-       Gold rule divider, section header with C monogram + italic
-       Georgia title, one-line italic subtitle, then six entry cards
-       for About You / My Equipment / Your Rules / What Coach Has
-       Noticed / What Coach Sees / Coach's Assessment (locked).
+   Truncation rules:
+   - Rules: first 3, then "+ N more →" link.
+   - Progress: first 3 most recent, then "View all N →".
+   - Observations: first 3 most recent, then "View all N →".
 
-   Visual distinction between the two sections is intentionally quiet:
-   Coach cards share the same dark card background as settings rows
-   but add a 2px gold left-edge accent and use Georgia serif titles.
-   Gold is used as an accent, never as a background fill.
-
-   The "Equipment" row inside Coach Profile wires to onOpenEquipmentEditor,
-   which the App component routes to the full-screen EquipmentDetailScreen.
+   Affordance vocabulary on section headers:
+   - ✎ pencil → user-configured (Plan, Equipment). Tap to edit.
+   - 💬 chat glyph → user-authored-via-Coach (Rules). Created in chat.
+   - (no glyph) → Coach-tracked / Coach-authored (Progress, Observations).
 */
 
-function ProfileTab({ onOpenEquipmentEditor, equipmentCount, onLogout, userName }) {
-  const [confirmLogout, setConfirmLogout] = useState(false);
+// Display label helpers shared by landing and Plan sub-screen. Kept
+// at module scope so the Plan sub-screen (built in a later turn) can
+// reuse them without re-declaring.
+const PLAN_GOAL_LABELS = {
+  build_muscle: "Build Muscle",
+  lose_weight: "Lose Weight",
+  gain_strength: "Gain Strength",
+  get_lean: "Get Lean",
+};
+const PLAN_LEVEL_LABELS = {
+  beginner: "Beginner",
+  intermediate: "Intermediate",
+  advanced: "Advanced",
+};
+const PLAN_TIME_AWAY_LABELS = {
+  current: "Currently training",
+  lt1yr: "Less than a year",
+  "1to3yr": "1–3 years",
+  gt3yr: "More than 3 years",
+};
 
-  // Settings rows (Section 1). Bible §6.5 lists Body Stats, Membership,
-  // Units, Leaderboard, Notifications, Account. Fitness Profile and
-  // Workout Preferences are NOT here — that content moved down into
-  // the Coach Profile section.
-  const settingsRows = [
-    { id: "body_stats", label: "Body Stats", desc: "Height, weight, age, gender" },
-    { id: "membership", label: "Membership", desc: "Active · Renews Apr 15" },
-    { id: "units", label: "Units", desc: "Pounds (lbs)" },
-    { id: "leaderboard", label: "Leaderboard", desc: "Opted in" },
-    { id: "notifications", label: "Notifications", desc: "Streak reminders on" },
-    { id: "account", label: "Account", desc: "alex@email.com" },
-  ];
+// "Updated 2d ago" / "12D" formatters. Bible §6.5 calls for inline
+// timestamps in sans-serif 9px spaced caps next to rule/observation
+// rows (e.g. "12D"), and a longer signed-footer line ("updated 2d ago").
+function formatDaysAgoCap(epochMs) {
+  // Returns "12D" style. 0 → "TODAY". Caller wraps in spaced-caps styling.
+  if (!epochMs) return "";
+  const days = Math.max(0, Math.floor((Date.now() - epochMs) / (24 * 60 * 60 * 1000)));
+  if (days === 0) return "TODAY";
+  return `${days}D`;
+}
 
-  // Coach Profile cards (Section 2). Stateful descriptors show what
-  // Coach currently knows about the user at a glance. Equipment card
-  // wires to the full equipment editor.
-  const coachCards = [
-    { id: "about_you", label: "About You", desc: "Build Muscle · Intermediate · 3 days/week" },
-    { id: "equipment", label: "My Equipment", desc: equipmentCount > 0 ? `${equipmentCount} items selected` : "Not set", onClick: onOpenEquipmentEditor },
-    { id: "rules", label: "Your Rules", desc: "4 rules · created via Coach chat" },
-    { id: "noticed", label: "What Coach Has Noticed", desc: "7 observations", descItalic: true },
-    { id: "sees", label: "What Coach Sees", desc: "12-day streak · 47 sessions" },
-  ];
+function formatUpdatedAgo(epochMs) {
+  // Returns "2d ago" / "today" / etc for the signed-footer line.
+  if (!epochMs) return "today";
+  const days = Math.floor((Date.now() - epochMs) / (24 * 60 * 60 * 1000));
+  if (days <= 0) return "today";
+  if (days === 1) return "1d ago";
+  return `${days}d ago`;
+}
 
-  const cardBase = {
-    width: "100%", padding: "14px 16px", background: COLORS.card,
-    borderRadius: 10, marginBottom: 8, cursor: "pointer", textAlign: "left",
-    display: "flex", alignItems: "center", gap: 14, fontFamily: "inherit",
+function formatShortDateCap(epochMs) {
+  // Returns "APR 8" style — short month + day, all caps. Used on PR
+  // rows in Progress where the timestamp is a historical event (the
+  // day the PR was hit) rather than a recency tag. Different from
+  // formatDaysAgoCap which is used on Rules/Observations where "12D"
+  // emphasizes "how long this has been on file".
+  if (!epochMs) return "";
+  const d = new Date(epochMs);
+  const month = d.toLocaleDateString("en-US", { month: "short" }).toUpperCase();
+  return `${month} ${d.getDate()}`;
+}
+
+// Coach monogram — gold C in a gold-bordered circle. Used in the
+// header bar (22px), the signed footer (18px), and inside the future
+// CoachCTACard (24px). Single source so the visual identity is one
+// piece of code.
+function CoachMonogram({ size = 22, dark = true }) {
+  const borderW = size >= 22 ? 1.5 : 1;
+  return (
+    <span style={{
+      width: size, height: size, borderRadius: size / 2,
+      border: `${borderW}px solid ${COLORS.gold}`,
+      background: dark ? COLORS.goldHighlight : COLORS.bg,
+      display: "inline-flex", alignItems: "center", justifyContent: "center",
+      fontFamily: "Georgia, 'Times New Roman', serif",
+      fontStyle: "italic", fontWeight: 700,
+      color: COLORS.gold,
+      fontSize: size >= 22 ? 12 : Math.max(9, Math.round(size * 0.55)),
+      lineHeight: 1, flexShrink: 0,
+    }}>C</span>
+  );
+}
+
+function ProfileTab({
+  userName,
+  // Plan section data
+  planGoal, fitnessLevel, timeAway, planDaysPerWeek,
+  // Equipment
+  equipmentCount,
+  // Other section data
+  coachRules, progressPRs, coachObservations,
+  // Vitals
+  sessionsCount, streakDays, mostTrainedMuscle,
+  // Metadata
+  coachFileOpenedAt, coachFileLastUpdatedAt,
+  // Navigation handlers — sub-screens are built in later turns.
+  // For now these set the appSubScreen state; the App routes the
+  // open ones to real screens and silently no-ops the not-yet-built
+  // ones (a TODO comment in App marks which are stubbed).
+  onOpenSettings, onOpenPlan, onOpenEquipment, onOpenRules,
+  onOpenProgress, onOpenObservations,
+}) {
+  // Empty-state detection. Bible §6.5: first-launch shows vitals in
+  // muted gray, "New file" subtitle, one-liner italic placeholders per
+  // section, and a "file opened today" signed footer.
+  const isFirstLaunch = (sessionsCount || 0) === 0
+    && (!coachRules || coachRules.length === 0)
+    && (!progressPRs || progressPRs.length === 0)
+    && (!coachObservations || coachObservations.length === 0);
+
+  // Truncation helpers. Each section shows first 3 rows + a link
+  // when there are more. Sort by recency for Rules/Observations,
+  // by achievedAt for Progress (most recent first).
+  //
+  // Progress filters to PR-only and NEW-only rows. Plain gray rows
+  // ("recent working set, not a PR") were dropped per session 36
+  // feedback: if Progress is "numerical wins Coach has logged,"
+  // every row should earn its place. A non-PR Bench Press session
+  // belongs in workout history, not on a clipboard.
+  const sortedRules = [...(coachRules || [])].sort((a, b) => b.createdAt - a.createdAt);
+  const sortedObs = [...(coachObservations || [])].sort((a, b) => b.createdAt - a.createdAt);
+  const sortedPRs = [...(progressPRs || [])]
+    .filter((p) => p.isPR || p.isNew)
+    .sort((a, b) => b.achievedAt - a.achievedAt);
+  const visibleRules = sortedRules.slice(0, 3);
+  const visibleObs = sortedObs.slice(0, 3);
+  const visiblePRs = sortedPRs.slice(0, 3);
+  const moreRules = sortedRules.length - visibleRules.length;
+  const morePRs = sortedPRs.length - visiblePRs.length;
+  const moreObs = sortedObs.length - visibleObs.length;
+
+  // Identity name only — the subtitle ("Intermediate · Level 2 · Grinder")
+  // was removed per session 36 feedback: gamification metadata (Level/badge)
+  // is decorative noise on a Coach's File header. Name is the identity.
+  // Level still surfaces inside the PLAN section row, where it actually
+  // affects what Coach does with the file.
+  const levelLabel = fitnessLevel ? PLAN_LEVEL_LABELS[fitnessLevel] : "Intermediate";
+
+  // ── Shared styles ──
+  // Section header treatment (session 36 lock — "option C"): sans-serif
+  // 10px gold spaced caps over a thin dark-gold underline rule. Gives
+  // each section a stamped magazine-column look that holds together
+  // with the gold Coach monogram up top, without the airy thinness of
+  // the original Georgia spaced-caps spec. The header is rendered as
+  // a two-line block (label + hr) inside the section, not in the
+  // sectionHeadRow flex row — see the JSX below.
+  //
+  // Divider strategy (session 36 lock):
+  // - Section dividers (#2a2a2a hairline at section bottom) carry the
+  //   visual structure. Sections are the real units of the file.
+  // - No row dividers inside sections. Spacing + baseline rhythm carry
+  //   the list. The clipboard / paper-artifact metaphor reads better
+  //   with rows held together by typography than by grid lines.
+  // - Signed footer keeps its dashed line — end-of-document signal.
+  //
+  // Edit affordance: removed entirely. The whole section header is
+  // tappable; if the contents look configurable the user will tap.
+  const TYPE = {
+    body: { fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 13, color: "#e8e8e8", lineHeight: 1.5 },
+    meta: { fontFamily: "-apple-system, system-ui, sans-serif", fontSize: 9, color: "#555", letterSpacing: 1.5 },
+    sectionHead: { fontFamily: "-apple-system, system-ui, sans-serif", fontSize: 13, color: COLORS.gold, fontWeight: 700, letterSpacing: 2, textTransform: "uppercase" },
+    sectionRule: { border: "none", height: 1, background: "#3a2e00", margin: 0, width: "100%" },
+    rowVal: { fontSize: 11, color: "#aaa", whiteSpace: "nowrap" },
+    rowValUp: { fontSize: 11, color: COLORS.gold, whiteSpace: "nowrap" },
+    sigFooter: { fontFamily: "Georgia, 'Times New Roman', serif", fontStyle: "italic", color: "#666", fontSize: 10 },
+    tagInline: { color: COLORS.gold, fontSize: 9, letterSpacing: 1, marginLeft: 4, fontFamily: "-apple-system, system-ui, sans-serif" },
+    viewAll: { padding: "10px 0 4px", fontSize: 10, color: "#666", textAlign: "right", letterSpacing: 0.5, fontFamily: "-apple-system, system-ui, sans-serif", background: "transparent", border: "none", width: "100%", cursor: "pointer" },
+    emptyNote: { fontFamily: "Georgia, 'Times New Roman', serif", fontStyle: "italic", color: "#666", fontSize: 12, lineHeight: 1.6, padding: "14px 0" },
+  };
+
+  // Row line — used by every section's content rows. No inline divider
+  // anymore; sections own their own bottom hairline below.
+  const rowLineStyle = () => ({
+    padding: "10px 0",
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "baseline",
+    gap: 14,
+  });
+
+  // Section block — adds a bottom hairline divider to separate sections.
+  // The last section before the signed footer drops the line (the
+  // dashed-rule footer divider takes over).
+  const sectionBlockStyle = (isLast) => ({
+    marginTop: 22,
+    paddingBottom: 6,
+    borderBottom: isLast ? "none" : "1px solid #2a2a2a",
+  });
+  // Header row — vertical stack: title row + gold rule. The whole block
+  // is a single tappable button to preserve the section-tap behavior.
+  const sectionHeadBtnStyle = {
+    display: "flex", flexDirection: "column", gap: 6,
+    background: "transparent", border: "none", padding: 0,
+    width: "100%", cursor: "pointer", marginBottom: 12,
+    textAlign: "left",
   };
 
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, position: "relative" }}>
-      {/* Header — matches Exercises/Workout tab pattern */}
-      <div style={{ padding: "8px 24px 0", flexShrink: 0 }}>
-        <h2 style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 22, color: COLORS.text, margin: "0 0 12px", fontWeight: 400 }}>Profile</h2>
+
+      {/* Header bar — gold C monogram + italic Georgia "Coach's File" +
+          gear icon. 22px header height per Bible §6.5. */}
+      <div style={{
+        padding: "8px 24px 16px",
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center",
+        flexShrink: 0,
+      }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+          <CoachMonogram size={22} />
+          <span style={{
+            fontFamily: "Georgia, 'Times New Roman', serif",
+            fontStyle: "italic",
+            color: COLORS.gold,
+            fontSize: 13,
+          }}>Coach&apos;s File</span>
+        </div>
+        <button
+          onClick={onOpenSettings}
+          aria-label="Settings"
+          style={{
+            background: "transparent", border: "none", padding: 8, margin: -8,
+            cursor: "pointer", color: "#666", display: "flex", alignItems: "center",
+          }}
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="3" />
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+          </svg>
+        </button>
+      </div>
+
+      {/* Scrollable body */}
+      <div style={{ flex: 1, padding: "0 24px 24px", overflowY: "auto", minHeight: 0 }}>
+
+        {/* Identity block — name only. Subtitle ("Intermediate · Level 2 ·
+            Grinder") and the SESSIONS/STREAK/MOST TRAINED vitals strip
+            were removed per session 36 feedback: the landing was reading
+            cluttered, and Level/badge/streak surfaces decoratively rather
+            than telling Coach anything new about the user. Vitals will
+            return in v2 on the Home tab where they earn their place. */}
+        <div style={{ marginBottom: 22 }}>
+          <div style={{
+            fontFamily: "Georgia, 'Times New Roman', serif",
+            fontSize: 28,
+            lineHeight: 1,
+            letterSpacing: -0.5,
+            color: COLORS.text,
+          }}>{userName}</div>
+        </div>
+
+        {/* ── Section: PLAN ── */}
+        <div style={sectionBlockStyle(false)}>
+          <button onClick={onOpenPlan} style={sectionHeadBtnStyle}>
+            <span style={TYPE.sectionHead}>PLAN</span>
+            <hr style={TYPE.sectionRule} />
+          </button>
+          {(() => {
+            // Time Away row shown only when fitnessLevel ≠ beginner AND
+            // the user has actually set a timeAway value. On first launch
+            // timeAway is null → row hidden. The Bible §6.5 spec says
+            // "visible only when Level ≠ Beginner"; the locked HTML
+            // reference for first-launch shows Intermediate without
+            // a Time Away row, so we treat null as "not yet set, hide".
+            const showTimeAway = fitnessLevel !== "beginner" && timeAway != null;
+            const rows = [
+              { label: "Goal", value: PLAN_GOAL_LABELS[planGoal] || "Build Muscle" },
+              { label: "Level", value: levelLabel },
+              ...(showTimeAway ? [{ label: "Time away", value: PLAN_TIME_AWAY_LABELS[timeAway] }] : []),
+              { label: "Days / week", value: String(planDaysPerWeek || 3) },
+            ];
+            return rows.map((r) => (
+              <div key={r.label} style={rowLineStyle()}>
+                <span style={{ ...TYPE.body, flex: 1 }}>{r.label}</span>
+                <span style={TYPE.rowVal}>{r.value}</span>
+              </div>
+            ));
+          })()}
+        </div>
+
+        {/* ── Section: EQUIPMENT ── */}
+        <div style={sectionBlockStyle(false)}>
+          <button onClick={onOpenEquipment} style={sectionHeadBtnStyle}>
+            <span style={TYPE.sectionHead}>EQUIPMENT</span>
+            <hr style={TYPE.sectionRule} />
+          </button>
+          <button
+            onClick={onOpenEquipment}
+            style={{ ...rowLineStyle(), background: "transparent", border: "none", padding: "10px 0", width: "100%", cursor: "pointer", fontFamily: "inherit", color: "inherit", textAlign: "left" }}
+          >
+            <span style={{ ...TYPE.body, flex: 1 }}>{equipmentCount || 0} items configured</span>
+          </button>
+        </div>
+
+        {/* ── Section: RULES ── */}
+        <div style={sectionBlockStyle(false)}>
+          <button onClick={onOpenRules} style={sectionHeadBtnStyle}>
+            <span style={TYPE.sectionHead}>RULES</span>
+            <hr style={TYPE.sectionRule} />
+          </button>
+          {visibleRules.length === 0 ? (
+            <div style={TYPE.emptyNote}>No rules yet. Tell Coach what to follow.</div>
+          ) : (
+            <>
+              {visibleRules.map((r) => (
+                <div key={r.id} style={rowLineStyle()}>
+                  <span style={{ ...TYPE.body, flex: 1 }}>{r.text}</span>
+                  <span style={{ ...TYPE.meta, whiteSpace: "nowrap", letterSpacing: 1 }}>{formatDaysAgoCap(r.createdAt)}</span>
+                </div>
+              ))}
+              {moreRules > 0 && (
+                <button onClick={onOpenRules} style={TYPE.viewAll}>+ {moreRules} more →</button>
+              )}
+            </>
+          )}
+        </div>
+
+        {/* ── Section: PROGRESS ── */}
+        <div style={sectionBlockStyle(false)}>
+          <button onClick={onOpenProgress} style={sectionHeadBtnStyle}>
+            <span style={TYPE.sectionHead}>PROGRESS</span>
+            <hr style={TYPE.sectionRule} />
+          </button>
+          {visiblePRs.length === 0 ? (
+            <div style={TYPE.emptyNote}>Your PRs and new lifts will appear here.</div>
+          ) : (
+            <>
+              {visiblePRs.map((p) => (
+                <div key={p.id} style={rowLineStyle()}>
+                  <span style={{ ...TYPE.body, flex: 1 }}>
+                    {p.exerciseName}
+                    {p.isPR && <span style={TYPE.tagInline}>PR</span>}
+                    {p.isNew && !p.isPR && <span style={TYPE.tagInline}>NEW</span>}
+                  </span>
+                  <span style={p.isPR ? TYPE.rowValUp : TYPE.rowVal}>{p.value}</span>
+                  <span style={{ ...TYPE.meta, whiteSpace: "nowrap", letterSpacing: 1 }}>{formatShortDateCap(p.achievedAt)}</span>
+                </div>
+              ))}
+              {morePRs > 0 && (
+                <button onClick={onOpenProgress} style={TYPE.viewAll}>View all {sortedPRs.length} →</button>
+              )}
+            </>
+          )}
+        </div>
+
+        {/* ── Section: OBSERVATIONS ── */}
+        <div style={sectionBlockStyle(true)}>
+          <button onClick={onOpenObservations} style={sectionHeadBtnStyle}>
+            <span style={TYPE.sectionHead}>OBSERVATIONS</span>
+            <hr style={TYPE.sectionRule} />
+          </button>
+          {visibleObs.length === 0 ? (
+            <div style={TYPE.emptyNote}>Coach hasn&apos;t noticed anything yet.</div>
+          ) : (
+            <>
+              {visibleObs.map((o) => (
+                <div key={o.id} style={rowLineStyle()}>
+                  <span style={{ ...TYPE.body, flex: 1 }}>{o.text}</span>
+                  <span style={{ ...TYPE.meta, whiteSpace: "nowrap", letterSpacing: 1 }}>{formatDaysAgoCap(o.createdAt)}</span>
+                </div>
+              ))}
+              {moreObs > 0 && (
+                <button onClick={onOpenObservations} style={TYPE.viewAll}>View all {sortedObs.length} →</button>
+              )}
+            </>
+          )}
+        </div>
+
+        {/* ── Signed footer ── */}
+        <div style={{
+          marginTop: 22,
+          padding: "10px 0",
+          borderTop: "1px dashed #262626",
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+        }}>
+          <span style={TYPE.sigFooter}>
+            — C, {isFirstLaunch ? "file opened today" : `updated ${formatUpdatedAgo(coachFileLastUpdatedAt)}`}
+          </span>
+          <CoachMonogram size={18} />
+        </div>
+
+      </div>
+    </div>
+  );
+}
+
+/* ── Settings Sub-screen (Bible §6.5, gear icon from Coach's File) ─
+   F1 "quiet plumbing" treatment: deliberately demoted visually so it
+   reads as plumbing, not the main event. No gold on section headers,
+   sans-serif throughout, iOS-familiar pattern.
+
+   Two sections:
+   - ACCOUNT: Email & password, Membership, Body Stats
+   - APP: Units (Pounds toggle), Workout preferences (rest timer mode
+     + countdown — reuses CustomDurationModal from Session 34),
+     Notifications (streak reminders toggle), Leaderboard (inline gold
+     toggle, no chevron)
+
+   At the bottom: full-width red-bordered Logout button + version
+   footer ("MYG · v2.6").
+
+   Several rows route to sub-sub-screens that aren't built yet
+   (Email & password editor, Membership viewer, Body Stats editor).
+   For now those rows are no-ops with a TODO. Logout, Units toggle,
+   Rest timer mode picker, Custom duration modal, Streak reminders
+   toggle, and Leaderboard toggle are all wired to real App state.
+*/
+
+function SettingsSubscreen({
+  onBack,
+  // Real props wired to App state
+  unitsPref, onChangeUnits,
+  restTimerMode, onChangeRestTimerMode,
+  restCountdownTarget, onChangeRestCountdownTarget,
+  streakRemindersOn, onChangeStreakReminders,
+  leaderboardOn, onChangeLeaderboard,
+  onLogout,
+  bodyStats,
+  // Read-only for now — Email/Membership/Body Stats sub-sub-screens
+  // are deferred to a later turn.
+  emailDisplay = "alex@email.com",
+  membershipDisplay = "Active · Renews Apr 15",
+  appVersion = "v2.6",
+}) {
+  const [confirmLogout, setConfirmLogout] = useState(false);
+  // Rest timer picker modal: "menu" (mode + duration submenu) or null.
+  const [timerPickerOpen, setTimerPickerOpen] = useState(false);
+  const [timerPickerView, setTimerPickerView] = useState("main"); // "main" | "countdownDuration"
+  const [customDurationOpen, setCustomDurationOpen] = useState(false);
+
+  // Formatters
+  const restTimerLabel = (() => {
+    if (restTimerMode === "off") return "Off";
+    if (restTimerMode === "countup") return "Count up";
+    if (restTimerMode === "countdown") {
+      const m = Math.floor(restCountdownTarget / 60);
+      const s = restCountdownTarget % 60;
+      return `Countdown · ${m}:${String(s).padStart(2, "0")}`;
+    }
+    return "—";
+  })();
+  const unitsLabel = unitsPref === "kg" ? "Kilograms (kg)" : "Pounds (lbs)";
+  const bodyStatsLabel = bodyStats
+    ? `${Math.floor(bodyStats.heightIn / 12)}'${bodyStats.heightIn % 12}" · ${bodyStats.weightLb} lb · ${bodyStats.ageYears} yr · ${bodyStats.gender}`
+    : "Not set";
+
+  // Shared styles. F1 register — no gold on section headers, sans-serif
+  // throughout, generic settings vocabulary.
+  const headStyle = {
+    fontFamily: "-apple-system, system-ui, sans-serif",
+    fontSize: 11, letterSpacing: 1.5, color: "#666",
+    fontWeight: 500, margin: "22px 0 6px",
+    textTransform: "uppercase",
+  };
+  const headStyleFirst = { ...headStyle, marginTop: 0 };
+  const rowStyle = {
+    padding: "12px 0", display: "flex", alignItems: "center",
+    width: "100%", background: "transparent", border: "none",
+    borderBottom: "1px solid #1a1a1a",
+    cursor: "pointer", fontFamily: "inherit", color: "inherit", textAlign: "left",
+  };
+  const labelStyle = { fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 14, color: "#e8e8e8" };
+  const descStyle = { fontSize: 11, color: "#888", marginTop: 3, fontFamily: "-apple-system, system-ui, sans-serif" };
+  const chev = (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#555" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="9 18 15 12 9 6" />
+    </svg>
+  );
+
+  // Inline toggle pill — gold accented when on, gray when off. Used for
+  // Units (Pounds default; tap to flip to kg), Streak reminders, and
+  // Leaderboard. Stops event propagation so wrapper-row taps don't fight.
+  const Toggle = ({ on, onChange, ariaLabel }) => (
+    <button
+      aria-label={ariaLabel}
+      onClick={(e) => { e.stopPropagation(); onChange(!on); }}
+      style={{
+        width: 36, height: 20, borderRadius: 10,
+        background: on ? COLORS.goldHighlight : "#1a1a1a",
+        border: `1px solid ${on ? COLORS.gold : "#333"}`,
+        position: "relative", flexShrink: 0, cursor: "pointer", padding: 0,
+      }}
+    >
+      <span style={{
+        position: "absolute", top: 1,
+        left: on ? "auto" : 1, right: on ? 1 : "auto",
+        width: 16, height: 16, borderRadius: 8,
+        background: on ? COLORS.gold : "#555",
+        transition: "all 120ms ease",
+      }} />
+    </button>
+  );
+
+  // Segmented pill — two-option chooser (e.g. LBS / KG). Sits in the
+  // toggle-position slot of a row. Unlike Toggle (binary on/off), a
+  // SegmentedPill labels both options explicitly so the user doesn't
+  // have to guess what "on" means.
+  const SegmentedPill = ({ value, options, onChange }) => (
+    <div style={{
+      display: "inline-flex", borderRadius: 8,
+      background: "#1a1a1a", border: "1px solid #333",
+      padding: 2, flexShrink: 0,
+    }}>
+      {options.map((opt) => {
+        const selected = value === opt.value;
+        return (
+          <button
+            key={opt.value}
+            onClick={(e) => { e.stopPropagation(); onChange(opt.value); }}
+            style={{
+              padding: "5px 12px", borderRadius: 6,
+              background: selected ? COLORS.goldHighlight : "transparent",
+              color: selected ? COLORS.gold : "#888",
+              border: selected ? `1px solid ${COLORS.gold}` : "1px solid transparent",
+              fontSize: 11, fontWeight: 600, letterSpacing: 0.5,
+              cursor: "pointer", fontFamily: "-apple-system, system-ui, sans-serif",
+              textTransform: "uppercase",
+            }}
+          >
+            {opt.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+
+  // Row builder — keeps the JSX from getting unreadable.
+  // type: "nav" | "toggle" | "segmented" | "value"
+  const Row = ({ label, desc, type = "nav", onClick, toggleOn, onToggle, segmentedValue, segmentedOptions, onSegmentedChange }) => {
+    const content = (
+      <>
+        <div style={{ flex: 1 }}>
+          <div style={labelStyle}>{label}</div>
+          {desc && <div style={descStyle}>{desc}</div>}
+        </div>
+        {type === "nav" && chev}
+        {type === "toggle" && <Toggle on={!!toggleOn} onChange={onToggle} ariaLabel={label} />}
+        {type === "segmented" && (
+          <SegmentedPill value={segmentedValue} options={segmentedOptions} onChange={onSegmentedChange} />
+        )}
+      </>
+    );
+    if (type === "toggle" || type === "segmented") {
+      // Toggle/segmented rows aren't tappable as a whole — only the
+      // control flips state.
+      return <div style={rowStyle}>{content}</div>;
+    }
+    return <button onClick={onClick} style={rowStyle}>{content}</button>;
+  };
+
+  return (
+    <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, position: "relative", background: COLORS.bg }}>
+      {/* Header — back chevron + Settings title in Georgia 14px white */}
+      <div style={{ padding: "8px 24px 18px", display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+        <button
+          onClick={onBack}
+          aria-label="Back"
+          style={{ background: "transparent", border: "none", padding: 8, margin: -8, cursor: "pointer", color: "#888", display: "flex", alignItems: "center" }}
+        >
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="15 18 9 12 15 6" />
+          </svg>
+        </button>
+        <span style={{ fontFamily: "Georgia, 'Times New Roman', serif", color: "#fff", fontSize: 14 }}>Settings</span>
       </div>
 
       <div style={{ flex: 1, padding: "0 24px 24px", overflowY: "auto", minHeight: 0 }}>
 
-        {/* Avatar block */}
-        <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 20 }}>
-          <div style={{ width: 56, height: 56, borderRadius: 28, background: COLORS.card, border: `2px solid ${COLORS.gold}`, display: "flex", alignItems: "center", justifyContent: "center" }}>
-            <span style={{ color: COLORS.gold, fontFamily: "Georgia, 'Times New Roman', serif", fontWeight: 700, fontSize: 22 }}>{((userName || "").trim().charAt(0).toUpperCase()) || "?"}</span>
-          </div>
-          <div>
-            <div style={{ color: COLORS.text, fontSize: 18, fontWeight: 600 }}>{userName}</div>
-            <div style={{ color: COLORS.gold, fontSize: 12, marginTop: 2 }}>Level 2 · Grinder · 750 XP</div>
-          </div>
-        </div>
+        {/* ── ACCOUNT ── */}
+        <div style={headStyleFirst}>ACCOUNT</div>
+        <Row label="Email & password" desc={emailDisplay} onClick={() => { /* TODO: email & password sub-screen */ }} />
+        <Row label="Membership" desc={membershipDisplay} onClick={() => { /* TODO: membership viewer */ }} />
+        <Row label="Body Stats" desc={bodyStatsLabel} onClick={() => { /* TODO: body stats editor — built in BodyStatsSubscreen */ }} />
 
-        {/* Section 1 — Settings rows */}
-        {settingsRows.map((s) => (
-          <button key={s.id} style={{ ...cardBase, border: `1px solid ${COLORS.border}` }}>
-            <div style={{ flex: 1 }}>
-              <div style={{ color: COLORS.text, fontSize: 14, fontWeight: 500 }}>{s.label}</div>
-              <div style={{ color: COLORS.textSecondary, fontSize: 12, marginTop: 2 }}>{s.desc}</div>
-            </div>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={COLORS.textSecondary} strokeWidth="2"><polyline points="9 18 15 12 9 6" /></svg>
-          </button>
-        ))}
+        {/* ── APP ── */}
+        <div style={headStyle}>APP</div>
+        <Row
+          label="Units"
+          desc={unitsLabel}
+          type="segmented"
+          segmentedValue={unitsPref}
+          segmentedOptions={[{ value: "lbs", label: "Lbs" }, { value: "kg", label: "Kg" }]}
+          onSegmentedChange={onChangeUnits}
+        />
+        <Row
+          label="Workout preferences"
+          desc={restTimerLabel}
+          onClick={() => { setTimerPickerView("main"); setTimerPickerOpen(true); }}
+        />
+        <Row
+          label="Notifications"
+          desc={streakRemindersOn ? "Streak reminders on" : "Streak reminders off"}
+          onClick={() => { /* TODO: notifications sub-screen (more toggles incoming) */ }}
+        />
+        <Row
+          label="Leaderboard"
+          type="toggle"
+          toggleOn={leaderboardOn}
+          onToggle={onChangeLeaderboard}
+        />
 
-        {/* Log Out — lives with settings, above the divider */}
+        {/* Logout button — restores the path lost when Coach's File
+            displaced settings to this sub-screen. Same red-border /
+            red-text vocabulary as the existing Logout button. */}
         <button
           onClick={() => setConfirmLogout(true)}
-          style={{ width: "100%", padding: 13, background: "transparent", border: "1px solid #442222", borderRadius: 10, color: "#cc4444", fontSize: 14, fontWeight: 500, cursor: "pointer", marginTop: 8, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, fontFamily: "inherit" }}
+          style={{
+            width: "100%", padding: 13, background: "transparent",
+            border: "1px solid #442222", borderRadius: 10,
+            color: "#cc4444", fontSize: 14, cursor: "pointer",
+            marginTop: 24, display: "flex", alignItems: "center",
+            justifyContent: "center", gap: 8, fontFamily: "inherit",
+          }}
         >
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4" />
             <polyline points="16 17 21 12 16 7" />
             <line x1="21" y1="12" x2="9" y2="12" />
           </svg>
-          Log Out
+          Log out
         </button>
 
-        {/* Gold rule divider — soft gradient fade from transparent */}
+        {/* Version footer */}
         <div style={{
-          margin: "28px 0 22px",
-          height: 1,
-          background: `linear-gradient(to right, transparent 0%, ${COLORS.gold} 20%, ${COLORS.gold} 80%, transparent 100%)`,
-          opacity: 0.8,
-        }} />
-
-        {/* Section 2 — Coach Profile */}
-        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
-          <div style={{ width: 28, height: 28, borderRadius: 14, background: COLORS.goldHighlight, border: `1.5px solid ${COLORS.gold}`, display: "flex", alignItems: "center", justifyContent: "center" }}>
-            <span style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 15, color: COLORS.gold, fontWeight: 700, fontStyle: "italic", lineHeight: 1 }}>C</span>
-          </div>
-          <div style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 20, color: COLORS.gold, fontWeight: 400, fontStyle: "italic" }}>Coach Profile</div>
-        </div>
-
-        <div style={{ fontSize: 12, color: COLORS.textSecondary, fontStyle: "italic", fontFamily: "Georgia, 'Times New Roman', serif", lineHeight: 1.5, marginBottom: 14 }}>
-          The version of you Coach sees when building your sessions.
-        </div>
-
-        {/* Coach Profile cards — quiet gold accent on left edge, serif titles */}
-        {coachCards.map((c) => (
-          <button
-            key={c.id}
-            onClick={c.onClick}
-            style={{
-              ...cardBase,
-              borderTop: `1px solid ${COLORS.border}`,
-              borderRight: `1px solid ${COLORS.border}`,
-              borderBottom: `1px solid ${COLORS.border}`,
-              borderLeft: `2px solid ${COLORS.gold}`,
-              borderRadius: "0 10px 10px 0",
-              cursor: c.onClick ? "pointer" : "pointer",
-            }}
-          >
-            <div style={{ flex: 1 }}>
-              <div style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 15, color: COLORS.text, fontWeight: 400 }}>{c.label}</div>
-              <div style={{
-                fontSize: 12, color: COLORS.textSecondary, marginTop: 3,
-                ...(c.descItalic ? { fontStyle: "italic", fontFamily: "Georgia, 'Times New Roman', serif" } : {}),
-              }}>{c.desc}</div>
-            </div>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={COLORS.textSecondary} strokeWidth="2"><polyline points="9 18 15 12 9 6" /></svg>
-          </button>
-        ))}
-
-        {/* Coach's Assessment — locked (Phase 3, unlocks at 20 sessions) */}
-        <div style={{
-          width: "100%", padding: "14px 16px", background: "#0c0c0c",
-          border: "1px dashed #2a2410", borderRadius: 10,
-          display: "flex", alignItems: "center", gap: 14, opacity: 0.6,
+          textAlign: "center", fontSize: 10, color: "#444",
+          marginTop: 18, letterSpacing: 1,
+          fontFamily: "-apple-system, system-ui, sans-serif",
         }}>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 15, color: COLORS.textSecondary, fontWeight: 400 }}>Coach&apos;s Assessment</div>
-            <div style={{ fontSize: 12, color: "#5a5a5a", marginTop: 3 }}>Unlocks at 20 sessions</div>
-          </div>
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#5a5a5a" strokeWidth="2">
-            <rect x="3" y="11" width="18" height="11" rx="2" />
-            <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-          </svg>
+          MYG · {appVersion}
         </div>
-
       </div>
 
-      {/* Confirm logout modal */}
+      {/* ── Rest timer picker modal ──
+          Two-level: main view (Count up / Countdown / Off) and the
+          countdown duration submenu (preset durations + custom).
+          Mirrors the in-workout gear menu pattern from WorkoutTab so
+          Tyler doesn't see two different vocabularies for the same
+          preference. */}
+      {timerPickerOpen && (
+        <>
+          <div
+            onClick={() => { setTimerPickerOpen(false); setTimerPickerView("main"); }}
+            style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 100 }}
+          />
+          <div style={{
+            position: "fixed", left: "50%", bottom: 32, transform: "translateX(-50%)",
+            zIndex: 101, background: COLORS.card, border: `1px solid ${COLORS.border}`,
+            borderRadius: 14, padding: 8, width: 280,
+            boxShadow: "0 12px 32px rgba(0,0,0,0.7)",
+          }}>
+            {timerPickerView === "main" ? (
+              <>
+                <div style={{ fontSize: 11, color: "#888", padding: "8px 12px 4px", letterSpacing: 1, fontFamily: "-apple-system, system-ui, sans-serif" }}>REST TIMER</div>
+                {[
+                  { id: "countup", label: "Count up" },
+                  { id: "countdown", label: "Countdown" },
+                  { id: "off", label: "Off" },
+                ].map((opt) => {
+                  const isSelected = restTimerMode === opt.id;
+                  return (
+                    <button
+                      key={opt.id}
+                      onClick={() => {
+                        if (opt.id === "countdown") {
+                          onChangeRestTimerMode("countdown");
+                          setTimerPickerView("countdownDuration");
+                        } else {
+                          onChangeRestTimerMode(opt.id);
+                          setTimerPickerOpen(false);
+                          setTimerPickerView("main");
+                        }
+                      }}
+                      style={{
+                        display: "flex", justifyContent: "space-between", alignItems: "center",
+                        width: "100%", padding: "12px 12px",
+                        background: isSelected ? COLORS.goldHighlight : "transparent",
+                        border: "none", borderRadius: 8,
+                        color: isSelected ? COLORS.gold : "#fff", fontSize: 13,
+                        fontWeight: isSelected ? 600 : 400, cursor: "pointer",
+                        fontFamily: "inherit", textAlign: "left",
+                      }}
+                    >
+                      {opt.label}
+                      {isSelected && (
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={COLORS.gold} strokeWidth="2.5">
+                          <polyline points="20 6 9 17 4 12" />
+                        </svg>
+                      )}
+                    </button>
+                  );
+                })}
+              </>
+            ) : (
+              <>
+                <button
+                  onClick={() => setTimerPickerView("main")}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 6,
+                    background: "transparent", border: "none",
+                    color: "#888", fontSize: 12, padding: "8px 12px 4px",
+                    cursor: "pointer", fontFamily: "-apple-system, system-ui, sans-serif",
+                  }}
+                >
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
+                  Countdown duration
+                </button>
+                {[60, 90, 120, 180].map((sec) => {
+                  const m = Math.floor(sec / 60);
+                  const s = sec % 60;
+                  const label = `${m}:${String(s).padStart(2, "0")}`;
+                  const isSelected = restCountdownTarget === sec;
+                  return (
+                    <button
+                      key={sec}
+                      onClick={() => {
+                        onChangeRestCountdownTarget(sec);
+                        setTimerPickerOpen(false);
+                        setTimerPickerView("main");
+                      }}
+                      style={{
+                        display: "flex", justifyContent: "space-between", alignItems: "center",
+                        width: "100%", padding: "12px 12px",
+                        background: isSelected ? COLORS.goldHighlight : "transparent",
+                        border: "none", borderRadius: 8,
+                        color: isSelected ? COLORS.gold : "#fff", fontSize: 13,
+                        fontWeight: isSelected ? 600 : 400, cursor: "pointer",
+                        fontFamily: "inherit", textAlign: "left",
+                      }}
+                    >
+                      {label}
+                      {isSelected && (
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={COLORS.gold} strokeWidth="2.5">
+                          <polyline points="20 6 9 17 4 12" />
+                        </svg>
+                      )}
+                    </button>
+                  );
+                })}
+                <button
+                  onClick={() => { setCustomDurationOpen(true); }}
+                  style={{
+                    display: "flex", alignItems: "center",
+                    width: "100%", padding: "12px 12px",
+                    background: "transparent", border: "none", borderRadius: 8,
+                    color: "#fff", fontSize: 13, cursor: "pointer",
+                    fontFamily: "inherit", textAlign: "left",
+                  }}
+                >
+                  Custom…
+                </button>
+              </>
+            )}
+          </div>
+        </>
+      )}
+
+      {/* Reuses Session 34 component verbatim. */}
+      {customDurationOpen && (
+        <CustomDurationModal
+          initialSeconds={restCountdownTarget || 90}
+          onCancel={() => setCustomDurationOpen(false)}
+          onConfirm={(sec) => {
+            onChangeRestCountdownTarget(sec);
+            setCustomDurationOpen(false);
+            setTimerPickerOpen(false);
+            setTimerPickerView("main");
+          }}
+        />
+      )}
+
+      {/* Logout confirm modal — same pattern as the old in-Profile flow. */}
       {confirmLogout && (
         <>
           <div onClick={() => setConfirmLogout(false)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 100 }} />
@@ -7820,13 +9630,597 @@ function ProfileTab({ onOpenEquipmentEditor, equipmentCount, onLogout, userName 
                   color: "#FF6B6B", fontSize: 13, fontWeight: 600, cursor: "pointer",
                 }}
               >
-                Log Out
+                Log out
               </button>
             </div>
           </div>
         </>
       )}
     </div>
+  );
+}
+
+/* ── CoachCTACard — reusable gold-bordered card (Bible §6.5) ───────
+   Coach monogram + title + italic body + arrow. Used inside the Rules
+   sub-screen (populated state: "Add a rule via Coach"; empty state:
+   "Set your first rule") and intended for any future "deep-link to
+   Coach chat" surfaces. Tapping fires onClick — App-level prop wires
+   it to switch to the Coach tab.
+*/
+function CoachCTACard({ title, body, onClick }) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        display: "flex", alignItems: "center", gap: 10,
+        padding: "12px 14px",
+        background: COLORS.goldHighlight,
+        border: `1px solid ${COLORS.gold}`,
+        borderRadius: 10, marginTop: 18,
+        width: "100%", cursor: "pointer",
+        fontFamily: "inherit", color: "inherit", textAlign: "left",
+      }}
+    >
+      <CoachMonogram size={24} dark={false} />
+      <div style={{ flex: 1 }}>
+        <div style={{
+          fontFamily: "Georgia, 'Times New Roman', serif",
+          fontSize: 12, color: COLORS.gold,
+        }}>{title}</div>
+        <div style={{
+          fontFamily: "Georgia, 'Times New Roman', serif",
+          fontStyle: "italic", color: "#888",
+          fontSize: 10, marginTop: 2,
+        }}>{body}</div>
+      </div>
+      <span style={{ color: COLORS.gold, fontSize: 14 }}>→</span>
+    </button>
+  );
+}
+
+/* ── SubscreenShell — shared chrome for all Coach's File sub-screens ──
+   Header: back chevron + italic Georgia gold page title.
+   Subtitle: italic Georgia gray, single line.
+   Children: scrollable body.
+
+   Every sub-screen on Coach's File (Plan / Rules / Progress /
+   Observations) wears this shell so back-navigation and the
+   "this is part of Coach's File" feel stay consistent.
+*/
+function SubscreenShell({ title, subtitle, onBack, children, footer }) {
+  return (
+    <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, position: "relative", background: COLORS.bg }}>
+      <div style={{ padding: "8px 24px 18px", display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+        <button
+          onClick={onBack}
+          aria-label="Back"
+          style={{ background: "transparent", border: "none", padding: 8, margin: -8, cursor: "pointer", color: "#888", display: "flex", alignItems: "center" }}
+        >
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="15 18 9 12 15 6" />
+          </svg>
+        </button>
+        <span style={{
+          fontFamily: "Georgia, 'Times New Roman', serif",
+          fontStyle: "italic", color: COLORS.gold, fontSize: 14,
+        }}>{title}</span>
+      </div>
+      <div style={{ flex: 1, padding: "0 24px 24px", overflowY: "auto", minHeight: 0, display: "flex", flexDirection: "column" }}>
+        {subtitle && (
+          <div style={{
+            fontFamily: "Georgia, 'Times New Roman', serif",
+            fontStyle: "italic", color: "#888",
+            fontSize: 11, lineHeight: 1.6, marginBottom: 18,
+          }}>{subtitle}</div>
+        )}
+        <div style={{ flex: 1 }}>{children}</div>
+        {footer}
+      </div>
+    </div>
+  );
+}
+
+/* ── PlanSubscreen — P1 tap-to-expand inline edit (Bible §6.5) ──────
+   Each field shows as a read-only row by default (label left, value
+   right, small pencil glyph on far right). Tap the row → row expands
+   inline with #0f0f0f background lift, showing chip picker for that
+   field. Only one field in edit mode at a time. Selecting a chip
+   commits immediately (no global save). Days/week field uses
+   slider+number display instead of chips. Time Away row is visible
+   only when Level ≠ Beginner; toggles in/out smoothly when Level
+   changes.
+
+   This is the canonical inline-edit pattern; Equipment and Body Stats
+   inherit it.
+*/
+function PlanSubscreen({
+  planGoal, fitnessLevel, timeAway, planDaysPerWeek,
+  onChangeGoal, onChangeLevel, onChangeTimeAway, onChangeDaysPerWeek,
+  onBack,
+}) {
+  // editingField ∈ "goal" | "level" | "timeAway" | "days" | null
+  const [editingField, setEditingField] = useState(null);
+
+  const showTimeAway = fitnessLevel !== "beginner";
+  // If the user switches Level → beginner while editing Time away,
+  // collapse the open row so we don't leave editingField pointing at
+  // a hidden field.
+  useEffect(() => {
+    if (!showTimeAway && editingField === "timeAway") setEditingField(null);
+  }, [showTimeAway, editingField]);
+
+  // Field definitions in display order. Each has its own picker
+  // rendered inside the expanded row. Keeping them inline (rather than
+  // extracting per-field components) makes the open/closed state easy
+  // to read — every field is one entry.
+  const TYPE = {
+    body: { fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 13, color: "#e8e8e8", lineHeight: 1.5 },
+    rowVal: { fontSize: 11, color: "#aaa", whiteSpace: "nowrap" },
+    pencil: { color: "#555", fontSize: 12 },
+    editingTag: { color: COLORS.gold, fontSize: 11, fontStyle: "italic", fontFamily: "Georgia, 'Times New Roman', serif" },
+  };
+
+  const Chip = ({ label, selected, onClick }) => (
+    <button
+      onClick={onClick}
+      style={{
+        padding: "6px 11px", borderRadius: 14,
+        background: selected ? COLORS.goldHighlight : "transparent",
+        border: `1px solid ${selected ? COLORS.gold : "#2a2a2a"}`,
+        color: selected ? COLORS.gold : "#aaa",
+        fontSize: 11, cursor: "pointer",
+        fontFamily: "-apple-system, system-ui, sans-serif",
+      }}
+    >
+      {label}
+    </button>
+  );
+
+  // Renders a read-only collapsed row OR an expanded edit row.
+  const renderField = (fieldKey, label, displayValue, pickerNode) => {
+    const isEditing = editingField === fieldKey;
+    const toggle = () => setEditingField(isEditing ? null : fieldKey);
+    if (isEditing) {
+      return (
+        <div
+          key={fieldKey}
+          style={{
+            padding: "14px 20px",
+            background: "#0f0f0f",
+            margin: "0 -20px",
+            borderBottom: "1px solid #1a1a1a",
+          }}
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+            <button
+              onClick={toggle}
+              style={{ background: "transparent", border: "none", padding: 0, cursor: "pointer", color: "inherit", fontFamily: "inherit", textAlign: "left", ...TYPE.body }}
+            >{label}</button>
+            <span style={TYPE.editingTag}>editing</span>
+          </div>
+          {pickerNode}
+        </div>
+      );
+    }
+    return (
+      <button
+        key={fieldKey}
+        onClick={toggle}
+        style={{
+          width: "100%", padding: "10px 0",
+          display: "flex", justifyContent: "space-between", alignItems: "baseline",
+          borderBottom: "1px solid #1a1a1a",
+          gap: 14, background: "transparent", border: "none", borderBottom: "1px solid #1a1a1a",
+          cursor: "pointer", fontFamily: "inherit", color: "inherit", textAlign: "left",
+        }}
+      >
+        <span style={{ ...TYPE.body, flex: 1 }}>{label}</span>
+        <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={TYPE.rowVal}>{displayValue}</span>
+          <span style={TYPE.pencil}>✎</span>
+        </span>
+      </button>
+    );
+  };
+
+  return (
+    <SubscreenShell
+      title="Plan"
+      subtitle="What Coach uses to build your sessions."
+      onBack={onBack}
+    >
+      {renderField(
+        "goal",
+        "Goal",
+        PLAN_GOAL_LABELS[planGoal] || "Build Muscle",
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+          {Object.entries(PLAN_GOAL_LABELS).map(([key, label]) => (
+            <Chip key={key} label={label} selected={planGoal === key} onClick={() => { onChangeGoal(key); setEditingField(null); }} />
+          ))}
+        </div>
+      )}
+
+      {renderField(
+        "level",
+        "Level",
+        fitnessLevel ? PLAN_LEVEL_LABELS[fitnessLevel] : "Intermediate",
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+          {Object.entries(PLAN_LEVEL_LABELS).map(([key, label]) => (
+            <Chip key={key} label={label} selected={fitnessLevel === key} onClick={() => { onChangeLevel(key); setEditingField(null); }} />
+          ))}
+        </div>
+      )}
+
+      {showTimeAway && renderField(
+        "timeAway",
+        "Time away",
+        timeAway ? PLAN_TIME_AWAY_LABELS[timeAway] : "Currently training",
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+          {Object.entries(PLAN_TIME_AWAY_LABELS).map(([key, label]) => (
+            <Chip key={key} label={label} selected={timeAway === key} onClick={() => { onChangeTimeAway(key); setEditingField(null); }} />
+          ))}
+        </div>
+      )}
+
+      {renderField(
+        "days",
+        "Days / week",
+        String(planDaysPerWeek || 3),
+        <div>
+          {/* Slider + number readout. 1–7. Commit immediately on each
+              change so backing out preserves the current value. */}
+          <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+            <input
+              type="range" min={1} max={7} step={1}
+              value={planDaysPerWeek || 3}
+              onChange={(e) => onChangeDaysPerWeek(parseInt(e.target.value, 10))}
+              style={{ flex: 1, accentColor: COLORS.gold }}
+            />
+            <span style={{
+              fontFamily: "Georgia, 'Times New Roman', serif",
+              fontSize: 18, color: COLORS.gold,
+              minWidth: 22, textAlign: "right",
+            }}>{planDaysPerWeek || 3}</span>
+          </div>
+          <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4, fontFamily: "-apple-system, system-ui, sans-serif", fontSize: 9, color: "#555", letterSpacing: 1 }}>
+            <span>1</span><span>7</span>
+          </div>
+        </div>
+      )}
+    </SubscreenShell>
+  );
+}
+
+/* ── RulesSubscreen (Bible §6.5) ─────────────────────────────────────
+   Sentence list, inline timestamps, ⋯ delete per row. Below the list:
+   gold Coach-CTA card for adding via chat. Counter line at bottom
+   ("4 of 15 rules"). Empty state: centered italic placeholder +
+   "Set your first rule" CTA + EXAMPLES block.
+*/
+function RulesSubscreen({ coachRules, onDeleteRule, onOpenCoachChat, onBack }) {
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+  const sorted = [...(coachRules || [])].sort((a, b) => b.createdAt - a.createdAt);
+  const ruleCap = 15; // Bible §12.6
+
+  const TYPE = {
+    body: { fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 13, color: "#e8e8e8", lineHeight: 1.5 },
+    meta: { fontFamily: "-apple-system, system-ui, sans-serif", fontSize: 9, color: "#555", letterSpacing: 1 },
+    counter: { fontFamily: "Georgia, 'Times New Roman', serif", fontStyle: "italic", color: "#555", fontSize: 10, textAlign: "center", marginTop: 16 },
+  };
+
+  if (sorted.length === 0) {
+    return (
+      <SubscreenShell
+        title="Rules"
+        subtitle="Standing orders Coach follows. Set them by chatting with Coach."
+        onBack={onBack}
+      >
+        <div style={{ textAlign: "center", padding: "32px 16px 24px", fontFamily: "Georgia, 'Times New Roman', serif", fontStyle: "italic", color: "#888", fontSize: 13, lineHeight: 1.7 }}>
+          You haven&apos;t set any rules.<br />Tell Coach what to follow and he&apos;ll write it down.
+        </div>
+        <CoachCTACard
+          title="Set your first rule"
+          body="Open Coach chat to get started."
+          onClick={onOpenCoachChat}
+        />
+        <div style={{
+          marginTop: 22, fontFamily: "Georgia, 'Times New Roman', serif",
+          fontStyle: "italic", color: "#555", fontSize: 11,
+          lineHeight: 1.6, padding: "0 14px",
+        }}>
+          <span style={{ color: COLORS.gold, fontStyle: "normal", fontSize: 10, letterSpacing: 1, fontFamily: "-apple-system, system-ui, sans-serif" }}>EXAMPLES</span>
+          <br />
+          <span>&quot;No deadlifts on Mondays&quot;<br />&quot;Keep sessions under 60 minutes&quot;<br />&quot;Always start with a compound lift&quot;</span>
+        </div>
+      </SubscreenShell>
+    );
+  }
+
+  return (
+    <SubscreenShell
+      title="Rules"
+      subtitle="Standing orders Coach follows. Set them by chatting with Coach."
+      onBack={onBack}
+    >
+      {sorted.map((r) => (
+        <div key={r.id} style={{
+          padding: "10px 0", display: "flex",
+          justifyContent: "space-between", alignItems: "baseline",
+          borderBottom: "1px solid #1a1a1a", gap: 14,
+        }}>
+          <span style={{ ...TYPE.body, flex: 1 }}>{r.text}</span>
+          <span style={{ ...TYPE.meta, whiteSpace: "nowrap" }}>{formatDaysAgoCap(r.createdAt)}</span>
+          <button
+            onClick={() => setConfirmDeleteId(r.id)}
+            aria-label="Delete rule"
+            style={{ background: "transparent", border: "none", padding: 4, margin: -4, cursor: "pointer", color: "#666", fontSize: 14, flexShrink: 0 }}
+          >⋯</button>
+        </div>
+      ))}
+      <CoachCTACard
+        title="Add a rule via Coach"
+        body="Tell Coach in chat, he'll write it down."
+        onClick={onOpenCoachChat}
+      />
+      <div style={TYPE.counter}>{sorted.length} of {ruleCap} rules</div>
+
+      {/* Per-row delete confirm */}
+      {confirmDeleteId && (
+        <>
+          <div onClick={() => setConfirmDeleteId(null)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 100 }} />
+          <div style={{
+            position: "fixed", top: "50%", left: "50%", transform: "translate(-50%,-50%)",
+            zIndex: 101, background: COLORS.card, border: `1px solid ${COLORS.border}`,
+            borderRadius: 14, padding: "22px 22px 18px", width: 280,
+            boxShadow: "0 12px 32px rgba(0,0,0,0.7)",
+          }}>
+            <div style={{ color: COLORS.text, fontSize: 16, fontWeight: 600, marginBottom: 8, textAlign: "center" }}>
+              Delete this rule?
+            </div>
+            <div style={{ color: COLORS.textSecondary, fontSize: 13, lineHeight: 1.5, marginBottom: 18, textAlign: "center", fontStyle: "italic", fontFamily: "Georgia, 'Times New Roman', serif" }}>
+              &ldquo;{sorted.find((r) => r.id === confirmDeleteId)?.text}&rdquo;
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button
+                onClick={() => setConfirmDeleteId(null)}
+                style={{ flex: 1, padding: 11, background: "transparent", border: `1px solid ${COLORS.border}`, borderRadius: 8, color: COLORS.text, fontSize: 13, fontWeight: 500, cursor: "pointer" }}
+              >Cancel</button>
+              <button
+                onClick={() => { onDeleteRule(confirmDeleteId); setConfirmDeleteId(null); }}
+                style={{ flex: 1, padding: 11, background: "#3A1A1A", border: "1px solid #5A2A2A", borderRadius: 8, color: "#FF6B6B", fontSize: 13, fontWeight: 600, cursor: "pointer" }}
+              >Delete</button>
+            </div>
+          </div>
+        </>
+      )}
+    </SubscreenShell>
+  );
+}
+
+/* ── ProgressSubscreen (Bible §6.5) ─────────────────────────────────
+   Read-only. Rows grouped by time period with small spaced-cap section
+   headers (THIS WEEK / EARLIER THIS MONTH / LAST MONTH / EARLIER).
+   PR rows show gold value + gold "PR" tag, NEW rows show "NEW" tag.
+   No ⋯ menu (Coach owns the data). Signed "— C" footer at bottom.
+
+   Filter matches the landing: only PR-or-NEW rows shown — non-PR
+   working sets belong in workout history, not on Coach's File
+   (session 36 decision).
+*/
+function ProgressSubscreen({ progressPRs, onBack }) {
+  const TYPE = {
+    body: { fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 13, color: "#e8e8e8", lineHeight: 1.5 },
+    meta: { fontFamily: "-apple-system, system-ui, sans-serif", fontSize: 9, color: "#555", letterSpacing: 1.5 },
+    rowVal: { fontSize: 11, color: "#aaa", whiteSpace: "nowrap" },
+    rowValUp: { fontSize: 11, color: COLORS.gold, whiteSpace: "nowrap" },
+    tagInline: { color: COLORS.gold, fontSize: 9, letterSpacing: 1, marginLeft: 4, fontFamily: "-apple-system, system-ui, sans-serif" },
+    sigFooter: { fontFamily: "Georgia, 'Times New Roman', serif", fontStyle: "italic", color: "#666", fontSize: 10 },
+  };
+
+  // Time-period bucketing. Bible vocabulary:
+  //   THIS WEEK (≤ 7 days), EARLIER THIS MONTH (8–30), LAST MONTH (31–60), EARLIER (>60).
+  // Computed from achievedAt relative to now.
+  const now = Date.now();
+  const filtered = (progressPRs || []).filter((p) => p.isPR || p.isNew);
+  const buckets = { "This week": [], "Earlier this month": [], "Last month": [], "Earlier": [] };
+  for (const p of filtered) {
+    const days = Math.floor((now - p.achievedAt) / (24 * 60 * 60 * 1000));
+    if (days <= 7) buckets["This week"].push(p);
+    else if (days <= 30) buckets["Earlier this month"].push(p);
+    else if (days <= 60) buckets["Last month"].push(p);
+    else buckets["Earlier"].push(p);
+  }
+  // Sort within each bucket: most recent first.
+  for (const key of Object.keys(buckets)) {
+    buckets[key].sort((a, b) => b.achievedAt - a.achievedAt);
+  }
+
+  const isEmpty = filtered.length === 0;
+  const footer = (
+    <div style={{
+      marginTop: 22, paddingTop: 12,
+      borderTop: "1px dashed #1a1a1a",
+      textAlign: "right",
+    }}>
+      <span style={TYPE.sigFooter}>— C{isEmpty ? ", waiting on first session" : ""}</span>
+    </div>
+  );
+
+  return (
+    <SubscreenShell
+      title="Progress"
+      subtitle="Numerical wins Coach has logged from your sessions."
+      onBack={onBack}
+      footer={footer}
+    >
+      {isEmpty ? (
+        <div style={{ textAlign: "center", padding: "48px 16px 32px", fontFamily: "Georgia, 'Times New Roman', serif", fontStyle: "italic", color: "#888", fontSize: 13, lineHeight: 1.7 }}>
+          Nothing logged yet.<br />Your first PR will show up here.
+        </div>
+      ) : (
+        Object.entries(buckets).map(([periodLabel, rows]) => {
+          if (rows.length === 0) return null;
+          return (
+            <div key={periodLabel}>
+              <div style={{ ...TYPE.meta, margin: "18px 0 8px", textTransform: "uppercase" }}>{periodLabel}</div>
+              {rows.map((p) => (
+                <div key={p.id} style={{
+                  padding: "10px 0", display: "flex",
+                  justifyContent: "space-between", alignItems: "baseline",
+                  borderBottom: "1px solid #1a1a1a", gap: 14,
+                }}>
+                  <span style={{ ...TYPE.body, flex: 1 }}>
+                    {p.exerciseName}
+                    {p.isPR && <span style={TYPE.tagInline}>PR</span>}
+                    {p.isNew && !p.isPR && <span style={TYPE.tagInline}>NEW</span>}
+                  </span>
+                  <span style={p.isPR ? TYPE.rowValUp : TYPE.rowVal}>{p.value}</span>
+                </div>
+              ))}
+            </div>
+          );
+        })
+      )}
+    </SubscreenShell>
+  );
+}
+
+/* ── ObservationsSubscreen (Bible §6.5) ─────────────────────────────
+   Same row grammar as Rules: sentence + inline timestamp + ⋯ delete.
+   NO CoachCTACard (Coach writes these, user doesn't add). At the bottom:
+   red-bordered "Reset all observations" destructive button. Empty state:
+   placeholder + signed "— C" footer, no CTA.
+*/
+function ObservationsSubscreen({ coachObservations, onDeleteObservation, onResetAll, onBack }) {
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+  const [confirmResetAll, setConfirmResetAll] = useState(false);
+  const sorted = [...(coachObservations || [])].sort((a, b) => b.createdAt - a.createdAt);
+
+  const TYPE = {
+    body: { fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 13, color: "#e8e8e8", lineHeight: 1.5 },
+    meta: { fontFamily: "-apple-system, system-ui, sans-serif", fontSize: 9, color: "#555", letterSpacing: 1 },
+    sigFooter: { fontFamily: "Georgia, 'Times New Roman', serif", fontStyle: "italic", color: "#666", fontSize: 10 },
+  };
+
+  if (sorted.length === 0) {
+    const footer = (
+      <div style={{
+        marginTop: 22, paddingTop: 12,
+        borderTop: "1px dashed #1a1a1a",
+        textAlign: "right",
+      }}>
+        <span style={TYPE.sigFooter}>— C</span>
+      </div>
+    );
+    return (
+      <SubscreenShell
+        title="Observations"
+        subtitle="Patterns Coach has noticed about how you train."
+        onBack={onBack}
+        footer={footer}
+      >
+        <div style={{ textAlign: "center", padding: "48px 16px 32px", fontFamily: "Georgia, 'Times New Roman', serif", fontStyle: "italic", color: "#888", fontSize: 13, lineHeight: 1.7 }}>
+          Coach hasn&apos;t noticed anything yet.<br />A few sessions in, patterns will appear here.
+        </div>
+      </SubscreenShell>
+    );
+  }
+
+  return (
+    <SubscreenShell
+      title="Observations"
+      subtitle="Patterns Coach has noticed about how you train."
+      onBack={onBack}
+    >
+      {sorted.map((o) => (
+        <div key={o.id} style={{
+          padding: "10px 0", display: "flex",
+          justifyContent: "space-between", alignItems: "baseline",
+          borderBottom: "1px solid #1a1a1a", gap: 14,
+        }}>
+          <span style={{ ...TYPE.body, flex: 1 }}>{o.text}</span>
+          <span style={{ ...TYPE.meta, whiteSpace: "nowrap" }}>{formatDaysAgoCap(o.createdAt)}</span>
+          <button
+            onClick={() => setConfirmDeleteId(o.id)}
+            aria-label="Delete observation"
+            style={{ background: "transparent", border: "none", padding: 4, margin: -4, cursor: "pointer", color: "#666", fontSize: 14, flexShrink: 0 }}
+          >⋯</button>
+        </div>
+      ))}
+
+      {/* Reset all destructive button — red-bordered transparent bg,
+          italic Georgia gray text. Matches the Logout button vocabulary
+          but in the body of the screen rather than at the very bottom. */}
+      <button
+        onClick={() => setConfirmResetAll(true)}
+        style={{
+          width: "100%", padding: 12, marginTop: 24,
+          background: "transparent",
+          border: "1px solid #442222", borderRadius: 8,
+          color: "#cc4444", fontSize: 12,
+          fontFamily: "Georgia, 'Times New Roman', serif",
+          fontStyle: "italic", cursor: "pointer",
+        }}
+      >Reset all observations</button>
+
+      {confirmDeleteId && (
+        <>
+          <div onClick={() => setConfirmDeleteId(null)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 100 }} />
+          <div style={{
+            position: "fixed", top: "50%", left: "50%", transform: "translate(-50%,-50%)",
+            zIndex: 101, background: COLORS.card, border: `1px solid ${COLORS.border}`,
+            borderRadius: 14, padding: "22px 22px 18px", width: 280,
+            boxShadow: "0 12px 32px rgba(0,0,0,0.7)",
+          }}>
+            <div style={{ color: COLORS.text, fontSize: 16, fontWeight: 600, marginBottom: 8, textAlign: "center" }}>
+              Delete this observation?
+            </div>
+            <div style={{ color: COLORS.textSecondary, fontSize: 13, lineHeight: 1.5, marginBottom: 18, textAlign: "center", fontStyle: "italic", fontFamily: "Georgia, 'Times New Roman', serif" }}>
+              &ldquo;{sorted.find((o) => o.id === confirmDeleteId)?.text}&rdquo;
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button
+                onClick={() => setConfirmDeleteId(null)}
+                style={{ flex: 1, padding: 11, background: "transparent", border: `1px solid ${COLORS.border}`, borderRadius: 8, color: COLORS.text, fontSize: 13, fontWeight: 500, cursor: "pointer" }}
+              >Cancel</button>
+              <button
+                onClick={() => { onDeleteObservation(confirmDeleteId); setConfirmDeleteId(null); }}
+                style={{ flex: 1, padding: 11, background: "#3A1A1A", border: "1px solid #5A2A2A", borderRadius: 8, color: "#FF6B6B", fontSize: 13, fontWeight: 600, cursor: "pointer" }}
+              >Delete</button>
+            </div>
+          </div>
+        </>
+      )}
+
+      {confirmResetAll && (
+        <>
+          <div onClick={() => setConfirmResetAll(false)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 100 }} />
+          <div style={{
+            position: "fixed", top: "50%", left: "50%", transform: "translate(-50%,-50%)",
+            zIndex: 101, background: COLORS.card, border: `1px solid ${COLORS.border}`,
+            borderRadius: 14, padding: "22px 22px 18px", width: 300,
+            boxShadow: "0 12px 32px rgba(0,0,0,0.7)",
+          }}>
+            <div style={{ color: COLORS.text, fontSize: 16, fontWeight: 600, marginBottom: 8, textAlign: "center" }}>
+              Reset all observations?
+            </div>
+            <div style={{ color: COLORS.textSecondary, fontSize: 13, lineHeight: 1.5, marginBottom: 18, textAlign: "center" }}>
+              Coach will start over watching how you train. This can&apos;t be undone.
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button
+                onClick={() => setConfirmResetAll(false)}
+                style={{ flex: 1, padding: 11, background: "transparent", border: `1px solid ${COLORS.border}`, borderRadius: 8, color: COLORS.text, fontSize: 13, fontWeight: 500, cursor: "pointer" }}
+              >Cancel</button>
+              <button
+                onClick={() => { onResetAll(); setConfirmResetAll(false); }}
+                style={{ flex: 1, padding: 11, background: "#3A1A1A", border: "1px solid #5A2A2A", borderRadius: 8, color: "#FF6B6B", fontSize: 13, fontWeight: 600, cursor: "pointer" }}
+              >Reset all</button>
+            </div>
+          </div>
+        </>
+      )}
+    </SubscreenShell>
   );
 }
 
@@ -7879,9 +10273,25 @@ export default function MYGFitness() {
   // so the name renders identically everywhere. See Bible §6.1.
   const [userName, setUserName] = useState(h.userName || "Tyler");
 
+  // ── Fitness level + time-away ──
+  // Collected on Screens 3 and 3b. fitnessLevel ∈ {beginner, intermediate, advanced, null}.
+  // timeAway ∈ {current, lt1yr, 1to3yr, gt3yr, null} — only meaningful for
+  // intermediate/advanced; beginners skip Screen 3b entirely. Both feed the
+  // future Coach AI context packet (Bible §10 returning-lifter awareness)
+  // and surface in the Plan section of Coach's File (Bible §6.5 v26).
+  // Persisted as of Session 36 — see note in saveSnapshot above.
+  const [fitnessLevel, setFitnessLevel] = useState(h.fitnessLevel || null);
+  const [timeAway, setTimeAway] = useState(h.timeAway || null);
+
   const goTo = (s) => setScreen(s);
 
-  const progressScreens = ["goals", "level", "aboutyou", "days", "equipment", "account", "name"];
+  // Progress bar steps. Beginner skips the timeaway screen (asking a beginner
+  // about time away from training is incoherent), so the total step count
+  // shrinks for that branch. Recomputed every render — if the user changes
+  // their level on Screen 3 via Back, the bar recalculates correctly.
+  const progressScreens = fitnessLevel === "beginner"
+    ? ["goals", "level", "aboutyou", "days", "equipment", "account", "name"]
+    : ["goals", "level", "timeaway", "aboutyou", "days", "equipment", "account", "name"];
   const pIdx = progressScreens.indexOf(screen);
 
   // In-app sub-screens that overlay the tab UI (e.g. equipment editor opened
@@ -7976,6 +10386,15 @@ export default function MYGFitness() {
   // is the natural "browse" order.
   const [exerciseSort, setExerciseSort] = useState(() => h.exerciseSort || { mode: "alpha", dir: "asc" });
 
+  // ── Rest timer preferences ──
+  // Lifted from per-workout state so the user's preferred mode and
+  // countdown duration persist across workouts. Snapshot-persisted.
+  // Cleared on logout (like other prefs). Profile tab redesign session
+  // will add a Settings row that surfaces these for direct editing;
+  // for now the only change UI is the in-workout gear menu.
+  const [restTimerModePref, setRestTimerModePref] = useState(() => h.restTimerModePref || "countup");
+  const [restCountdownTargetPref, setRestCountdownTargetPref] = useState(() => typeof h.restCountdownTargetPref === "number" ? h.restCountdownTargetPref : 90);
+
   const addCustomExercise = (ex) => {
     setCustomExercises((prev) => [...prev, ex]);
   };
@@ -8065,6 +10484,31 @@ export default function MYGFitness() {
   const [workoutHistory, setWorkoutHistory] = useState(h.workoutHistory !== null && h.workoutHistory !== undefined ? h.workoutHistory : MOCK_WORKOUT_HISTORY);
   const [openHistoryId, setOpenHistoryId] = useState(null);
 
+  // ── Coach's File state (Bible §6.5, v26) ──
+  // Backs the redesigned Profile tab. Same hydration pattern as
+  // workoutHistory above: if a snapshot exists with non-null arrays,
+  // use them (including empty); otherwise seed with mock data so the
+  // landing page demos correctly on first run.
+  //
+  // Mutations live in the App so the landing and each sub-screen share
+  // a single source of truth. Truncation counts on the landing
+  // ("+ 1 more →", "View all 7 →") are derived from .length.
+  const [planGoal, setPlanGoal] = useState(h.planGoal || "build_muscle");
+  const [planDaysPerWeek, setPlanDaysPerWeek] = useState(typeof h.planDaysPerWeek === "number" ? h.planDaysPerWeek : 3);
+  const [coachRules, setCoachRules] = useState(h.coachRules !== null && h.coachRules !== undefined ? h.coachRules : MOCK_COACH_RULES);
+  const [coachObservations, setCoachObservations] = useState(h.coachObservations !== null && h.coachObservations !== undefined ? h.coachObservations : MOCK_COACH_OBSERVATIONS);
+  const [progressPRs, setProgressPRs] = useState(h.progressPRs !== null && h.progressPRs !== undefined ? h.progressPRs : MOCK_PROGRESS_PRS);
+  const [bodyStats, setBodyStats] = useState(h.bodyStats || MOCK_BODY_STATS);
+  // First-open / last-update timestamps for the signed footer. If we
+  // have no snapshot the file is "opened today" — store now. Last update
+  // is whichever of the section mutations was most recent.
+  const [coachFileOpenedAt, setCoachFileOpenedAt] = useState(typeof h.coachFileOpenedAt === "number" ? h.coachFileOpenedAt : Date.now());
+  const [coachFileLastUpdatedAt, setCoachFileLastUpdatedAt] = useState(typeof h.coachFileLastUpdatedAt === "number" ? h.coachFileLastUpdatedAt : NOW_FOR_SEED - 2 * DAY);
+  // Settings prefs surfaced on the Settings sub-screen.
+  const [unitsPref, setUnitsPref] = useState(h.unitsPref === "kg" ? "kg" : "lbs");
+  const [streakRemindersOn, setStreakRemindersOn] = useState(typeof h.streakRemindersOn === "boolean" ? h.streakRemindersOn : true);
+  const [leaderboardOn, setLeaderboardOn] = useState(typeof h.leaderboardOn === "boolean" ? h.leaderboardOn : false);
+
   // ── Save effect ──
   // Fires any time a persisted piece of state changes. saveSnapshot
   // handles the serialization (Dates → ISO strings, Set → Array) and
@@ -8086,6 +10530,8 @@ export default function MYGFitness() {
       onboardingComplete,
       userName,
       selectedEquipment,
+      fitnessLevel,
+      timeAway,
       activeTab,
       activeWorkout,
       coachChats,
@@ -8093,11 +10539,26 @@ export default function MYGFitness() {
       workoutHistory,
       customExercises,
       exerciseSort,
+      restTimerModePref,
+      restCountdownTargetPref,
+      planGoal,
+      planDaysPerWeek,
+      coachRules,
+      coachObservations,
+      progressPRs,
+      bodyStats,
+      coachFileOpenedAt,
+      coachFileLastUpdatedAt,
+      unitsPref,
+      streakRemindersOn,
+      leaderboardOn,
     });
   }, [
     onboardingComplete,
     userName,
     selectedEquipment,
+    fitnessLevel,
+    timeAway,
     activeTab,
     activeWorkout,
     coachChats,
@@ -8105,6 +10566,19 @@ export default function MYGFitness() {
     workoutHistory,
     customExercises,
     exerciseSort,
+    restTimerModePref,
+    restCountdownTargetPref,
+    planGoal,
+    planDaysPerWeek,
+    coachRules,
+    coachObservations,
+    progressPRs,
+    bodyStats,
+    coachFileOpenedAt,
+    coachFileLastUpdatedAt,
+    unitsPref,
+    streakRemindersOn,
+    leaderboardOn,
   ]);
 
   const startEmptyWorkout = () => {
@@ -8113,7 +10587,9 @@ export default function MYGFitness() {
       exercises: [],
       workoutName: deriveWorkoutName([], now),
       startTime: now,
-      restTimerMode: "countup",
+      // restTimerMode and countdown target now live on App-level prefs
+      // (restTimerModePref / restCountdownTargetPref) so they persist
+      // across workouts. WorkoutTab and SessionBar receive them as props.
       restTimer: null,
       nameWasEdited: false,
     });
@@ -8174,7 +10650,6 @@ export default function MYGFitness() {
       exercises: newExercises,
       workoutName: deriveWorkoutName(newExercises, now),
       startTime: now,
-      restTimerMode: "countup",
       restTimer: null,
       nameWasEdited: false,
     });
@@ -8348,10 +10823,27 @@ export default function MYGFitness() {
     setAppSubScreen(null);
     setUserName("Tyler");
     setSelectedEquipment(new Set());
+    setFitnessLevel(null);
+    setTimeAway(null);
+    setRestTimerModePref("countup");
+    setRestCountdownTargetPref(90);
     setWorkoutHistory(MOCK_WORKOUT_HISTORY);
     setOnboardingComplete(false);
     setCustomExercises([]);
     setExerciseSort({ mode: "alpha", dir: "asc" });
+    // Coach's File state. Mirror the workoutHistory pattern: bring back
+    // the mock seeds so the demo flows correctly on next sign-in.
+    setPlanGoal("build_muscle");
+    setPlanDaysPerWeek(3);
+    setCoachRules(MOCK_COACH_RULES);
+    setCoachObservations(MOCK_COACH_OBSERVATIONS);
+    setProgressPRs(MOCK_PROGRESS_PRS);
+    setBodyStats(MOCK_BODY_STATS);
+    setCoachFileOpenedAt(Date.now());
+    setCoachFileLastUpdatedAt(NOW_FOR_SEED - 2 * DAY);
+    setUnitsPref("lbs");
+    setStreakRemindersOn(true);
+    setLeaderboardOn(false);
     // Reset Coach chats to a single fresh chat
     const newId = `c${Date.now()}`;
     setCoachChats([{ id: newId, createdAt: Date.now(), messages: [] }]);
@@ -8372,6 +10864,10 @@ export default function MYGFitness() {
           setOpenHistoryId={setOpenHistoryId}
           finishedSession={finishedSession}
           customExercises={customExercises}
+          restTimerMode={restTimerModePref}
+          restCountdownTarget={restCountdownTargetPref}
+          onChangeRestTimerMode={setRestTimerModePref}
+          onChangeRestCountdownTarget={setRestCountdownTargetPref}
           onStartEmpty={requestStartEmptyWorkout}
           onUpdateWorkout={updateActiveWorkout}
           onMinimize={minimizeWorkout}
@@ -8380,6 +10876,7 @@ export default function MYGFitness() {
           onCommitFinished={commitFinishedSession}
           onDiscardFinished={discardFinishedSession}
           onRepeatWorkout={requestRepeatWorkout}
+          onTabChange={setActiveTab}
         />
       );
       case "coach": return (
@@ -8410,7 +10907,60 @@ export default function MYGFitness() {
           onDeleteCustom={deleteCustomExercise}
         />
       );
-      case "profile": return <ProfileTab onOpenEquipmentEditor={openEquipmentEditor} equipmentCount={selectedEquipment.size} onLogout={handleLogout} userName={userName} />;
+      case "profile": {
+        // ── Vitals for Coach's File landing ──
+        // sessionsCount: count of all workouts in history.
+        // streakDays: existing computeStreak helper (calendar-day consecutive).
+        // mostTrainedMuscle: highest-count primary muscle across all logged
+        //   exercises. Resolved via findExerciseByName (handles built-in +
+        //   customs). Ties broken by alpha order; falls back to "—" if empty.
+        const sessionsCount = workoutHistory.length;
+        const streakDays = computeStreak(workoutHistory);
+        const muscleCounts = {};
+        for (const w of workoutHistory) {
+          for (const ex of (w.exercises || [])) {
+            const def = findExerciseByName(ex.name, customExercises);
+            const primary = def && def.primary;
+            if (!primary) continue;
+            muscleCounts[primary] = (muscleCounts[primary] || 0) + 1;
+          }
+        }
+        let mostTrainedMuscle = "—";
+        const muscleEntries = Object.entries(muscleCounts);
+        if (muscleEntries.length > 0) {
+          muscleEntries.sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+          mostTrainedMuscle = muscleEntries[0][0];
+        }
+        return (
+          <ProfileTab
+            userName={userName}
+            planGoal={planGoal}
+            fitnessLevel={fitnessLevel}
+            timeAway={timeAway}
+            planDaysPerWeek={planDaysPerWeek}
+            equipmentCount={selectedEquipment.size}
+            coachRules={coachRules}
+            progressPRs={progressPRs}
+            coachObservations={coachObservations}
+            sessionsCount={sessionsCount}
+            streakDays={streakDays}
+            mostTrainedMuscle={mostTrainedMuscle}
+            coachFileOpenedAt={coachFileOpenedAt}
+            coachFileLastUpdatedAt={coachFileLastUpdatedAt}
+            // Sub-screen openers. Equipment routes to the existing
+            // EquipmentDetailScreen via openEquipmentEditor. Settings,
+            // Plan, Rules, Progress, Observations all route through
+            // appSubScreen state — handlers in renderAppContent mount
+            // the matching sub-screen component.
+            onOpenSettings={() => setAppSubScreen("settings")}
+            onOpenPlan={() => setAppSubScreen("plan")}
+            onOpenEquipment={openEquipmentEditor}
+            onOpenRules={() => setAppSubScreen("rules")}
+            onOpenProgress={() => setAppSubScreen("progress")}
+            onOpenObservations={() => setAppSubScreen("observations")}
+          />
+        );
+      }
       default: return <HomeTab onTabChange={setActiveTab} userName={userName} history={workoutHistory} />;
     }
   };
@@ -8429,6 +10979,87 @@ export default function MYGFitness() {
         />
       );
     }
+    if (appSubScreen === "settings") {
+      return (
+        <SettingsSubscreen
+          onBack={() => setAppSubScreen(null)}
+          unitsPref={unitsPref}
+          onChangeUnits={setUnitsPref}
+          restTimerMode={restTimerModePref}
+          onChangeRestTimerMode={setRestTimerModePref}
+          restCountdownTarget={restCountdownTargetPref}
+          onChangeRestCountdownTarget={setRestCountdownTargetPref}
+          streakRemindersOn={streakRemindersOn}
+          onChangeStreakReminders={setStreakRemindersOn}
+          leaderboardOn={leaderboardOn}
+          onChangeLeaderboard={setLeaderboardOn}
+          onLogout={handleLogout}
+          bodyStats={bodyStats}
+        />
+      );
+    }
+    if (appSubScreen === "plan") {
+      // Plan sub-screen mutates four fields. Every change commits
+      // immediately (no global save). coachFileLastUpdatedAt bumps
+      // on each change so the signed-footer recency on the landing
+      // reflects the user's most recent edit.
+      const stamp = () => setCoachFileLastUpdatedAt(Date.now());
+      return (
+        <PlanSubscreen
+          onBack={() => setAppSubScreen(null)}
+          planGoal={planGoal}
+          fitnessLevel={fitnessLevel}
+          timeAway={timeAway}
+          planDaysPerWeek={planDaysPerWeek}
+          onChangeGoal={(v) => { setPlanGoal(v); stamp(); }}
+          onChangeLevel={(v) => { setFitnessLevel(v); stamp(); }}
+          onChangeTimeAway={(v) => { setTimeAway(v); stamp(); }}
+          onChangeDaysPerWeek={(v) => { setPlanDaysPerWeek(v); stamp(); }}
+        />
+      );
+    }
+    if (appSubScreen === "rules") {
+      // Rules CTA card deep-links to Coach chat. Closing the sub-screen
+      // first and then switching tabs keeps the back-stack sane (if
+      // user navigates back from Coach later they land on the
+      // Coach's File landing, not the Rules sub-screen).
+      const openCoachChat = () => { setAppSubScreen(null); setActiveTab("coach"); };
+      return (
+        <RulesSubscreen
+          onBack={() => setAppSubScreen(null)}
+          coachRules={coachRules}
+          onDeleteRule={(id) => {
+            setCoachRules((prev) => prev.filter((r) => r.id !== id));
+            setCoachFileLastUpdatedAt(Date.now());
+          }}
+          onOpenCoachChat={openCoachChat}
+        />
+      );
+    }
+    if (appSubScreen === "progress") {
+      return (
+        <ProgressSubscreen
+          onBack={() => setAppSubScreen(null)}
+          progressPRs={progressPRs}
+        />
+      );
+    }
+    if (appSubScreen === "observations") {
+      return (
+        <ObservationsSubscreen
+          onBack={() => setAppSubScreen(null)}
+          coachObservations={coachObservations}
+          onDeleteObservation={(id) => {
+            setCoachObservations((prev) => prev.filter((o) => o.id !== id));
+            setCoachFileLastUpdatedAt(Date.now());
+          }}
+          onResetAll={() => {
+            setCoachObservations([]);
+            setCoachFileLastUpdatedAt(Date.now());
+          }}
+        />
+      );
+    }
     // SessionBar is shown whenever an active workout exists AND
     //   - the user is not on the workout tab, OR
     //   - the workout is minimized
@@ -8442,7 +11073,7 @@ export default function MYGFitness() {
     return (
       <>
         {renderTab()}
-        {showSessionBar && <SessionBar workout={activeWorkout} onTap={expandWorkoutFromBar} />}
+        {showSessionBar && <SessionBar workout={activeWorkout} restTimerMode={restTimerModePref} restCountdownTarget={restCountdownTargetPref} onTap={expandWorkoutFromBar} />}
         {!hideTabBar && <TabBar active={activeTab} onTab={setActiveTab} />}
 
         {showStartConflict && (
@@ -8519,9 +11150,33 @@ export default function MYGFitness() {
       case "goals":
         return <GoalsScreen onNext={() => goTo("level")} onBack={() => goTo("welcome")} onSkip={() => goTo("level")} />;
       case "level":
-        return <FitnessLevelScreen onNext={() => goTo("aboutyou")} onBack={() => goTo("goals")} onSkip={() => goTo("aboutyou")} />;
+        return (
+          <FitnessLevelScreen
+            value={fitnessLevel}
+            onChange={(lvl) => {
+              setFitnessLevel(lvl);
+              // Picking Beginner invalidates any previously-chosen timeAway
+              // (Beginners don't see Screen 3b). Clear so a back-and-forth
+              // between Intermediate→Beginner doesn't leave stale state.
+              if (lvl === "beginner") setTimeAway(null);
+            }}
+            onNext={() => goTo(fitnessLevel === "beginner" ? "aboutyou" : "timeaway")}
+            onBack={() => goTo("goals")}
+            onSkip={() => goTo("aboutyou")}
+          />
+        );
+      case "timeaway":
+        return (
+          <TimeAwayScreen
+            value={timeAway}
+            onChange={setTimeAway}
+            onNext={() => goTo("aboutyou")}
+            onBack={() => goTo("level")}
+            onSkip={() => goTo("aboutyou")}
+          />
+        );
       case "aboutyou":
-        return <AboutYouScreen onNext={() => goTo("days")} onBack={() => goTo("level")} onSkip={() => goTo("days")} />;
+        return <AboutYouScreen onNext={() => goTo("days")} onBack={() => goTo(fitnessLevel === "beginner" || fitnessLevel === null ? "level" : "timeaway")} onSkip={() => goTo("days")} />;
       case "days":
         return <DaysScreen onNext={() => goTo("equipment")} onBack={() => goTo("aboutyou")} onSkip={() => goTo("equipment")} />;
       case "equipment":
@@ -8581,26 +11236,89 @@ export default function MYGFitness() {
     }
   };
 
+  // ── Viewport mode ──
+  // PhoneFrame (the 375×812 fake-bezel preview) is for wide screens only —
+  // claude.ai artifact preview, desktop browser, etc. On an actual phone
+  // it would push the TabBar off-screen because 812px + 80px padding is
+  // taller than iOS Safari's visible viewport, AND the fixed pixel height
+  // ignores the URL bar collapsing.
+  //
+  // On a real phone we render full-bleed using 100dvh (dynamic viewport
+  // height — the only height unit that correctly accounts for the iOS
+  // Safari URL bar showing/hiding) and pad the bottom with the home-
+  // indicator safe-area inset so the TabBar sits where the user expects.
+  //
+  // Detection: <= 500px wide ≈ phone (iPhones top out around 430). We
+  // measure on mount and on resize so rotating or opening dev tools works.
+  // Default to "phone" (true) so first paint on mobile is correct; the
+  // desktop preview will flip after mount, which is fine because the
+  // artifact iframe is always wide.
+  const [isPhone, setIsPhone] = useState(
+    typeof window !== "undefined" ? window.innerWidth <= 500 : true
+  );
+  useEffect(() => {
+    const onResize = () => setIsPhone(window.innerWidth <= 500);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  const globalStyles = (
+    <style>{`
+      input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 24px; height: 24px; border-radius: 50%; background: #FFD700; cursor: pointer; border: 3px solid #111111; box-shadow: 0 0 8px rgba(255,215,0,0.4); }
+      input[type="range"]::-moz-range-thumb { width: 24px; height: 24px; border-radius: 50%; background: #FFD700; cursor: pointer; border: 3px solid #111111; box-shadow: 0 0 8px rgba(255,215,0,0.4); }
+      @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+      @keyframes coachDot { 0%, 60%, 100% { opacity: 0.2; } 30% { opacity: 1; } }
+      @keyframes shakeField {
+        0%, 100% { transform: translateX(0); }
+        15% { transform: translateX(-6px); }
+        30% { transform: translateX(6px); }
+        45% { transform: translateX(-4px); }
+        60% { transform: translateX(4px); }
+        75% { transform: translateX(-2px); }
+        90% { transform: translateX(2px); }
+      }
+      input::placeholder { color: #555; }
+      * { box-sizing: border-box; }
+      ::-webkit-scrollbar { width: 0; }
+    `}</style>
+  );
+
+  if (isPhone) {
+    // Full-bleed phone render. height:100dvh fills the visible viewport
+    // (and shrinks when the iOS URL bar appears, instead of overflowing).
+    // paddingBottom uses env(safe-area-inset-bottom) so the TabBar clears
+    // the home indicator. paddingTop:env(safe-area-inset-top) for the
+    // notch / Dynamic Island.
+    return (
+      <>
+        {globalStyles}
+        <div
+          style={{
+            height: "100dvh",
+            width: "100vw",
+            background: COLORS.bg,
+            display: "flex",
+            flexDirection: "column",
+            overflow: "hidden",
+            paddingTop: "env(safe-area-inset-top)",
+            paddingBottom: "env(safe-area-inset-bottom)",
+            fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+          }}
+        >
+          <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
+            {pIdx >= 0 && <ProgressBar current={pIdx + 1} total={progressScreens.length} />}
+            {renderScreen()}
+          </div>
+        </div>
+      </>
+    );
+  }
+
+  // Desktop / wide-viewport preview — keep the fake-iPhone frame so the
+  // artifact preview and design reviews still feel like "an app screen".
   return (
-    <div style={{ width: "100vw", height: "100vh", background: COLORS.bg }}>
-      <style>{`
-        input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 24px; height: 24px; border-radius: 50%; background: #FFD700; cursor: pointer; border: 3px solid #111111; box-shadow: 0 0 8px rgba(255,215,0,0.4); }
-        input[type="range"]::-moz-range-thumb { width: 24px; height: 24px; border-radius: 50%; background: #FFD700; cursor: pointer; border: 3px solid #111111; box-shadow: 0 0 8px rgba(255,215,0,0.4); }
-        @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
-        @keyframes coachDot { 0%, 60%, 100% { opacity: 0.2; } 30% { opacity: 1; } }
-        @keyframes shakeField {
-          0%, 100% { transform: translateX(0); }
-          15% { transform: translateX(-6px); }
-          30% { transform: translateX(6px); }
-          45% { transform: translateX(-4px); }
-          60% { transform: translateX(4px); }
-          75% { transform: translateX(-2px); }
-          90% { transform: translateX(2px); }
-        }
-        input::placeholder { color: #555; }
-        * { box-sizing: border-box; }
-        ::-webkit-scrollbar { width: 0; }
-      `}</style>
+    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#0a0a0a", padding: "40px 20px" }}>
+      {globalStyles}
       <PhoneFrame>
         {pIdx >= 0 && <ProgressBar current={pIdx + 1} total={progressScreens.length} />}
         {renderScreen()}
