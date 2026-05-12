@@ -1171,42 +1171,39 @@ function formatShortDate(isoDate) {
 /* ── Shared Components ───────────────────────────────────────── */
 
 function PhoneFrame({ children }) {
-  // Real-device frame. Two pieces of safe-area handling, deliberately split:
+  // Full-viewport container for real-device rendering.
   //
-  //   1. TOP inset goes HERE on the frame itself. In PWA mode (added to
-  //      home screen, no Safari URL bar), iOS draws our app under the
-  //      status bar, so without this padding the header collides with the
-  //      time/signal/battery glyphs. paddingTop: env(safe-area-inset-top)
-  //      pushes our content cleanly below the OS chrome.
+  // Replaces the old fake-bezel mockup (375×812 hardcoded box with fake
+  // "9:41" status bar, fake signal/wifi/battery SVGs, and fake home
+  // indicator) that worked for desktop previews but rendered as a
+  // "phone-in-a-phone" on real iOS devices.
   //
-  //   2. BOTTOM inset does NOT go here — it lives inside TabBar instead
-  //      (as internal padding). If we put bottom padding here too, the
-  //      TabBar's dark background would stop short of the screen edge
-  //      and the area below would be the page's background color, looking
-  //      like a gap. Pushing the inset down into TabBar lets its background
-  //      extend to the true bottom while the icons themselves lift above
-  //      the home indicator.
-  //
-  //   3. LEFT/RIGHT are not currently handled because the app is portrait-
-  //      only. If we add landscape later, add symmetric padding here.
-  //
-  // 100dvh resizes correctly as the mobile URL bar shows/hides. The parent
-  // html/body must also be height-constrained — see index.css.
+  // Important: we apply safe-area padding for top/left/right ONLY here.
+  // Bottom safe-area is handled by the TabBar itself, so the bar's
+  // background extends to the screen's actual bottom edge while its icons
+  // sit above the home indicator. That's how native iOS apps do it —
+  // adding bottom padding here pushes the whole TabBar up instead and
+  // leaves a black gap below it.
   return (
     <div
       style={{
-        width: "100%",
-        height: "100dvh",
+        width: "100vw",
+        height: "100vh", // fallback
+        minHeight: "100dvh",
+        maxHeight: "100dvh",
         background: COLORS.bg,
         position: "relative",
         overflow: "hidden",
+        overscrollBehavior: "contain",
         fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
         display: "flex",
         flexDirection: "column",
         paddingTop: "env(safe-area-inset-top)",
+        paddingLeft: "env(safe-area-inset-left)",
+        paddingRight: "env(safe-area-inset-right)",
       }}
     >
-      <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column", minHeight: 0 }}>
+      <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
         {children}
       </div>
     </div>
@@ -1329,9 +1326,10 @@ function WelcomeScreen({ onGetStarted, onSignIn }) {
   useEffect(() => { setTimeout(() => setLogoV(true), 200); setTimeout(() => setContentV(true), 900); }, []);
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "0 32px", position: "relative" }}>
-      {/* V.5 marker — temporary build indicator so we can confirm the file
+      {/* V.6 marker — temporary build indicator so we can confirm the file
           actually updated on the device after each push. Top-right corner,
-          dimmed, doesn't compete with the logo. Remove before shipping. */}
+          dimmed, doesn't compete with the logo. Remove before shipping.
+          Bump the number with each push so cache staleness is obvious. */}
       <div style={{ position: "absolute", top: 16, right: 20, color: COLORS.textSecondary, fontSize: 11, fontWeight: 500, letterSpacing: 1, opacity: 0.7 }}>V.6</div>
       <div style={{ position: "absolute", top: "40%", textAlign: "center", opacity: logoV ? 1 : 0, transform: logoV ? "translateY(-50%) scale(1)" : "translateY(-50%) scale(1.08)", transition: "all 0.9s cubic-bezier(0.22,1,0.36,1)" }}>
         <h1 style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 92, fontWeight: 700, color: COLORS.gold, margin: 0, letterSpacing: 8 }}>MYG</h1>
@@ -3961,23 +3959,6 @@ function ActiveLogger({
       transition: dragMinRef.current.dragging ? "none"
         : "top 0.25s ease, background 0.25s ease, border-color 0.25s ease",
     }}>
-      {/* ── DEV-ONLY: play fake drag-down (desktop testing) ──
-          Fixed-position so it stays visible during the morph.
-          Remove before launch. grep marker: DEV_MINIMIZE_BUTTON */}
-      <button
-        onClick={playFakeDrag}
-        style={{
-          position: "fixed", top: 12, right: 12, zIndex: 90,
-          padding: "6px 10px", fontSize: 11, fontWeight: 600,
-          background: "rgba(255,215,0,0.15)",
-          border: `1px dashed ${COLORS.gold}`,
-          borderRadius: 6, color: COLORS.gold, cursor: "pointer",
-          fontFamily: "monospace",
-        }}
-      >
-        DEV: play minimize ↓
-      </button>
-
       {/* ── Morph header — drag region + shared-element interpolation ──
           Container is 52px tall — exactly matches SessionBar. The whole
           surface is the drag-detection region (no separate drag pill).
@@ -10248,7 +10229,19 @@ function TabBar({ active, onTab }) {
     { id: "profile", label: "Profile", icon: (c) => <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="1.8"><circle cx="12" cy="8" r="4" /><path d="M4 20c0-4 4-6 8-6s8 2 8 6" /></svg> },
   ];
   return (
-    <div style={{ display: "flex", justifyContent: "space-around", padding: "10px 0 2px", paddingBottom: "calc(2px + env(safe-area-inset-bottom))", borderTop: `1px solid ${COLORS.border}`, background: COLORS.bg, flexShrink: 0 }}>
+    <div style={{
+      display: "flex",
+      justifyContent: "space-around",
+      // Top padding 10px, sides 0, bottom: 2px PLUS the home indicator inset.
+      // calc() with env(safe-area-inset-bottom) lets the bar's background fill
+      // down to the screen's actual bottom edge while the icons sit clear of
+      // the iOS home indicator. This is the exact pattern Apple uses in their
+      // own apps' tab bars.
+      padding: "10px 0 calc(2px + env(safe-area-inset-bottom)) 0",
+      borderTop: `1px solid ${COLORS.border}`,
+      background: COLORS.bg,
+      flexShrink: 0,
+    }}>
       {tabs.map((t) => { const a = active === t.id; const c = a ? COLORS.gold : COLORS.inactive; return <button key={t.id} onClick={() => onTab(t.id)} style={{ background: "none", border: "none", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 4, padding: "4px 8px" }}>{t.icon(c)}<span style={{ fontSize: 10, color: c, fontWeight: a ? 600 : 400 }}>{t.label}</span></button>; })}
     </div>
   );
@@ -11250,8 +11243,62 @@ export default function MYGFitness() {
   };
 
   return (
-    <div style={{ minHeight: "100dvh", width: "100%", background: COLORS.bg }}>
+    <div style={{ width: "100vw", minHeight: "100dvh", background: COLORS.bg }}>
       <style>{`
+        /* ── iOS-native feel ────────────────────────────────────────────
+           These rules eliminate the common "this is a webapp, not a real
+           app" giveaways on iOS Safari + standalone home-screen launches. */
+
+        html, body, #root {
+          margin: 0;
+          padding: 0;
+          width: 100%;
+          height: 100%;
+          background: ${COLORS.bg};
+          overscroll-behavior: none; /* kills rubber-band bounce at edges */
+          -webkit-text-size-adjust: 100%; /* prevent iOS auto-resize of text on rotate */
+        }
+
+        /* Remove the gray flash that iOS draws on tap. Single biggest
+           "webapp" tell — native iOS apps never show this. */
+        * {
+          -webkit-tap-highlight-color: transparent;
+        }
+
+        /* Disable the long-press "Copy / Share / Lookup" menu on UI
+           elements. Inputs and textareas opt back in below. */
+        button, a, div, span, label, svg, img {
+          -webkit-touch-callout: none;
+          -webkit-user-select: none;
+          user-select: none;
+        }
+
+        /* Allow selection inside text inputs and textareas — disabling it
+           globally would break copy/paste in form fields. */
+        input, textarea {
+          -webkit-user-select: text;
+          user-select: text;
+          -webkit-touch-callout: default;
+        }
+
+        /* iOS zooms inputs on focus if font-size is < 16px. Force 16px
+           minimum on form fields to prevent that "page zooms in when I
+           tap the field" jump. */
+        input, textarea, select {
+          font-size: 16px;
+        }
+
+        /* Remove the 300ms tap delay iOS imposes on clickable elements
+           waiting for a possible double-tap-zoom. Buttons feel instant. */
+        button, a, [role="button"] {
+          touch-action: manipulation;
+        }
+
+        /* Prevent pinch-zoom on the whole app — native apps don't zoom. */
+        body {
+          touch-action: pan-x pan-y;
+        }
+
         input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 24px; height: 24px; border-radius: 50%; background: #FFD700; cursor: pointer; border: 3px solid #111111; box-shadow: 0 0 8px rgba(255,215,0,0.4); }
         input[type="range"]::-moz-range-thumb { width: 24px; height: 24px; border-radius: 50%; background: #FFD700; cursor: pointer; border: 3px solid #111111; box-shadow: 0 0 8px rgba(255,215,0,0.4); }
         @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
