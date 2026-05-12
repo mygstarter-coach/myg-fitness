@@ -1178,18 +1178,12 @@ function PhoneFrame({ children }) {
   // indicator) that worked for desktop previews but rendered as a
   // "phone-in-a-phone" on real iOS devices.
   //
-  // Why the specific choices:
-  // - 100dvh: dynamic viewport height. On iOS Safari the URL bar collapses
-  //   on scroll, which would shift the layout if we used 100vh. dvh tracks
-  //   the actually-visible viewport.
-  // - 100vh fallback: older iOS versions don't support dvh.
-  // - env(safe-area-inset-*): respects the notch / Dynamic Island at top
-  //   and the home indicator at bottom on iPhone X and later. iOS
-  //   automatically draws its own chrome in those areas — we just need to
-  //   stay out of the way.
-  // - overscroll-behavior: contain: kills the rubber-band bounce on iOS
-  //   when scrolling past the top/bottom of the page. That bounce is the
-  //   #1 "this is a web app, not a native app" tell.
+  // Important: we apply safe-area padding for top/left/right ONLY here.
+  // Bottom safe-area is handled by the TabBar itself, so the bar's
+  // background extends to the screen's actual bottom edge while its icons
+  // sit above the home indicator. That's how native iOS apps do it —
+  // adding bottom padding here pushes the whole TabBar up instead and
+  // leaves a black gap below it.
   return (
     <div
       style={{
@@ -1205,7 +1199,6 @@ function PhoneFrame({ children }) {
         display: "flex",
         flexDirection: "column",
         paddingTop: "env(safe-area-inset-top)",
-        paddingBottom: "env(safe-area-inset-bottom)",
         paddingLeft: "env(safe-area-inset-left)",
         paddingRight: "env(safe-area-inset-right)",
       }}
@@ -10231,7 +10224,19 @@ function TabBar({ active, onTab }) {
     { id: "profile", label: "Profile", icon: (c) => <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="1.8"><circle cx="12" cy="8" r="4" /><path d="M4 20c0-4 4-6 8-6s8 2 8 6" /></svg> },
   ];
   return (
-    <div style={{ display: "flex", justifyContent: "space-around", padding: "10px 0 2px", borderTop: `1px solid ${COLORS.border}`, background: COLORS.bg, flexShrink: 0 }}>
+    <div style={{
+      display: "flex",
+      justifyContent: "space-around",
+      // Top padding 10px, sides 0, bottom: 2px PLUS the home indicator inset.
+      // calc() with env(safe-area-inset-bottom) lets the bar's background fill
+      // down to the screen's actual bottom edge while the icons sit clear of
+      // the iOS home indicator. This is the exact pattern Apple uses in their
+      // own apps' tab bars.
+      padding: "10px 0 calc(2px + env(safe-area-inset-bottom)) 0",
+      borderTop: `1px solid ${COLORS.border}`,
+      background: COLORS.bg,
+      flexShrink: 0,
+    }}>
       {tabs.map((t) => { const a = active === t.id; const c = a ? COLORS.gold : COLORS.inactive; return <button key={t.id} onClick={() => onTab(t.id)} style={{ background: "none", border: "none", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 4, padding: "4px 8px" }}>{t.icon(c)}<span style={{ fontSize: 10, color: c, fontWeight: a ? 600 : 400 }}>{t.label}</span></button>; })}
     </div>
   );
