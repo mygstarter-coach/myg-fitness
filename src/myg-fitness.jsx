@@ -1171,16 +1171,18 @@ function formatShortDate(isoDate) {
 /* ── Shared Components ───────────────────────────────────────── */
 
 function PhoneFrame({ children }) {
-  // Real-device frame: fills the entire phone viewport. The simulated
-  // iOS status bar (9:41 + signal/wifi/battery glyphs) and home-indicator
-  // pill have been removed — the real OS provides those. We respect
-  // safe-area insets so:
-  //   • top inset pushes content below the notch / Dynamic Island
-  //   • bottom inset pushes the TabBar above the home indicator, so
-  //     the hot bar lands at the true bottom of the usable screen
-  //   • left/right insets keep landscape rotation from clipping content
-  // 100dvh (dynamic viewport height) is used instead of 100vh so the
-  // frame resizes correctly when the mobile browser's URL bar shows/hides.
+  // Real-device frame: fills the entire phone viewport, edge-to-edge.
+  // No safe-area padding at this level — applying it here shrinks the
+  // whole app uniformly and pushes everything (including the TabBar) up
+  // away from the bottom of the screen. Instead, safe-area insets are
+  // pushed down into the individual components that touch the edges:
+  //   • TabBar absorbs the bottom inset as internal padding, so its
+  //     dark background extends to the true bottom while its icons sit
+  //     above the home indicator
+  //   • Top-of-screen content (status bar area) sits below the OS chrome
+  //     because the browser already accounts for it when viewport-fit=cover
+  //     is set in the viewport meta tag
+  // 100dvh resizes correctly as the mobile URL bar shows/hides.
   return (
     <div
       style={{
@@ -1192,10 +1194,6 @@ function PhoneFrame({ children }) {
         fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
         display: "flex",
         flexDirection: "column",
-        paddingTop: "env(safe-area-inset-top)",
-        paddingBottom: "env(safe-area-inset-bottom)",
-        paddingLeft: "env(safe-area-inset-left)",
-        paddingRight: "env(safe-area-inset-right)",
       }}
     >
       <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
@@ -1321,6 +1319,10 @@ function WelcomeScreen({ onGetStarted, onSignIn }) {
   useEffect(() => { setTimeout(() => setLogoV(true), 200); setTimeout(() => setContentV(true), 900); }, []);
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "0 32px", position: "relative" }}>
+      {/* V.5 marker — temporary build indicator so we can confirm the file
+          actually updated on the device after each push. Top-right corner,
+          dimmed, doesn't compete with the logo. Remove before shipping. */}
+      <div style={{ position: "absolute", top: 16, right: 20, color: COLORS.textSecondary, fontSize: 11, fontWeight: 500, letterSpacing: 1, opacity: 0.7 }}>V.5</div>
       <div style={{ position: "absolute", top: "40%", textAlign: "center", opacity: logoV ? 1 : 0, transform: logoV ? "translateY(-50%) scale(1)" : "translateY(-50%) scale(1.08)", transition: "all 0.9s cubic-bezier(0.22,1,0.36,1)" }}>
         <h1 style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 92, fontWeight: 700, color: COLORS.gold, margin: 0, letterSpacing: 8 }}>MYG</h1>
       </div>
@@ -10236,7 +10238,7 @@ function TabBar({ active, onTab }) {
     { id: "profile", label: "Profile", icon: (c) => <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="1.8"><circle cx="12" cy="8" r="4" /><path d="M4 20c0-4 4-6 8-6s8 2 8 6" /></svg> },
   ];
   return (
-    <div style={{ display: "flex", justifyContent: "space-around", padding: "10px 0 2px", borderTop: `1px solid ${COLORS.border}`, background: COLORS.bg, flexShrink: 0 }}>
+    <div style={{ display: "flex", justifyContent: "space-around", padding: "10px 0 2px", paddingBottom: "calc(2px + env(safe-area-inset-bottom))", borderTop: `1px solid ${COLORS.border}`, background: COLORS.bg, flexShrink: 0 }}>
       {tabs.map((t) => { const a = active === t.id; const c = a ? COLORS.gold : COLORS.inactive; return <button key={t.id} onClick={() => onTab(t.id)} style={{ background: "none", border: "none", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 4, padding: "4px 8px" }}>{t.icon(c)}<span style={{ fontSize: 10, color: c, fontWeight: a ? 600 : 400 }}>{t.label}</span></button>; })}
     </div>
   );
