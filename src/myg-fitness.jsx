@@ -85,6 +85,12 @@ function saveSnapshot(state) {
       userName: state.userName,
       // Set → Array for JSON
       selectedEquipment: Array.from(state.selectedEquipment || []),
+      // Fitness level + time away. Bible §6.5 (v26) notes: persistence
+      // wires in with the Profile tab redesign session. Both are now
+      // mirrored to localStorage so the Plan section of Coach's File
+      // survives a reload. Null is a valid value (means "not yet set").
+      fitnessLevel: state.fitnessLevel || null,
+      timeAway: state.timeAway || null,
       activeTab: state.activeTab,
       activeWorkout: serializeActiveWorkout(state.activeWorkout),
       coachChats: state.coachChats,
@@ -95,6 +101,47 @@ function saveSnapshot(state) {
       customExercises: state.customExercises || [],
       // Exercises tab sort preference. { mode: "alpha"|"recent"|"frequency", dir: "asc"|"desc" }
       exerciseSort: state.exerciseSort || { mode: "alpha", dir: "asc" },
+      // Rest timer user preferences. Persisted across workouts and across
+      // logouts (cleared explicitly on logout, like other prefs). Will be
+      // exposed in the Profile tab redesign session as a Settings row;
+      // for now, the only change interface is the gear menu inside an
+      // active workout.
+      restTimerModePref: state.restTimerModePref || "countup",
+      restCountdownTargetPref: typeof state.restCountdownTargetPref === "number" ? state.restCountdownTargetPref : 90,
+      // ── Coach's File state (Bible §6.5, v26) ──
+      // The Profile tab is reframed as "Coach's File on Tyler". Each of
+      // these arrays/objects backs one section on the landing surface and
+      // its corresponding sub-screen. All are JSON-safe primitives.
+      //
+      // plan: the four fields Coach uses to build workouts. fitnessLevel
+      //   and timeAway already live in App state, but the Profile tab
+      //   reads them through this plan object for uniformity. Days-per-week
+      //   has no home in the current app and starts here.
+      // rules: list of standing orders user gave Coach via chat. Created
+      //   in Coach chat in a future session; for now seeded with mock data
+      //   that matches the HTML reference. Cap of 15 per Bible §12.6.
+      // observations: Coach-authored notes about how the user trains.
+      //   Coach writes these from observed behavior. User can delete
+      //   individual ones or "Reset all". Seeded with mocks.
+      // progressPRs: Coach-tracked PRs and notable lifts. Read-only.
+      //   Seeded with mocks; future session computes from workoutHistory.
+      // bodyStats: height/weight/age/gender. Lives in Settings for v1
+      //   per the §15 trade-off; weigh-in log is a v2 feature.
+      planGoal: state.planGoal || "build_muscle",
+      planDaysPerWeek: typeof state.planDaysPerWeek === "number" ? state.planDaysPerWeek : 3,
+      coachRules: Array.isArray(state.coachRules) ? state.coachRules : [],
+      coachObservations: Array.isArray(state.coachObservations) ? state.coachObservations : [],
+      progressPRs: Array.isArray(state.progressPRs) ? state.progressPRs : [],
+      bodyStats: state.bodyStats && typeof state.bodyStats === "object" ? state.bodyStats : null,
+      // Coach's File metadata. lastUpdatedAt is shown in the signed footer
+      // ("— C, updated 2d ago"). fileOpenedAt is shown on first-launch
+      // empty state ("— C, file opened today"). Both are epoch millis.
+      coachFileOpenedAt: typeof state.coachFileOpenedAt === "number" ? state.coachFileOpenedAt : null,
+      coachFileLastUpdatedAt: typeof state.coachFileLastUpdatedAt === "number" ? state.coachFileLastUpdatedAt : null,
+      // Settings prefs (Bible §6.5 Settings sub-screen).
+      unitsPref: state.unitsPref || "lbs",
+      streakRemindersOn: typeof state.streakRemindersOn === "boolean" ? state.streakRemindersOn : true,
+      leaderboardOn: typeof state.leaderboardOn === "boolean" ? state.leaderboardOn : false,
     };
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot));
   } catch {
@@ -125,6 +172,27 @@ function loadSnapshot() {
       exerciseSort: parsed.exerciseSort && typeof parsed.exerciseSort === "object"
         ? parsed.exerciseSort
         : { mode: "alpha", dir: "asc" },
+      restTimerModePref: ["countup", "countdown", "off"].includes(parsed.restTimerModePref) ? parsed.restTimerModePref : "countup",
+      restCountdownTargetPref: typeof parsed.restCountdownTargetPref === "number" && parsed.restCountdownTargetPref > 0 ? parsed.restCountdownTargetPref : 90,
+      // Fitness level + time away (v26). Validate against the same
+      // enumerations the onboarding screens accept; anything else falls
+      // back to null so the app doesn't get into a wedged state.
+      fitnessLevel: ["beginner", "intermediate", "advanced"].includes(parsed.fitnessLevel) ? parsed.fitnessLevel : null,
+      timeAway: ["current", "lt1yr", "1to3yr", "gt3yr"].includes(parsed.timeAway) ? parsed.timeAway : null,
+      // Coach's File state. Each is validated to a sane shape; mismatches
+      // fall back to defaults so a corrupted snapshot can't crash the
+      // landing page.
+      planGoal: ["build_muscle", "lose_weight", "gain_strength", "get_lean"].includes(parsed.planGoal) ? parsed.planGoal : "build_muscle",
+      planDaysPerWeek: typeof parsed.planDaysPerWeek === "number" && parsed.planDaysPerWeek >= 1 && parsed.planDaysPerWeek <= 7 ? parsed.planDaysPerWeek : 3,
+      coachRules: Array.isArray(parsed.coachRules) ? parsed.coachRules : null,
+      coachObservations: Array.isArray(parsed.coachObservations) ? parsed.coachObservations : null,
+      progressPRs: Array.isArray(parsed.progressPRs) ? parsed.progressPRs : null,
+      bodyStats: parsed.bodyStats && typeof parsed.bodyStats === "object" ? parsed.bodyStats : null,
+      coachFileOpenedAt: typeof parsed.coachFileOpenedAt === "number" ? parsed.coachFileOpenedAt : null,
+      coachFileLastUpdatedAt: typeof parsed.coachFileLastUpdatedAt === "number" ? parsed.coachFileLastUpdatedAt : null,
+      unitsPref: parsed.unitsPref === "kg" ? "kg" : "lbs",
+      streakRemindersOn: typeof parsed.streakRemindersOn === "boolean" ? parsed.streakRemindersOn : true,
+      leaderboardOn: typeof parsed.leaderboardOn === "boolean" ? parsed.leaderboardOn : false,
     };
   } catch {
     return null;
@@ -1103,25 +1171,36 @@ function formatShortDate(isoDate) {
 /* ── Shared Components ───────────────────────────────────────── */
 
 function PhoneFrame({ children }) {
-  // Full-viewport container. Replaces the old fake-bezel mockup (375×812
-  // hardcoded box with fake status bar, signal/wifi/battery SVGs, and home
-  // indicator) that was useful for desktop previews but rendered as a
-  // "phone-in-a-phone" on real devices. On a real phone, the OS provides
-  // all of that chrome — we just need to fill the screen.
+  // Full-viewport container for real-device rendering.
   //
-  // Uses 100dvh (dynamic viewport height) so the layout adapts when mobile
-  // browser address bars show/hide. env(safe-area-inset-*) respects the
-  // notch and home indicator on iOS. paddingBottom keeps the tab bar above
-  // the home indicator without adding a fake one.
+  // Replaces the old fake-bezel mockup (375×812 hardcoded box with fake
+  // "9:41" status bar, fake signal/wifi/battery SVGs, and fake home
+  // indicator) that worked for desktop previews but rendered as a
+  // "phone-in-a-phone" on real iOS devices.
+  //
+  // Why the specific choices:
+  // - 100dvh: dynamic viewport height. On iOS Safari the URL bar collapses
+  //   on scroll, which would shift the layout if we used 100vh. dvh tracks
+  //   the actually-visible viewport.
+  // - 100vh fallback: older iOS versions don't support dvh.
+  // - env(safe-area-inset-*): respects the notch / Dynamic Island at top
+  //   and the home indicator at bottom on iPhone X and later. iOS
+  //   automatically draws its own chrome in those areas — we just need to
+  //   stay out of the way.
+  // - overscroll-behavior: contain: kills the rubber-band bounce on iOS
+  //   when scrolling past the top/bottom of the page. That bounce is the
+  //   #1 "this is a web app, not a native app" tell.
   return (
     <div
       style={{
         width: "100vw",
-        height: "100dvh",
-        minHeight: "100vh",
+        height: "100vh", // fallback
+        minHeight: "100dvh",
+        maxHeight: "100dvh",
         background: COLORS.bg,
         position: "relative",
         overflow: "hidden",
+        overscrollBehavior: "contain",
         fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
         display: "flex",
         flexDirection: "column",
@@ -1315,12 +1394,13 @@ function GoalsScreen({ onNext, onBack, onSkip }) {
   );
 }
 
-function FitnessLevelScreen({ onNext, onBack, onSkip }) {
-  const [level, setLevel] = useState(null);
+function FitnessLevelScreen({ value, onChange, onNext, onBack, onSkip }) {
+  const level = value;
+  const setLevel = onChange;
   const levels = [
-    { id: "beginner", label: "Beginner", desc: "New to working out or getting back into it" },
-    { id: "intermediate", label: "Intermediate", desc: "Consistent training for 6+ months" },
-    { id: "advanced", label: "Advanced", desc: "Years of structured training experience" },
+    { id: "beginner", label: "Beginner", desc: "New to lifting" },
+    { id: "intermediate", label: "Intermediate", desc: "Some experience in the gym" },
+    { id: "advanced", label: "Advanced", desc: "Lifted seriously, know your way around the gym" },
   ];
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
@@ -1333,6 +1413,42 @@ function FitnessLevelScreen({ onNext, onBack, onSkip }) {
             <button key={l.id} onClick={() => setLevel(l.id)} style={{ padding: 20, borderRadius: 10, border: `1.5px solid ${level === l.id ? COLORS.gold : COLORS.border}`, background: level === l.id ? COLORS.goldHighlight : COLORS.card, cursor: "pointer", textAlign: "left", transition: "all 0.2s ease" }}>
               <div style={{ color: level === l.id ? COLORS.gold : COLORS.text, fontSize: 16, fontWeight: 600, marginBottom: 4 }}>{l.label}</div>
               <div style={{ color: COLORS.textSecondary, fontSize: 13, lineHeight: 1.4 }}>{l.desc}</div>
+            </button>
+          ))}
+        </div>
+        <div style={{ height: 16 }} />
+      </div>
+      <div style={{ padding: "12px 24px 16px", flexShrink: 0, borderTop: `1px solid ${COLORS.border}`, background: COLORS.bg }}>
+        <GoldButton onClick={onNext}>Continue</GoldButton>
+      </div>
+    </div>
+  );
+}
+
+/* TimeAwayScreen (Screen 3b) — only shown to Intermediate / Advanced.
+   Beginner skips this screen entirely (not applicable). The selected
+   value lives on App state as `timeAway` and feeds the future Coach
+   AI context packet (returning-lifter awareness — Bible §10). */
+function TimeAwayScreen({ value, onChange, onNext, onBack, onSkip }) {
+  const selected = value;
+  const setSelected = onChange;
+  const options = [
+    { id: "current", label: "Currently training", desc: "I'm in the gym right now" },
+    { id: "lt1yr", label: "Less than a year off", desc: "Took a break, getting back into it" },
+    { id: "1to3yr", label: "1–3 years off", desc: "Been a while since I was consistent" },
+    { id: "gt3yr", label: "3+ years off", desc: "It's been a long time" },
+  ];
+  return (
+    <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
+      <TopBar onBack={onBack} onSkip={onSkip} />
+      <div style={{ flex: 1, minHeight: 0, padding: "0 24px", overflowY: "auto", WebkitOverflowScrolling: "touch" }}>
+        <h2 style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 28, color: COLORS.text, margin: "12px 0 8px", fontWeight: 400 }}>How long since you trained?</h2>
+        <p style={{ color: COLORS.textSecondary, fontSize: 15, margin: "0 0 28px" }}>Helps your Coach ramp up at the right pace.</p>
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {options.map((o) => (
+            <button key={o.id} onClick={() => setSelected(o.id)} style={{ padding: 20, borderRadius: 10, border: `1.5px solid ${selected === o.id ? COLORS.gold : COLORS.border}`, background: selected === o.id ? COLORS.goldHighlight : COLORS.card, cursor: "pointer", textAlign: "left", transition: "all 0.2s ease" }}>
+              <div style={{ color: selected === o.id ? COLORS.gold : COLORS.text, fontSize: 16, fontWeight: 600, marginBottom: 4 }}>{o.label}</div>
+              <div style={{ color: COLORS.textSecondary, fontSize: 13, lineHeight: 1.4 }}>{o.desc}</div>
             </button>
           ))}
         </div>
@@ -2766,6 +2882,62 @@ const MOCK_WORKOUT_HISTORY = [
     ],
   },
 ];
+
+/* ── Coach's File mock seed data (Bible §6.5, v26) ────────────────
+   The Coach's File landing surfaces four kinds of data that don't yet
+   exist anywhere else in the app: rules the user has set via Coach,
+   observations Coach has authored from training patterns, PRs Coach
+   has tracked, and body stats. Until the Coach LLM is wired up these
+   come from the seed below, which exactly matches the locked HTML
+   reference from Session 35 so what Tyler sees in the prototype
+   matches what was designed.
+
+   Schema:
+   - rule: { id, text, createdAt (epoch ms) }
+   - observation: { id, text, createdAt (epoch ms) }
+   - progressPR: { id, exerciseName, value (display string), isPR, isNew, achievedAt (epoch ms) }
+   - bodyStats: { heightIn (number), weightLb (number), ageYears (number), gender ("M"|"F"|"X") }
+
+   All createdAt / achievedAt values are computed at module load relative
+   to "now" so they read as "12D", "22D", etc. on first run. The signed-
+   footer "updated 2d ago" is the most recent of any of these timestamps.
+*/
+const NOW_FOR_SEED = Date.now();
+const DAY = 24 * 60 * 60 * 1000;
+
+const MOCK_COACH_RULES = [
+  { id: "r1", text: "No deadlifts on Mondays", createdAt: NOW_FOR_SEED - 12 * DAY },
+  { id: "r2", text: "Keep sessions under 60 minutes", createdAt: NOW_FOR_SEED - 22 * DAY },
+  { id: "r3", text: "Always start with a compound lift", createdAt: NOW_FOR_SEED - 30 * DAY },
+  { id: "r4", text: "Prefer dumbbells over barbells for chest", createdAt: NOW_FOR_SEED - 35 * DAY },
+];
+
+const MOCK_COACH_OBSERVATIONS = [
+  { id: "o1", text: "Tests heavy on isolation sets, settles 10-15% lower", createdAt: NOW_FOR_SEED - 3 * DAY },
+  { id: "o2", text: "Pyramid pattern on plate-loaded compounds", createdAt: NOW_FOR_SEED - 5 * DAY },
+  { id: "o3", text: "Often 5+ min between sets on heavy compounds", createdAt: NOW_FOR_SEED - 7 * DAY },
+  { id: "o4", text: "Prefers free weights over machines for upper body", createdAt: NOW_FOR_SEED - 9 * DAY },
+  { id: "o5", text: "Skips warm-up sets on Leg Day primaries", createdAt: NOW_FOR_SEED - 12 * DAY },
+  { id: "o6", text: "Tends to schedule Push days for Mondays", createdAt: NOW_FOR_SEED - 15 * DAY },
+  { id: "o7", text: "Cuts sessions short when over 50 minutes", createdAt: NOW_FOR_SEED - 18 * DAY },
+];
+
+const MOCK_PROGRESS_PRS = [
+  // THIS WEEK
+  { id: "p1", exerciseName: "Squat", value: "225 × 5", isPR: true, isNew: false, achievedAt: NOW_FOR_SEED - 2 * DAY },
+  { id: "p2", exerciseName: "RDL", value: "225 × 8", isPR: false, isNew: true, achievedAt: NOW_FOR_SEED - 4 * DAY },
+  { id: "p3", exerciseName: "Bench Press", value: "205 × 8", isPR: false, isNew: false, achievedAt: NOW_FOR_SEED - 5 * DAY },
+  // EARLIER THIS MONTH
+  { id: "p4", exerciseName: "Bent Row", value: "205 × 8", isPR: false, isNew: false, achievedAt: NOW_FOR_SEED - 12 * DAY },
+  { id: "p5", exerciseName: "Hip Thrust", value: "450 × 8", isPR: true, isNew: false, achievedAt: NOW_FOR_SEED - 14 * DAY },
+  // LAST MONTH
+  { id: "p6", exerciseName: "Squat", value: "215 × 5", isPR: false, isNew: false, achievedAt: NOW_FOR_SEED - 40 * DAY },
+  { id: "p7", exerciseName: "Leg Press", value: "630 × 8", isPR: false, isNew: false, achievedAt: NOW_FOR_SEED - 42 * DAY },
+  { id: "p8", exerciseName: "Bulgarian Split Squat", value: "155 × 8", isPR: false, isNew: true, achievedAt: NOW_FOR_SEED - 45 * DAY },
+];
+
+const MOCK_BODY_STATS = { heightIn: 70, weightLb: 178, ageYears: 28, gender: "M" };
+
 /* Auto-naming logic per spec: derived from primary muscle groups of
    exercises in the session. Empty session → date + time-of-day fallback.
 
@@ -2818,6 +2990,7 @@ function totalVolumeFromExercises(exercises) {
 function WorkoutTab({
   userEquipment, workout, minimized, history, openHistoryId, setOpenHistoryId,
   finishedSession, customExercises = [],
+  restTimerMode, restCountdownTarget, onChangeRestTimerMode, onChangeRestCountdownTarget,
   onStartEmpty, onUpdateWorkout, onMinimize, onCancel, onFinish,
   onCommitFinished, onDiscardFinished,
   onRepeatWorkout, onTabChange,
@@ -2956,6 +3129,10 @@ function WorkoutTab({
           userEquipment={userEquipment}
           customExercises={customExercises}
           workoutHistory={history}
+          restTimerMode={restTimerMode}
+          restCountdownTarget={restCountdownTarget}
+          onChangeRestTimerMode={onChangeRestTimerMode}
+          onChangeRestCountdownTarget={onChangeRestCountdownTarget}
           onMinimize={onMinimize}
           onCancel={onCancel}
           onFinish={onFinish}
@@ -2976,11 +3153,14 @@ function WorkoutTab({
 function ActiveLogger({
   workout, onUpdateWorkout, userEquipment, customExercises = [], workoutHistory = [], onMinimize, onCancel, onFinish,
   onTabChange,
+  restTimerMode, restCountdownTarget, onChangeRestTimerMode, onChangeRestCountdownTarget,
   containerRef,
 }) {
   // Pull session state out of the workout prop. We mutate via onUpdateWorkout
   // (which writes through to App-level state, so it survives tab switches).
-  const { exercises, workoutName, startTime, restTimerMode, restTimer } = workout;
+  // restTimerMode and restCountdownTarget are App-level prefs (props), not
+  // workout-level state — they persist across workouts.
+  const { exercises, workoutName, startTime, restTimer } = workout;
 
   // Helper that hands a transformed exercises array back to the parent.
   // When given an updater function, we resolve it against the current ref
@@ -2995,11 +3175,19 @@ function ActiveLogger({
     onUpdateWorkout({ exercises: next });
   };
   const setWorkoutName = (n) => onUpdateWorkout({ workoutName: n, nameWasEdited: true });
-  const setRestTimerMode = (m) => onUpdateWorkout({ restTimerMode: m });
+  const setRestTimerMode = (m) => onChangeRestTimerMode(m);
+  const setRestCountdownTarget = (s) => onChangeRestCountdownTarget(s);
 
   const [elapsed, setElapsed] = useState(0);
   const [editingName, setEditingName] = useState(false);
   const [settingsMenuOpen, setSettingsMenuOpen] = useState(false);
+  // Two-level menu: "main" shows the top-level options (Count up / Countdown / Off /
+  // Cancel). "countdownDuration" shows the duration submenu (preset durations + Custom).
+  // Reset to "main" whenever the menu closes so re-opens always start at the top.
+  const [settingsMenuView, setSettingsMenuView] = useState("main");
+  // Custom-duration modal state. customDurationOpen controls visibility; the m/s
+  // values are local string state so the user can edit either field freely.
+  const [customDurationOpen, setCustomDurationOpen] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   // D-019: which exercise's alternatives sheet is open. The uid of the
   // exercise whose row was swiped, or null when no sheet is open.
@@ -3968,59 +4156,202 @@ function ActiveLogger({
         );
       })()}
 
-      {/* Settings menu (gear icon) — rest timer + cancel */}
+      {/* Settings menu (gear icon) — two-level: main + countdown duration submenu.
+          Main view: timer mode picker + Cancel Workout. Countdown submenu:
+          preset durations + Custom. Selecting anything that changes timer
+          state closes the menu; the user can always re-open it. */}
       {settingsMenuOpen && (
         <>
-          <div onClick={() => setSettingsMenuOpen(false)} style={{ position: "absolute", inset: 0, zIndex: 15 }} />
+          <div onClick={() => { setSettingsMenuOpen(false); setSettingsMenuView("main"); }} style={{ position: "absolute", inset: 0, zIndex: 15 }} />
           <div style={{
             position: "absolute", top: 70, left: 20, zIndex: 16,
             background: COLORS.card, border: `1px solid ${COLORS.border}`,
             borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.6)",
-            minWidth: 200, padding: 6,
+            minWidth: 170, padding: 6,
           }}>
-            <div style={{ padding: "6px 10px 4px", color: COLORS.textSecondary, fontSize: 10, textTransform: "uppercase", letterSpacing: 1 }}>Rest Timer</div>
-            {[
-              { id: "countup",   label: "Count up" },
-              { id: "countdown", label: "Countdown (90s)" },
-              { id: "off",       label: "Off" },
-            ].map((opt) => {
-              const isActive = restTimerMode === opt.id;
-              return (
+            {settingsMenuView === "main" && (
+              <>
+                <div style={{ padding: "6px 10px 4px", color: COLORS.textSecondary, fontSize: 10, textTransform: "uppercase", letterSpacing: 1 }}>Rest Timer</div>
+                {/* Count up */}
                 <button
-                  key={opt.id}
-                  onClick={() => { setRestTimerMode(opt.id); }}
+                  onClick={() => { setRestTimerMode("countup"); setSettingsMenuOpen(false); setSettingsMenuView("main"); }}
                   style={{
                     width: "100%", padding: "9px 10px", borderRadius: 6,
-                    background: isActive ? COLORS.goldHighlight : "transparent",
+                    background: restTimerMode === "countup" ? COLORS.goldHighlight : "transparent",
                     border: "none", cursor: "pointer", textAlign: "left",
-                    color: isActive ? COLORS.gold : COLORS.text, fontSize: 13,
-                    fontWeight: isActive ? 600 : 400,
+                    color: restTimerMode === "countup" ? COLORS.gold : COLORS.text, fontSize: 13,
+                    fontWeight: restTimerMode === "countup" ? 600 : 400,
                     display: "flex", justifyContent: "space-between", alignItems: "center",
+                    fontFamily: "inherit",
                   }}
                 >
-                  <span>{opt.label}</span>
-                  {isActive && <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={COLORS.gold} strokeWidth="2.5"><polyline points="20 6 9 17 4 12" /></svg>}
+                  <span>Count up</span>
+                  {restTimerMode === "countup" && <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={COLORS.gold} strokeWidth="2.5"><polyline points="20 6 9 17 4 12" /></svg>}
                 </button>
-              );
-            })}
-            <div style={{ height: 1, background: COLORS.border, margin: "6px 4px" }} />
-            <button
-              onClick={() => { setSettingsMenuOpen(false); setConfirmCancel(true); }}
-              style={{
-                width: "100%", padding: "10px 10px", borderRadius: 6,
-                background: "transparent", border: "none", cursor: "pointer",
-                textAlign: "left", color: "#FF6B6B", fontSize: 13, fontWeight: 500,
-                display: "flex", alignItems: "center", gap: 8,
-              }}
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <polyline points="3 6 5 6 21 6" />
-                <path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6" />
-              </svg>
-              Cancel Workout
-            </button>
+                {/* Countdown → opens submenu */}
+                <button
+                  onClick={() => setSettingsMenuView("countdownDuration")}
+                  style={{
+                    width: "100%", padding: "9px 10px", borderRadius: 6,
+                    background: restTimerMode === "countdown" ? COLORS.goldHighlight : "transparent",
+                    border: "none", cursor: "pointer", textAlign: "left",
+                    color: restTimerMode === "countdown" ? COLORS.gold : COLORS.text, fontSize: 13,
+                    fontWeight: restTimerMode === "countdown" ? 600 : 400,
+                    display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8,
+                    fontFamily: "inherit",
+                  }}
+                >
+                  <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    Countdown
+                    {restTimerMode === "countdown" && (
+                      <span style={{ color: COLORS.textSecondary, fontSize: 12, fontWeight: 400, fontVariantNumeric: "tabular-nums" }}>
+                        · {formatDuration(restCountdownTarget)}
+                      </span>
+                    )}
+                  </span>
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={restTimerMode === "countdown" ? COLORS.gold : COLORS.textSecondary} strokeWidth="2.2">
+                    <polyline points="9 6 15 12 9 18" />
+                  </svg>
+                </button>
+                {/* Off */}
+                <button
+                  onClick={() => { setRestTimerMode("off"); setSettingsMenuOpen(false); setSettingsMenuView("main"); }}
+                  style={{
+                    width: "100%", padding: "9px 10px", borderRadius: 6,
+                    background: restTimerMode === "off" ? COLORS.goldHighlight : "transparent",
+                    border: "none", cursor: "pointer", textAlign: "left",
+                    color: restTimerMode === "off" ? COLORS.gold : COLORS.text, fontSize: 13,
+                    fontWeight: restTimerMode === "off" ? 600 : 400,
+                    display: "flex", justifyContent: "space-between", alignItems: "center",
+                    fontFamily: "inherit",
+                  }}
+                >
+                  <span>Off</span>
+                  {restTimerMode === "off" && <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={COLORS.gold} strokeWidth="2.5"><polyline points="20 6 9 17 4 12" /></svg>}
+                </button>
+                <div style={{ height: 1, background: COLORS.border, margin: "6px 4px" }} />
+                <button
+                  onClick={() => { setSettingsMenuOpen(false); setSettingsMenuView("main"); setConfirmCancel(true); }}
+                  style={{
+                    width: "100%", padding: "10px 10px", borderRadius: 6,
+                    background: "transparent", border: "none", cursor: "pointer",
+                    textAlign: "left", color: "#FF6B6B", fontSize: 13, fontWeight: 500,
+                    display: "flex", alignItems: "center", gap: 8,
+                    fontFamily: "inherit",
+                  }}
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <polyline points="3 6 5 6 21 6" />
+                    <path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6" />
+                  </svg>
+                  Cancel Workout
+                </button>
+              </>
+            )}
+
+            {settingsMenuView === "countdownDuration" && (
+              <>
+                {/* Submenu header — back chevron + title. Tap the whole strip to go back. */}
+                <button
+                  onClick={() => setSettingsMenuView("main")}
+                  style={{
+                    width: "100%", padding: "6px 10px 6px 4px",
+                    background: "transparent", border: "none", cursor: "pointer",
+                    display: "flex", alignItems: "center", gap: 6,
+                    color: COLORS.textSecondary, fontSize: 10, textTransform: "uppercase", letterSpacing: 1,
+                    fontFamily: "inherit",
+                  }}
+                >
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                    <polyline points="15 18 9 12 15 6" />
+                  </svg>
+                  Duration
+                </button>
+                {/* Preset durations. Tapping a preset selects countdown mode AND sets
+                    the target value, then closes the menu. */}
+                {[
+                  { seconds: 60,  label: "1:00" },
+                  { seconds: 90,  label: "1:30" },
+                  { seconds: 120, label: "2:00" },
+                  { seconds: 180, label: "3:00" },
+                ].map((opt) => {
+                  const isActive = restTimerMode === "countdown" && restCountdownTarget === opt.seconds;
+                  return (
+                    <button
+                      key={opt.seconds}
+                      onClick={() => {
+                        setRestCountdownTarget(opt.seconds);
+                        setRestTimerMode("countdown");
+                        setSettingsMenuOpen(false);
+                        setSettingsMenuView("main");
+                      }}
+                      style={{
+                        width: "100%", padding: "9px 10px", borderRadius: 6,
+                        background: isActive ? COLORS.goldHighlight : "transparent",
+                        border: "none", cursor: "pointer", textAlign: "left",
+                        color: isActive ? COLORS.gold : COLORS.text, fontSize: 13,
+                        fontWeight: isActive ? 600 : 400,
+                        display: "flex", justifyContent: "space-between", alignItems: "center",
+                        fontVariantNumeric: "tabular-nums",
+                        fontFamily: "inherit",
+                      }}
+                    >
+                      <span>{opt.label}</span>
+                      {isActive && <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={COLORS.gold} strokeWidth="2.5"><polyline points="20 6 9 17 4 12" /></svg>}
+                    </button>
+                  );
+                })}
+                {/* Custom — opens modal. If the current target isn't one of the
+                    presets, this row also shows as active with the current value. */}
+                {(() => {
+                  const presets = [60, 90, 120, 180];
+                  const isCustomActive = restTimerMode === "countdown" && !presets.includes(restCountdownTarget);
+                  return (
+                    <button
+                      onClick={() => {
+                        setCustomDurationOpen(true);
+                        setSettingsMenuOpen(false);
+                        setSettingsMenuView("main");
+                      }}
+                      style={{
+                        width: "100%", padding: "9px 10px", borderRadius: 6,
+                        background: isCustomActive ? COLORS.goldHighlight : "transparent",
+                        border: "none", cursor: "pointer", textAlign: "left",
+                        color: isCustomActive ? COLORS.gold : COLORS.text, fontSize: 13,
+                        fontWeight: isCustomActive ? 600 : 400,
+                        display: "flex", justifyContent: "space-between", alignItems: "center",
+                        fontFamily: "inherit",
+                      }}
+                    >
+                      <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        Custom
+                        {isCustomActive && (
+                          <span style={{ color: COLORS.textSecondary, fontSize: 12, fontWeight: 400, fontVariantNumeric: "tabular-nums" }}>
+                            · {formatDuration(restCountdownTarget)}
+                          </span>
+                        )}
+                      </span>
+                      {isCustomActive && <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={COLORS.gold} strokeWidth="2.5"><polyline points="20 6 9 17 4 12" /></svg>}
+                    </button>
+                  );
+                })()}
+              </>
+            )}
           </div>
         </>
+      )}
+
+      {/* Custom duration modal */}
+      {customDurationOpen && (
+        <CustomDurationModal
+          initialSeconds={restCountdownTarget}
+          onCancel={() => setCustomDurationOpen(false)}
+          onConfirm={(seconds) => {
+            setRestCountdownTarget(seconds);
+            setRestTimerMode("countdown");
+            setCustomDurationOpen(false);
+          }}
+        />
       )}
 
       {/* ── Scrollable exercise list ──
@@ -4058,6 +4389,7 @@ function ActiveLogger({
             exIdx={exIdx}
             isLast={exIdx === exercises.length - 1}
             restTimerMode={restTimerMode}
+            restCountdownTarget={restCountdownTarget}
             restTimer={restTimer}
             activeField={activeField}
             caretPos={caretPos}
@@ -4344,7 +4676,7 @@ function ActiveLogger({
    collapse-on-complete behavior, and add-set button.
 */
 function ExerciseCard({
-  exercise, exIdx, isLast, restTimerMode, restTimer, activeField, caretPos, setCaretPos,
+  exercise, exIdx, isLast, restTimerMode, restCountdownTarget, restTimer, activeField, caretPos, setCaretPos,
   workoutHistory = [], customExercises = [],
   reorderDrag, onReorderStart, onReorderMove, onReorderEnd,
   onUpdateSet, onToggleSetDone, onAddSet, onRemoveSet, onClearRestTimer,
@@ -5093,6 +5425,7 @@ function ExerciseCard({
                       <InlineRestTimer
                         startTs={restTimer.startTs}
                         mode={restTimerMode}
+                        countdownTarget={restCountdownTarget}
                         onDismiss={onClearRestTimer}
                       />
                     )}
@@ -5227,8 +5560,10 @@ function SwipeableRestDivider({ seconds, onDelete }) {
    was most recently checked). Counts based on a startTs prop so the
    elapsed value survives re-renders without resetting. Swipeable left
    to dismiss. */
-function InlineRestTimer({ startTs, mode, onDismiss }) {
-  const COUNTDOWN_TARGET = 90;
+function InlineRestTimer({ startTs, mode, countdownTarget, onDismiss }) {
+  // countdownTarget comes in as seconds (App-level pref). Default 90 if
+  // somehow undefined, but the prop should always be supplied by the parent.
+  const COUNTDOWN_TARGET = typeof countdownTarget === "number" && countdownTarget > 0 ? countdownTarget : 90;
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 1000);
@@ -5278,7 +5613,7 @@ function InlineRestTimer({ startTs, mode, onDismiss }) {
       color = COLORS.gold;
     } else {
       display = formatDuration(remaining);
-      color = COLORS.textSecondary;
+      color = COLORS.gold;
     }
   }
 
@@ -5331,6 +5666,175 @@ function InlineRestTimer({ startTs, mode, onDismiss }) {
         Rest · {display}
       </div>
     </div>
+  );
+}
+
+/* ── Custom Duration Modal ────────────────────────────────────────
+   Lightweight modal for entering a custom countdown duration (mm:ss).
+   Two tappable fields and a self-contained mini-keypad. Self-contained
+   rather than reusing NumericKeypad because that component is tightly
+   coupled to set-row weight/reps state. Validates: total seconds must
+   be > 0 and < 600 (9:59 max). Digit entry appends to the focused field
+   (capped at 2 digits per field; seconds capped at 59). */
+function CustomDurationModal({ initialSeconds, onCancel, onConfirm }) {
+  const initMin = Math.floor(initialSeconds / 60);
+  const initSec = initialSeconds % 60;
+  const [minStr, setMinStr] = useState(String(initMin));
+  const [secStr, setSecStr] = useState(String(initSec).padStart(2, "0"));
+  const [focused, setFocused] = useState("min"); // "min" | "sec"
+
+  const totalSeconds = (parseInt(minStr || "0", 10) || 0) * 60 + (parseInt(secStr || "0", 10) || 0);
+  const isValid = totalSeconds > 0 && totalSeconds < 600;
+
+  // Tapping a digit appends to the focused field. Min caps at 9 (single digit;
+  // 10+ minutes is the long-rest case but we cap at 9:59 = 599s). Sec caps at
+  // 59. When a field reaches its cap, focus auto-advances to the next field.
+  const handleDigit = (d) => {
+    if (focused === "min") {
+      // Replace if currently "0", else append. Cap at one digit (0-9).
+      const next = minStr === "0" ? String(d) : (minStr.length >= 1 ? String(d) : minStr + String(d));
+      setMinStr(next);
+      // Auto-advance to seconds after typing the minutes digit
+      setFocused("sec");
+      // When advancing, clear the seconds so the user can type fresh
+      setSecStr("");
+    } else {
+      // Append to seconds. Cap at 2 digits; reject if would push > 59.
+      const candidate = secStr.length >= 2 ? String(d) : (secStr === "0" || secStr === "00" ? String(d) : secStr + String(d));
+      if (parseInt(candidate, 10) > 59) {
+        // Replace with just the digit instead of appending
+        setSecStr(String(d));
+      } else {
+        setSecStr(candidate);
+      }
+    }
+  };
+
+  const handleBackspace = () => {
+    if (focused === "min") {
+      setMinStr("0");
+    } else {
+      if (secStr.length > 1) {
+        setSecStr(secStr.slice(0, -1));
+      } else {
+        setSecStr("0");
+        // Move focus back to minutes
+        setFocused("min");
+      }
+    }
+  };
+
+  const handleSave = () => {
+    if (!isValid) return;
+    onConfirm(totalSeconds);
+  };
+
+  // Field display: minutes shows as-is; seconds left-pads to 2 digits when not focused
+  // so "1:30" reads naturally. While focused on seconds, show what user typed (e.g. "3"
+  // before they finish typing "30").
+  const minDisplay = minStr || "0";
+  const secDisplay = focused === "sec" ? (secStr || "0") : String(parseInt(secStr || "0", 10)).padStart(2, "0");
+
+  const fieldStyle = (isFocused) => ({
+    flex: 1, padding: "16px 0", borderRadius: 8,
+    background: isFocused ? COLORS.goldHighlight : COLORS.bg,
+    border: `1.5px solid ${isFocused ? COLORS.gold : COLORS.border}`,
+    cursor: "pointer",
+    fontFamily: "Georgia, 'Times New Roman', serif",
+    fontSize: 36, fontWeight: 700,
+    color: isFocused ? COLORS.gold : COLORS.text,
+    textAlign: "center",
+    fontVariantNumeric: "tabular-nums",
+    transition: "all 0.15s ease",
+  });
+
+  const digitBtnStyle = {
+    padding: "14px 0", borderRadius: 8,
+    background: "#2A2A2A", border: "none",
+    color: COLORS.text, fontSize: 20, fontWeight: 500,
+    cursor: "pointer", fontFamily: "inherit",
+    fontVariantNumeric: "tabular-nums",
+  };
+
+  return (
+    <>
+      {/* Scrim — taps outside cancel */}
+      <div onClick={onCancel} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 100 }} />
+      {/* Modal card */}
+      <div style={{
+        position: "fixed", left: "50%", top: "50%", transform: "translate(-50%, -50%)",
+        zIndex: 101,
+        background: COLORS.card, border: `1px solid ${COLORS.border}`,
+        borderRadius: 14, boxShadow: "0 12px 32px rgba(0,0,0,0.7)",
+        padding: 18, width: 280, maxWidth: "calc(100vw - 32px)",
+      }}>
+        <div style={{ color: COLORS.text, fontSize: 14, fontWeight: 600, textAlign: "center", marginBottom: 4 }}>
+          Custom Duration
+        </div>
+        <div style={{ color: COLORS.textSecondary, fontSize: 11, textAlign: "center", marginBottom: 14 }}>
+          Up to 9:59
+        </div>
+
+        {/* Fields */}
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+          <button onClick={() => setFocused("min")} style={fieldStyle(focused === "min")}>{minDisplay}</button>
+          <div style={{ fontSize: 32, color: COLORS.textSecondary, fontWeight: 700, lineHeight: 1 }}>:</div>
+          <button onClick={() => setFocused("sec")} style={fieldStyle(focused === "sec")}>{secDisplay}</button>
+        </div>
+        <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+          <div style={{ flex: 1, textAlign: "center", color: COLORS.textSecondary, fontSize: 10, textTransform: "uppercase", letterSpacing: 1 }}>min</div>
+          <div style={{ width: 12 }} />
+          <div style={{ flex: 1, textAlign: "center", color: COLORS.textSecondary, fontSize: 10, textTransform: "uppercase", letterSpacing: 1 }}>sec</div>
+        </div>
+
+        {/* Mini keypad — 3x4 grid: 1-9, then 0 and backspace in the bottom row */}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6 }}>
+          {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((d) => (
+            <button key={d} onClick={() => handleDigit(d)} style={digitBtnStyle}>{d}</button>
+          ))}
+          <div /> {/* spacer for 7-8-9 → 0-bksp layout */}
+          <button onClick={() => handleDigit(0)} style={digitBtnStyle}>0</button>
+          <button onClick={handleBackspace} style={{ ...digitBtnStyle, fontSize: 16 }}>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ verticalAlign: "middle" }}>
+              <path d="M21 4H8l-7 8 7 8h13a2 2 0 002-2V6a2 2 0 00-2-2z" />
+              <line x1="18" y1="9" x2="12" y2="15" />
+              <line x1="12" y1="9" x2="18" y2="15" />
+            </svg>
+          </button>
+        </div>
+
+        {/* Actions */}
+        <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
+          <button
+            onClick={onCancel}
+            style={{
+              flex: 1, padding: "12px 0", borderRadius: 8,
+              background: "transparent", border: `1px solid ${COLORS.border}`,
+              color: COLORS.text, fontSize: 14, fontWeight: 500,
+              cursor: "pointer", fontFamily: "inherit",
+            }}
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleSave}
+            disabled={!isValid}
+            style={{
+              flex: 1, padding: "12px 0", borderRadius: 8,
+              background: isValid ? COLORS.gold : COLORS.border,
+              border: "none",
+              color: isValid ? "#000" : COLORS.textSecondary,
+              fontSize: 14, fontWeight: 700,
+              cursor: isValid ? "pointer" : "not-allowed",
+              fontFamily: "inherit",
+              opacity: isValid ? 1 : 0.6,
+            }}
+          >
+            Save
+          </button>
+        </div>
+      </div>
+    </>
   );
 }
 
@@ -5532,7 +6036,7 @@ function NumericKeypad({
    Slim persistent bar that lives above the TabBar whenever an active
    workout exists AND (the user is not on the workout tab OR the workout
    is minimized). Tap → un-minimize and switch to the workout tab. */
-function SessionBar({ workout, onTap }) {
+function SessionBar({ workout, restTimerMode, restCountdownTarget, onTap }) {
   const [elapsed, setElapsed] = useState(0);
   const [restElapsed, setRestElapsed] = useState(0);
   useEffect(() => {
@@ -5550,13 +6054,14 @@ function SessionBar({ workout, onTap }) {
 
   if (!workout) return null;
 
-  // Compute rest timer display if active
+  // Compute rest timer display if active. mode + target are now App-level
+  // prefs threaded through from App.
   let restPill = null;
   if (workout.restTimer) {
-    const COUNTDOWN_TARGET = 90;
-    let display, isCountdown = workout.restTimerMode === "countdown";
+    const target = typeof restCountdownTarget === "number" && restCountdownTarget > 0 ? restCountdownTarget : 90;
+    let display, isCountdown = restTimerMode === "countdown";
     if (isCountdown) {
-      const remaining = COUNTDOWN_TARGET - restElapsed;
+      const remaining = target - restElapsed;
       display = remaining <= 0 ? "Time!" : formatDuration(remaining);
     } else {
       display = formatDuration(restElapsed);
@@ -8297,170 +8802,796 @@ function EmptyTabState({ message }) {
   );
 }
 
-/* ── Profile Tab ─────────────────────────────────────────────────
-   Single scrolling page per Bible §6.5. Two sections separated by a
-   gold rule divider:
+/* ── Profile Tab — Coach's File (Bible §6.5, v26) ─────────────────
+   The Profile tab is reframed as Coach's File — the page Coach keeps
+   on you. Third-person notation in Coach's voice. Five fixed sections
+   on the landing (PLAN, EQUIPMENT, RULES, PROGRESS, OBSERVATIONS) plus
+   a vitals strip and a signed footer. Administrative settings (Email,
+   Membership, Body Stats, Units, Workout Preferences, Notifications,
+   Leaderboard, Logout) are displaced to a Settings sub-screen reached
+   via gear icon top-right.
 
-     Section 1 — Settings (standard register)
-       Avatar/name/level header, settings rows, Log Out
+   Typography deliberately departs from the rest of the app: Georgia
+   13px body, sans-serif 9px metadata, italic Georgia subtitles + page
+   titles. Profile is a display surface, not a navigation surface.
+   See Bible §6.5 "Typography conventions (Profile-specific)" table.
 
-     Section 2 — Coach Profile (themed register)
-       Gold rule divider, section header with C monogram + italic
-       Georgia title, one-line italic subtitle, then six entry cards
-       for About You / My Equipment / Your Rules / What Coach Has
-       Noticed / What Coach Sees / Coach's Assessment (locked).
+   Truncation rules:
+   - Rules: first 3, then "+ N more →" link.
+   - Progress: first 3 most recent, then "View all N →".
+   - Observations: first 3 most recent, then "View all N →".
 
-   Visual distinction between the two sections is intentionally quiet:
-   Coach cards share the same dark card background as settings rows
-   but add a 2px gold left-edge accent and use Georgia serif titles.
-   Gold is used as an accent, never as a background fill.
-
-   The "Equipment" row inside Coach Profile wires to onOpenEquipmentEditor,
-   which the App component routes to the full-screen EquipmentDetailScreen.
+   Affordance vocabulary on section headers:
+   - ✎ pencil → user-configured (Plan, Equipment). Tap to edit.
+   - 💬 chat glyph → user-authored-via-Coach (Rules). Created in chat.
+   - (no glyph) → Coach-tracked / Coach-authored (Progress, Observations).
 */
 
-function ProfileTab({ onOpenEquipmentEditor, equipmentCount, onLogout, userName }) {
-  const [confirmLogout, setConfirmLogout] = useState(false);
+// Display label helpers shared by landing and Plan sub-screen. Kept
+// at module scope so the Plan sub-screen (built in a later turn) can
+// reuse them without re-declaring.
+const PLAN_GOAL_LABELS = {
+  build_muscle: "Build Muscle",
+  lose_weight: "Lose Weight",
+  gain_strength: "Gain Strength",
+  get_lean: "Get Lean",
+};
+const PLAN_LEVEL_LABELS = {
+  beginner: "Beginner",
+  intermediate: "Intermediate",
+  advanced: "Advanced",
+};
+const PLAN_TIME_AWAY_LABELS = {
+  current: "Currently training",
+  lt1yr: "Less than a year",
+  "1to3yr": "1–3 years",
+  gt3yr: "More than 3 years",
+};
 
-  // Settings rows (Section 1). Bible §6.5 lists Body Stats, Membership,
-  // Units, Leaderboard, Notifications, Account. Fitness Profile and
-  // Workout Preferences are NOT here — that content moved down into
-  // the Coach Profile section.
-  const settingsRows = [
-    { id: "body_stats", label: "Body Stats", desc: "Height, weight, age, gender" },
-    { id: "membership", label: "Membership", desc: "Active · Renews Apr 15" },
-    { id: "units", label: "Units", desc: "Pounds (lbs)" },
-    { id: "leaderboard", label: "Leaderboard", desc: "Opted in" },
-    { id: "notifications", label: "Notifications", desc: "Streak reminders on" },
-    { id: "account", label: "Account", desc: "alex@email.com" },
-  ];
+// "Updated 2d ago" / "12D" formatters. Bible §6.5 calls for inline
+// timestamps in sans-serif 9px spaced caps next to rule/observation
+// rows (e.g. "12D"), and a longer signed-footer line ("updated 2d ago").
+function formatDaysAgoCap(epochMs) {
+  // Returns "12D" style. 0 → "TODAY". Caller wraps in spaced-caps styling.
+  if (!epochMs) return "";
+  const days = Math.max(0, Math.floor((Date.now() - epochMs) / (24 * 60 * 60 * 1000)));
+  if (days === 0) return "TODAY";
+  return `${days}D`;
+}
 
-  // Coach Profile cards (Section 2). Stateful descriptors show what
-  // Coach currently knows about the user at a glance. Equipment card
-  // wires to the full equipment editor.
-  const coachCards = [
-    { id: "about_you", label: "About You", desc: "Build Muscle · Intermediate · 3 days/week" },
-    { id: "equipment", label: "My Equipment", desc: equipmentCount > 0 ? `${equipmentCount} items selected` : "Not set", onClick: onOpenEquipmentEditor },
-    { id: "rules", label: "Your Rules", desc: "4 rules · created via Coach chat" },
-    { id: "noticed", label: "What Coach Has Noticed", desc: "7 observations", descItalic: true },
-    { id: "sees", label: "What Coach Sees", desc: "12-day streak · 47 sessions" },
-  ];
+function formatUpdatedAgo(epochMs) {
+  // Returns "2d ago" / "today" / etc for the signed-footer line.
+  if (!epochMs) return "today";
+  const days = Math.floor((Date.now() - epochMs) / (24 * 60 * 60 * 1000));
+  if (days <= 0) return "today";
+  if (days === 1) return "1d ago";
+  return `${days}d ago`;
+}
 
-  const cardBase = {
-    width: "100%", padding: "14px 16px", background: COLORS.card,
-    borderRadius: 10, marginBottom: 8, cursor: "pointer", textAlign: "left",
-    display: "flex", alignItems: "center", gap: 14, fontFamily: "inherit",
+function formatShortDateCap(epochMs) {
+  // Returns "APR 8" style — short month + day, all caps. Used on PR
+  // rows in Progress where the timestamp is a historical event (the
+  // day the PR was hit) rather than a recency tag. Different from
+  // formatDaysAgoCap which is used on Rules/Observations where "12D"
+  // emphasizes "how long this has been on file".
+  if (!epochMs) return "";
+  const d = new Date(epochMs);
+  const month = d.toLocaleDateString("en-US", { month: "short" }).toUpperCase();
+  return `${month} ${d.getDate()}`;
+}
+
+// Coach monogram — gold C in a gold-bordered circle. Used in the
+// header bar (22px), the signed footer (18px), and inside the future
+// CoachCTACard (24px). Single source so the visual identity is one
+// piece of code.
+function CoachMonogram({ size = 22, dark = true }) {
+  const borderW = size >= 22 ? 1.5 : 1;
+  return (
+    <span style={{
+      width: size, height: size, borderRadius: size / 2,
+      border: `${borderW}px solid ${COLORS.gold}`,
+      background: dark ? COLORS.goldHighlight : COLORS.bg,
+      display: "inline-flex", alignItems: "center", justifyContent: "center",
+      fontFamily: "Georgia, 'Times New Roman', serif",
+      fontStyle: "italic", fontWeight: 700,
+      color: COLORS.gold,
+      fontSize: size >= 22 ? 12 : Math.max(9, Math.round(size * 0.55)),
+      lineHeight: 1, flexShrink: 0,
+    }}>C</span>
+  );
+}
+
+function ProfileTab({
+  userName,
+  // Plan section data
+  planGoal, fitnessLevel, timeAway, planDaysPerWeek,
+  // Equipment
+  equipmentCount,
+  // Other section data
+  coachRules, progressPRs, coachObservations,
+  // Vitals
+  sessionsCount, streakDays, mostTrainedMuscle,
+  // Metadata
+  coachFileOpenedAt, coachFileLastUpdatedAt,
+  // Navigation handlers — sub-screens are built in later turns.
+  // For now these set the appSubScreen state; the App routes the
+  // open ones to real screens and silently no-ops the not-yet-built
+  // ones (a TODO comment in App marks which are stubbed).
+  onOpenSettings, onOpenPlan, onOpenEquipment, onOpenRules,
+  onOpenProgress, onOpenObservations,
+}) {
+  // Empty-state detection. Bible §6.5: first-launch shows vitals in
+  // muted gray, "New file" subtitle, one-liner italic placeholders per
+  // section, and a "file opened today" signed footer.
+  const isFirstLaunch = (sessionsCount || 0) === 0
+    && (!coachRules || coachRules.length === 0)
+    && (!progressPRs || progressPRs.length === 0)
+    && (!coachObservations || coachObservations.length === 0);
+
+  // Truncation helpers. Each section shows first 3 rows + a link
+  // when there are more. Sort by recency for Rules/Observations,
+  // by achievedAt for Progress (most recent first).
+  //
+  // Progress filters to PR-only and NEW-only rows. Plain gray rows
+  // ("recent working set, not a PR") were dropped per session 36
+  // feedback: if Progress is "numerical wins Coach has logged,"
+  // every row should earn its place. A non-PR Bench Press session
+  // belongs in workout history, not on a clipboard.
+  const sortedRules = [...(coachRules || [])].sort((a, b) => b.createdAt - a.createdAt);
+  const sortedObs = [...(coachObservations || [])].sort((a, b) => b.createdAt - a.createdAt);
+  const sortedPRs = [...(progressPRs || [])]
+    .filter((p) => p.isPR || p.isNew)
+    .sort((a, b) => b.achievedAt - a.achievedAt);
+  const visibleRules = sortedRules.slice(0, 3);
+  const visibleObs = sortedObs.slice(0, 3);
+  const visiblePRs = sortedPRs.slice(0, 3);
+  const moreRules = sortedRules.length - visibleRules.length;
+  const morePRs = sortedPRs.length - visiblePRs.length;
+  const moreObs = sortedObs.length - visibleObs.length;
+
+  // Identity name only — the subtitle ("Intermediate · Level 2 · Grinder")
+  // was removed per session 36 feedback: gamification metadata (Level/badge)
+  // is decorative noise on a Coach's File header. Name is the identity.
+  // Level still surfaces inside the PLAN section row, where it actually
+  // affects what Coach does with the file.
+  const levelLabel = fitnessLevel ? PLAN_LEVEL_LABELS[fitnessLevel] : "Intermediate";
+
+  // ── Shared styles ──
+  // Section header treatment (session 36 lock — "option C"): sans-serif
+  // 10px gold spaced caps over a thin dark-gold underline rule. Gives
+  // each section a stamped magazine-column look that holds together
+  // with the gold Coach monogram up top, without the airy thinness of
+  // the original Georgia spaced-caps spec. The header is rendered as
+  // a two-line block (label + hr) inside the section, not in the
+  // sectionHeadRow flex row — see the JSX below.
+  //
+  // Divider strategy (session 36 lock):
+  // - Section dividers (#2a2a2a hairline at section bottom) carry the
+  //   visual structure. Sections are the real units of the file.
+  // - No row dividers inside sections. Spacing + baseline rhythm carry
+  //   the list. The clipboard / paper-artifact metaphor reads better
+  //   with rows held together by typography than by grid lines.
+  // - Signed footer keeps its dashed line — end-of-document signal.
+  //
+  // Edit affordance: removed entirely. The whole section header is
+  // tappable; if the contents look configurable the user will tap.
+  const TYPE = {
+    body: { fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 13, color: "#e8e8e8", lineHeight: 1.5 },
+    meta: { fontFamily: "-apple-system, system-ui, sans-serif", fontSize: 9, color: "#555", letterSpacing: 1.5 },
+    sectionHead: { fontFamily: "-apple-system, system-ui, sans-serif", fontSize: 13, color: COLORS.gold, fontWeight: 700, letterSpacing: 2, textTransform: "uppercase" },
+    sectionRule: { border: "none", height: 1, background: "#3a2e00", margin: 0, width: "100%" },
+    rowVal: { fontSize: 11, color: "#aaa", whiteSpace: "nowrap" },
+    rowValUp: { fontSize: 11, color: COLORS.gold, whiteSpace: "nowrap" },
+    sigFooter: { fontFamily: "Georgia, 'Times New Roman', serif", fontStyle: "italic", color: "#666", fontSize: 10 },
+    tagInline: { color: COLORS.gold, fontSize: 9, letterSpacing: 1, marginLeft: 4, fontFamily: "-apple-system, system-ui, sans-serif" },
+    viewAll: { padding: "10px 0 4px", fontSize: 10, color: "#666", textAlign: "right", letterSpacing: 0.5, fontFamily: "-apple-system, system-ui, sans-serif", background: "transparent", border: "none", width: "100%", cursor: "pointer" },
+    emptyNote: { fontFamily: "Georgia, 'Times New Roman', serif", fontStyle: "italic", color: "#666", fontSize: 12, lineHeight: 1.6, padding: "14px 0" },
+  };
+
+  // Row line — used by every section's content rows. No inline divider
+  // anymore; sections own their own bottom hairline below.
+  const rowLineStyle = () => ({
+    padding: "10px 0",
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "baseline",
+    gap: 14,
+  });
+
+  // Section block — adds a bottom hairline divider to separate sections.
+  // The last section before the signed footer drops the line (the
+  // dashed-rule footer divider takes over).
+  const sectionBlockStyle = (isLast) => ({
+    marginTop: 22,
+    paddingBottom: 6,
+    borderBottom: isLast ? "none" : "1px solid #2a2a2a",
+  });
+  // Header row — vertical stack: title row + gold rule. The whole block
+  // is a single tappable button to preserve the section-tap behavior.
+  const sectionHeadBtnStyle = {
+    display: "flex", flexDirection: "column", gap: 6,
+    background: "transparent", border: "none", padding: 0,
+    width: "100%", cursor: "pointer", marginBottom: 12,
+    textAlign: "left",
   };
 
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, position: "relative" }}>
-      {/* Header — matches Exercises/Workout tab pattern */}
-      <div style={{ padding: "8px 24px 0", flexShrink: 0 }}>
-        <h2 style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 22, color: COLORS.text, margin: "0 0 12px", fontWeight: 400 }}>Profile</h2>
+
+      {/* Header bar — gold C monogram + italic Georgia "Coach's File" +
+          gear icon. 22px header height per Bible §6.5. */}
+      <div style={{
+        padding: "8px 24px 16px",
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center",
+        flexShrink: 0,
+      }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+          <CoachMonogram size={22} />
+          <span style={{
+            fontFamily: "Georgia, 'Times New Roman', serif",
+            fontStyle: "italic",
+            color: COLORS.gold,
+            fontSize: 13,
+          }}>Coach&apos;s File</span>
+        </div>
+        <button
+          onClick={onOpenSettings}
+          aria-label="Settings"
+          style={{
+            background: "transparent", border: "none", padding: 8, margin: -8,
+            cursor: "pointer", color: "#666", display: "flex", alignItems: "center",
+          }}
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="3" />
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+          </svg>
+        </button>
+      </div>
+
+      {/* Scrollable body */}
+      <div style={{ flex: 1, padding: "0 24px 24px", overflowY: "auto", minHeight: 0 }}>
+
+        {/* Identity block — name only. Subtitle ("Intermediate · Level 2 ·
+            Grinder") and the SESSIONS/STREAK/MOST TRAINED vitals strip
+            were removed per session 36 feedback: the landing was reading
+            cluttered, and Level/badge/streak surfaces decoratively rather
+            than telling Coach anything new about the user. Vitals will
+            return in v2 on the Home tab where they earn their place. */}
+        <div style={{ marginBottom: 22 }}>
+          <div style={{
+            fontFamily: "Georgia, 'Times New Roman', serif",
+            fontSize: 28,
+            lineHeight: 1,
+            letterSpacing: -0.5,
+            color: COLORS.text,
+          }}>{userName}</div>
+        </div>
+
+        {/* ── Section: PLAN ── */}
+        <div style={sectionBlockStyle(false)}>
+          <button onClick={onOpenPlan} style={sectionHeadBtnStyle}>
+            <span style={TYPE.sectionHead}>PLAN</span>
+            <hr style={TYPE.sectionRule} />
+          </button>
+          {(() => {
+            // Time Away row shown only when fitnessLevel ≠ beginner AND
+            // the user has actually set a timeAway value. On first launch
+            // timeAway is null → row hidden. The Bible §6.5 spec says
+            // "visible only when Level ≠ Beginner"; the locked HTML
+            // reference for first-launch shows Intermediate without
+            // a Time Away row, so we treat null as "not yet set, hide".
+            const showTimeAway = fitnessLevel !== "beginner" && timeAway != null;
+            const rows = [
+              { label: "Goal", value: PLAN_GOAL_LABELS[planGoal] || "Build Muscle" },
+              { label: "Level", value: levelLabel },
+              ...(showTimeAway ? [{ label: "Time away", value: PLAN_TIME_AWAY_LABELS[timeAway] }] : []),
+              { label: "Days / week", value: String(planDaysPerWeek || 3) },
+            ];
+            return rows.map((r) => (
+              <div key={r.label} style={rowLineStyle()}>
+                <span style={{ ...TYPE.body, flex: 1 }}>{r.label}</span>
+                <span style={TYPE.rowVal}>{r.value}</span>
+              </div>
+            ));
+          })()}
+        </div>
+
+        {/* ── Section: EQUIPMENT ── */}
+        <div style={sectionBlockStyle(false)}>
+          <button onClick={onOpenEquipment} style={sectionHeadBtnStyle}>
+            <span style={TYPE.sectionHead}>EQUIPMENT</span>
+            <hr style={TYPE.sectionRule} />
+          </button>
+          <button
+            onClick={onOpenEquipment}
+            style={{ ...rowLineStyle(), background: "transparent", border: "none", padding: "10px 0", width: "100%", cursor: "pointer", fontFamily: "inherit", color: "inherit", textAlign: "left" }}
+          >
+            <span style={{ ...TYPE.body, flex: 1 }}>{equipmentCount || 0} items configured</span>
+          </button>
+        </div>
+
+        {/* ── Section: RULES ── */}
+        <div style={sectionBlockStyle(false)}>
+          <button onClick={onOpenRules} style={sectionHeadBtnStyle}>
+            <span style={TYPE.sectionHead}>RULES</span>
+            <hr style={TYPE.sectionRule} />
+          </button>
+          {visibleRules.length === 0 ? (
+            <div style={TYPE.emptyNote}>No rules yet. Tell Coach what to follow.</div>
+          ) : (
+            <>
+              {visibleRules.map((r) => (
+                <div key={r.id} style={rowLineStyle()}>
+                  <span style={{ ...TYPE.body, flex: 1 }}>{r.text}</span>
+                  <span style={{ ...TYPE.meta, whiteSpace: "nowrap", letterSpacing: 1 }}>{formatDaysAgoCap(r.createdAt)}</span>
+                </div>
+              ))}
+              {moreRules > 0 && (
+                <button onClick={onOpenRules} style={TYPE.viewAll}>+ {moreRules} more →</button>
+              )}
+            </>
+          )}
+        </div>
+
+        {/* ── Section: PROGRESS ── */}
+        <div style={sectionBlockStyle(false)}>
+          <button onClick={onOpenProgress} style={sectionHeadBtnStyle}>
+            <span style={TYPE.sectionHead}>PROGRESS</span>
+            <hr style={TYPE.sectionRule} />
+          </button>
+          {visiblePRs.length === 0 ? (
+            <div style={TYPE.emptyNote}>Your PRs and new lifts will appear here.</div>
+          ) : (
+            <>
+              {visiblePRs.map((p) => (
+                <div key={p.id} style={rowLineStyle()}>
+                  <span style={{ ...TYPE.body, flex: 1 }}>
+                    {p.exerciseName}
+                    {p.isPR && <span style={TYPE.tagInline}>PR</span>}
+                    {p.isNew && !p.isPR && <span style={TYPE.tagInline}>NEW</span>}
+                  </span>
+                  <span style={p.isPR ? TYPE.rowValUp : TYPE.rowVal}>{p.value}</span>
+                  <span style={{ ...TYPE.meta, whiteSpace: "nowrap", letterSpacing: 1 }}>{formatShortDateCap(p.achievedAt)}</span>
+                </div>
+              ))}
+              {morePRs > 0 && (
+                <button onClick={onOpenProgress} style={TYPE.viewAll}>View all {sortedPRs.length} →</button>
+              )}
+            </>
+          )}
+        </div>
+
+        {/* ── Section: OBSERVATIONS ── */}
+        <div style={sectionBlockStyle(true)}>
+          <button onClick={onOpenObservations} style={sectionHeadBtnStyle}>
+            <span style={TYPE.sectionHead}>OBSERVATIONS</span>
+            <hr style={TYPE.sectionRule} />
+          </button>
+          {visibleObs.length === 0 ? (
+            <div style={TYPE.emptyNote}>Coach hasn&apos;t noticed anything yet.</div>
+          ) : (
+            <>
+              {visibleObs.map((o) => (
+                <div key={o.id} style={rowLineStyle()}>
+                  <span style={{ ...TYPE.body, flex: 1 }}>{o.text}</span>
+                  <span style={{ ...TYPE.meta, whiteSpace: "nowrap", letterSpacing: 1 }}>{formatDaysAgoCap(o.createdAt)}</span>
+                </div>
+              ))}
+              {moreObs > 0 && (
+                <button onClick={onOpenObservations} style={TYPE.viewAll}>View all {sortedObs.length} →</button>
+              )}
+            </>
+          )}
+        </div>
+
+        {/* ── Signed footer ── */}
+        <div style={{
+          marginTop: 22,
+          padding: "10px 0",
+          borderTop: "1px dashed #262626",
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+        }}>
+          <span style={TYPE.sigFooter}>
+            — C, {isFirstLaunch ? "file opened today" : `updated ${formatUpdatedAgo(coachFileLastUpdatedAt)}`}
+          </span>
+          <CoachMonogram size={18} />
+        </div>
+
+      </div>
+    </div>
+  );
+}
+
+/* ── Settings Sub-screen (Bible §6.5, gear icon from Coach's File) ─
+   F1 "quiet plumbing" treatment: deliberately demoted visually so it
+   reads as plumbing, not the main event. No gold on section headers,
+   sans-serif throughout, iOS-familiar pattern.
+
+   Two sections:
+   - ACCOUNT: Email & password, Membership, Body Stats
+   - APP: Units (Pounds toggle), Workout preferences (rest timer mode
+     + countdown — reuses CustomDurationModal from Session 34),
+     Notifications (streak reminders toggle), Leaderboard (inline gold
+     toggle, no chevron)
+
+   At the bottom: full-width red-bordered Logout button + version
+   footer ("MYG · v2.6").
+
+   Several rows route to sub-sub-screens that aren't built yet
+   (Email & password editor, Membership viewer, Body Stats editor).
+   For now those rows are no-ops with a TODO. Logout, Units toggle,
+   Rest timer mode picker, Custom duration modal, Streak reminders
+   toggle, and Leaderboard toggle are all wired to real App state.
+*/
+
+function SettingsSubscreen({
+  onBack,
+  // Real props wired to App state
+  unitsPref, onChangeUnits,
+  restTimerMode, onChangeRestTimerMode,
+  restCountdownTarget, onChangeRestCountdownTarget,
+  streakRemindersOn, onChangeStreakReminders,
+  leaderboardOn, onChangeLeaderboard,
+  onLogout,
+  bodyStats,
+  // Read-only for now — Email/Membership/Body Stats sub-sub-screens
+  // are deferred to a later turn.
+  emailDisplay = "alex@email.com",
+  membershipDisplay = "Active · Renews Apr 15",
+  appVersion = "v2.6",
+}) {
+  const [confirmLogout, setConfirmLogout] = useState(false);
+  // Rest timer picker modal: "menu" (mode + duration submenu) or null.
+  const [timerPickerOpen, setTimerPickerOpen] = useState(false);
+  const [timerPickerView, setTimerPickerView] = useState("main"); // "main" | "countdownDuration"
+  const [customDurationOpen, setCustomDurationOpen] = useState(false);
+
+  // Formatters
+  const restTimerLabel = (() => {
+    if (restTimerMode === "off") return "Off";
+    if (restTimerMode === "countup") return "Count up";
+    if (restTimerMode === "countdown") {
+      const m = Math.floor(restCountdownTarget / 60);
+      const s = restCountdownTarget % 60;
+      return `Countdown · ${m}:${String(s).padStart(2, "0")}`;
+    }
+    return "—";
+  })();
+  const unitsLabel = unitsPref === "kg" ? "Kilograms (kg)" : "Pounds (lbs)";
+  const bodyStatsLabel = bodyStats
+    ? `${Math.floor(bodyStats.heightIn / 12)}'${bodyStats.heightIn % 12}" · ${bodyStats.weightLb} lb · ${bodyStats.ageYears} yr · ${bodyStats.gender}`
+    : "Not set";
+
+  // Shared styles. F1 register — no gold on section headers, sans-serif
+  // throughout, generic settings vocabulary.
+  const headStyle = {
+    fontFamily: "-apple-system, system-ui, sans-serif",
+    fontSize: 11, letterSpacing: 1.5, color: "#666",
+    fontWeight: 500, margin: "22px 0 6px",
+    textTransform: "uppercase",
+  };
+  const headStyleFirst = { ...headStyle, marginTop: 0 };
+  const rowStyle = {
+    padding: "12px 0", display: "flex", alignItems: "center",
+    width: "100%", background: "transparent", border: "none",
+    borderBottom: "1px solid #1a1a1a",
+    cursor: "pointer", fontFamily: "inherit", color: "inherit", textAlign: "left",
+  };
+  const labelStyle = { fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 14, color: "#e8e8e8" };
+  const descStyle = { fontSize: 11, color: "#888", marginTop: 3, fontFamily: "-apple-system, system-ui, sans-serif" };
+  const chev = (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#555" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="9 18 15 12 9 6" />
+    </svg>
+  );
+
+  // Inline toggle pill — gold accented when on, gray when off. Used for
+  // Units (Pounds default; tap to flip to kg), Streak reminders, and
+  // Leaderboard. Stops event propagation so wrapper-row taps don't fight.
+  const Toggle = ({ on, onChange, ariaLabel }) => (
+    <button
+      aria-label={ariaLabel}
+      onClick={(e) => { e.stopPropagation(); onChange(!on); }}
+      style={{
+        width: 36, height: 20, borderRadius: 10,
+        background: on ? COLORS.goldHighlight : "#1a1a1a",
+        border: `1px solid ${on ? COLORS.gold : "#333"}`,
+        position: "relative", flexShrink: 0, cursor: "pointer", padding: 0,
+      }}
+    >
+      <span style={{
+        position: "absolute", top: 1,
+        left: on ? "auto" : 1, right: on ? 1 : "auto",
+        width: 16, height: 16, borderRadius: 8,
+        background: on ? COLORS.gold : "#555",
+        transition: "all 120ms ease",
+      }} />
+    </button>
+  );
+
+  // Segmented pill — two-option chooser (e.g. LBS / KG). Sits in the
+  // toggle-position slot of a row. Unlike Toggle (binary on/off), a
+  // SegmentedPill labels both options explicitly so the user doesn't
+  // have to guess what "on" means.
+  const SegmentedPill = ({ value, options, onChange }) => (
+    <div style={{
+      display: "inline-flex", borderRadius: 8,
+      background: "#1a1a1a", border: "1px solid #333",
+      padding: 2, flexShrink: 0,
+    }}>
+      {options.map((opt) => {
+        const selected = value === opt.value;
+        return (
+          <button
+            key={opt.value}
+            onClick={(e) => { e.stopPropagation(); onChange(opt.value); }}
+            style={{
+              padding: "5px 12px", borderRadius: 6,
+              background: selected ? COLORS.goldHighlight : "transparent",
+              color: selected ? COLORS.gold : "#888",
+              border: selected ? `1px solid ${COLORS.gold}` : "1px solid transparent",
+              fontSize: 11, fontWeight: 600, letterSpacing: 0.5,
+              cursor: "pointer", fontFamily: "-apple-system, system-ui, sans-serif",
+              textTransform: "uppercase",
+            }}
+          >
+            {opt.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+
+  // Row builder — keeps the JSX from getting unreadable.
+  // type: "nav" | "toggle" | "segmented" | "value"
+  const Row = ({ label, desc, type = "nav", onClick, toggleOn, onToggle, segmentedValue, segmentedOptions, onSegmentedChange }) => {
+    const content = (
+      <>
+        <div style={{ flex: 1 }}>
+          <div style={labelStyle}>{label}</div>
+          {desc && <div style={descStyle}>{desc}</div>}
+        </div>
+        {type === "nav" && chev}
+        {type === "toggle" && <Toggle on={!!toggleOn} onChange={onToggle} ariaLabel={label} />}
+        {type === "segmented" && (
+          <SegmentedPill value={segmentedValue} options={segmentedOptions} onChange={onSegmentedChange} />
+        )}
+      </>
+    );
+    if (type === "toggle" || type === "segmented") {
+      // Toggle/segmented rows aren't tappable as a whole — only the
+      // control flips state.
+      return <div style={rowStyle}>{content}</div>;
+    }
+    return <button onClick={onClick} style={rowStyle}>{content}</button>;
+  };
+
+  return (
+    <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, position: "relative", background: COLORS.bg }}>
+      {/* Header — back chevron + Settings title in Georgia 14px white */}
+      <div style={{ padding: "8px 24px 18px", display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+        <button
+          onClick={onBack}
+          aria-label="Back"
+          style={{ background: "transparent", border: "none", padding: 8, margin: -8, cursor: "pointer", color: "#888", display: "flex", alignItems: "center" }}
+        >
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="15 18 9 12 15 6" />
+          </svg>
+        </button>
+        <span style={{ fontFamily: "Georgia, 'Times New Roman', serif", color: "#fff", fontSize: 14 }}>Settings</span>
       </div>
 
       <div style={{ flex: 1, padding: "0 24px 24px", overflowY: "auto", minHeight: 0 }}>
 
-        {/* Avatar block */}
-        <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 20 }}>
-          <div style={{ width: 56, height: 56, borderRadius: 28, background: COLORS.card, border: `2px solid ${COLORS.gold}`, display: "flex", alignItems: "center", justifyContent: "center" }}>
-            <span style={{ color: COLORS.gold, fontFamily: "Georgia, 'Times New Roman', serif", fontWeight: 700, fontSize: 22 }}>{((userName || "").trim().charAt(0).toUpperCase()) || "?"}</span>
-          </div>
-          <div>
-            <div style={{ color: COLORS.text, fontSize: 18, fontWeight: 600 }}>{userName}</div>
-            <div style={{ color: COLORS.gold, fontSize: 12, marginTop: 2 }}>Level 2 · Grinder · 750 XP</div>
-          </div>
-        </div>
+        {/* ── ACCOUNT ── */}
+        <div style={headStyleFirst}>ACCOUNT</div>
+        <Row label="Email & password" desc={emailDisplay} onClick={() => { /* TODO: email & password sub-screen */ }} />
+        <Row label="Membership" desc={membershipDisplay} onClick={() => { /* TODO: membership viewer */ }} />
+        <Row label="Body Stats" desc={bodyStatsLabel} onClick={() => { /* TODO: body stats editor — built in BodyStatsSubscreen */ }} />
 
-        {/* Section 1 — Settings rows */}
-        {settingsRows.map((s) => (
-          <button key={s.id} style={{ ...cardBase, border: `1px solid ${COLORS.border}` }}>
-            <div style={{ flex: 1 }}>
-              <div style={{ color: COLORS.text, fontSize: 14, fontWeight: 500 }}>{s.label}</div>
-              <div style={{ color: COLORS.textSecondary, fontSize: 12, marginTop: 2 }}>{s.desc}</div>
-            </div>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={COLORS.textSecondary} strokeWidth="2"><polyline points="9 18 15 12 9 6" /></svg>
-          </button>
-        ))}
+        {/* ── APP ── */}
+        <div style={headStyle}>APP</div>
+        <Row
+          label="Units"
+          desc={unitsLabel}
+          type="segmented"
+          segmentedValue={unitsPref}
+          segmentedOptions={[{ value: "lbs", label: "Lbs" }, { value: "kg", label: "Kg" }]}
+          onSegmentedChange={onChangeUnits}
+        />
+        <Row
+          label="Workout preferences"
+          desc={restTimerLabel}
+          onClick={() => { setTimerPickerView("main"); setTimerPickerOpen(true); }}
+        />
+        <Row
+          label="Notifications"
+          desc={streakRemindersOn ? "Streak reminders on" : "Streak reminders off"}
+          onClick={() => { /* TODO: notifications sub-screen (more toggles incoming) */ }}
+        />
+        <Row
+          label="Leaderboard"
+          type="toggle"
+          toggleOn={leaderboardOn}
+          onToggle={onChangeLeaderboard}
+        />
 
-        {/* Log Out — lives with settings, above the divider */}
+        {/* Logout button — restores the path lost when Coach's File
+            displaced settings to this sub-screen. Same red-border /
+            red-text vocabulary as the existing Logout button. */}
         <button
           onClick={() => setConfirmLogout(true)}
-          style={{ width: "100%", padding: 13, background: "transparent", border: "1px solid #442222", borderRadius: 10, color: "#cc4444", fontSize: 14, fontWeight: 500, cursor: "pointer", marginTop: 8, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, fontFamily: "inherit" }}
+          style={{
+            width: "100%", padding: 13, background: "transparent",
+            border: "1px solid #442222", borderRadius: 10,
+            color: "#cc4444", fontSize: 14, cursor: "pointer",
+            marginTop: 24, display: "flex", alignItems: "center",
+            justifyContent: "center", gap: 8, fontFamily: "inherit",
+          }}
         >
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4" />
             <polyline points="16 17 21 12 16 7" />
             <line x1="21" y1="12" x2="9" y2="12" />
           </svg>
-          Log Out
+          Log out
         </button>
 
-        {/* Gold rule divider — soft gradient fade from transparent */}
+        {/* Version footer */}
         <div style={{
-          margin: "28px 0 22px",
-          height: 1,
-          background: `linear-gradient(to right, transparent 0%, ${COLORS.gold} 20%, ${COLORS.gold} 80%, transparent 100%)`,
-          opacity: 0.8,
-        }} />
-
-        {/* Section 2 — Coach Profile */}
-        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
-          <div style={{ width: 28, height: 28, borderRadius: 14, background: COLORS.goldHighlight, border: `1.5px solid ${COLORS.gold}`, display: "flex", alignItems: "center", justifyContent: "center" }}>
-            <span style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 15, color: COLORS.gold, fontWeight: 700, fontStyle: "italic", lineHeight: 1 }}>C</span>
-          </div>
-          <div style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 20, color: COLORS.gold, fontWeight: 400, fontStyle: "italic" }}>Coach Profile</div>
-        </div>
-
-        <div style={{ fontSize: 12, color: COLORS.textSecondary, fontStyle: "italic", fontFamily: "Georgia, 'Times New Roman', serif", lineHeight: 1.5, marginBottom: 14 }}>
-          The version of you Coach sees when building your sessions.
-        </div>
-
-        {/* Coach Profile cards — quiet gold accent on left edge, serif titles */}
-        {coachCards.map((c) => (
-          <button
-            key={c.id}
-            onClick={c.onClick}
-            style={{
-              ...cardBase,
-              borderTop: `1px solid ${COLORS.border}`,
-              borderRight: `1px solid ${COLORS.border}`,
-              borderBottom: `1px solid ${COLORS.border}`,
-              borderLeft: `2px solid ${COLORS.gold}`,
-              borderRadius: "0 10px 10px 0",
-              cursor: c.onClick ? "pointer" : "pointer",
-            }}
-          >
-            <div style={{ flex: 1 }}>
-              <div style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 15, color: COLORS.text, fontWeight: 400 }}>{c.label}</div>
-              <div style={{
-                fontSize: 12, color: COLORS.textSecondary, marginTop: 3,
-                ...(c.descItalic ? { fontStyle: "italic", fontFamily: "Georgia, 'Times New Roman', serif" } : {}),
-              }}>{c.desc}</div>
-            </div>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={COLORS.textSecondary} strokeWidth="2"><polyline points="9 18 15 12 9 6" /></svg>
-          </button>
-        ))}
-
-        {/* Coach's Assessment — locked (Phase 3, unlocks at 20 sessions) */}
-        <div style={{
-          width: "100%", padding: "14px 16px", background: "#0c0c0c",
-          border: "1px dashed #2a2410", borderRadius: 10,
-          display: "flex", alignItems: "center", gap: 14, opacity: 0.6,
+          textAlign: "center", fontSize: 10, color: "#444",
+          marginTop: 18, letterSpacing: 1,
+          fontFamily: "-apple-system, system-ui, sans-serif",
         }}>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 15, color: COLORS.textSecondary, fontWeight: 400 }}>Coach&apos;s Assessment</div>
-            <div style={{ fontSize: 12, color: "#5a5a5a", marginTop: 3 }}>Unlocks at 20 sessions</div>
-          </div>
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#5a5a5a" strokeWidth="2">
-            <rect x="3" y="11" width="18" height="11" rx="2" />
-            <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-          </svg>
+          MYG · {appVersion}
         </div>
-
       </div>
 
-      {/* Confirm logout modal */}
+      {/* ── Rest timer picker modal ──
+          Two-level: main view (Count up / Countdown / Off) and the
+          countdown duration submenu (preset durations + custom).
+          Mirrors the in-workout gear menu pattern from WorkoutTab so
+          Tyler doesn't see two different vocabularies for the same
+          preference. */}
+      {timerPickerOpen && (
+        <>
+          <div
+            onClick={() => { setTimerPickerOpen(false); setTimerPickerView("main"); }}
+            style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 100 }}
+          />
+          <div style={{
+            position: "fixed", left: "50%", bottom: 32, transform: "translateX(-50%)",
+            zIndex: 101, background: COLORS.card, border: `1px solid ${COLORS.border}`,
+            borderRadius: 14, padding: 8, width: 280,
+            boxShadow: "0 12px 32px rgba(0,0,0,0.7)",
+          }}>
+            {timerPickerView === "main" ? (
+              <>
+                <div style={{ fontSize: 11, color: "#888", padding: "8px 12px 4px", letterSpacing: 1, fontFamily: "-apple-system, system-ui, sans-serif" }}>REST TIMER</div>
+                {[
+                  { id: "countup", label: "Count up" },
+                  { id: "countdown", label: "Countdown" },
+                  { id: "off", label: "Off" },
+                ].map((opt) => {
+                  const isSelected = restTimerMode === opt.id;
+                  return (
+                    <button
+                      key={opt.id}
+                      onClick={() => {
+                        if (opt.id === "countdown") {
+                          onChangeRestTimerMode("countdown");
+                          setTimerPickerView("countdownDuration");
+                        } else {
+                          onChangeRestTimerMode(opt.id);
+                          setTimerPickerOpen(false);
+                          setTimerPickerView("main");
+                        }
+                      }}
+                      style={{
+                        display: "flex", justifyContent: "space-between", alignItems: "center",
+                        width: "100%", padding: "12px 12px",
+                        background: isSelected ? COLORS.goldHighlight : "transparent",
+                        border: "none", borderRadius: 8,
+                        color: isSelected ? COLORS.gold : "#fff", fontSize: 13,
+                        fontWeight: isSelected ? 600 : 400, cursor: "pointer",
+                        fontFamily: "inherit", textAlign: "left",
+                      }}
+                    >
+                      {opt.label}
+                      {isSelected && (
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={COLORS.gold} strokeWidth="2.5">
+                          <polyline points="20 6 9 17 4 12" />
+                        </svg>
+                      )}
+                    </button>
+                  );
+                })}
+              </>
+            ) : (
+              <>
+                <button
+                  onClick={() => setTimerPickerView("main")}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 6,
+                    background: "transparent", border: "none",
+                    color: "#888", fontSize: 12, padding: "8px 12px 4px",
+                    cursor: "pointer", fontFamily: "-apple-system, system-ui, sans-serif",
+                  }}
+                >
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
+                  Countdown duration
+                </button>
+                {[60, 90, 120, 180].map((sec) => {
+                  const m = Math.floor(sec / 60);
+                  const s = sec % 60;
+                  const label = `${m}:${String(s).padStart(2, "0")}`;
+                  const isSelected = restCountdownTarget === sec;
+                  return (
+                    <button
+                      key={sec}
+                      onClick={() => {
+                        onChangeRestCountdownTarget(sec);
+                        setTimerPickerOpen(false);
+                        setTimerPickerView("main");
+                      }}
+                      style={{
+                        display: "flex", justifyContent: "space-between", alignItems: "center",
+                        width: "100%", padding: "12px 12px",
+                        background: isSelected ? COLORS.goldHighlight : "transparent",
+                        border: "none", borderRadius: 8,
+                        color: isSelected ? COLORS.gold : "#fff", fontSize: 13,
+                        fontWeight: isSelected ? 600 : 400, cursor: "pointer",
+                        fontFamily: "inherit", textAlign: "left",
+                      }}
+                    >
+                      {label}
+                      {isSelected && (
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={COLORS.gold} strokeWidth="2.5">
+                          <polyline points="20 6 9 17 4 12" />
+                        </svg>
+                      )}
+                    </button>
+                  );
+                })}
+                <button
+                  onClick={() => { setCustomDurationOpen(true); }}
+                  style={{
+                    display: "flex", alignItems: "center",
+                    width: "100%", padding: "12px 12px",
+                    background: "transparent", border: "none", borderRadius: 8,
+                    color: "#fff", fontSize: 13, cursor: "pointer",
+                    fontFamily: "inherit", textAlign: "left",
+                  }}
+                >
+                  Custom…
+                </button>
+              </>
+            )}
+          </div>
+        </>
+      )}
+
+      {/* Reuses Session 34 component verbatim. */}
+      {customDurationOpen && (
+        <CustomDurationModal
+          initialSeconds={restCountdownTarget || 90}
+          onCancel={() => setCustomDurationOpen(false)}
+          onConfirm={(sec) => {
+            onChangeRestCountdownTarget(sec);
+            setCustomDurationOpen(false);
+            setTimerPickerOpen(false);
+            setTimerPickerView("main");
+          }}
+        />
+      )}
+
+      {/* Logout confirm modal — same pattern as the old in-Profile flow. */}
       {confirmLogout && (
         <>
           <div onClick={() => setConfirmLogout(false)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 100 }} />
@@ -8495,13 +9626,597 @@ function ProfileTab({ onOpenEquipmentEditor, equipmentCount, onLogout, userName 
                   color: "#FF6B6B", fontSize: 13, fontWeight: 600, cursor: "pointer",
                 }}
               >
-                Log Out
+                Log out
               </button>
             </div>
           </div>
         </>
       )}
     </div>
+  );
+}
+
+/* ── CoachCTACard — reusable gold-bordered card (Bible §6.5) ───────
+   Coach monogram + title + italic body + arrow. Used inside the Rules
+   sub-screen (populated state: "Add a rule via Coach"; empty state:
+   "Set your first rule") and intended for any future "deep-link to
+   Coach chat" surfaces. Tapping fires onClick — App-level prop wires
+   it to switch to the Coach tab.
+*/
+function CoachCTACard({ title, body, onClick }) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        display: "flex", alignItems: "center", gap: 10,
+        padding: "12px 14px",
+        background: COLORS.goldHighlight,
+        border: `1px solid ${COLORS.gold}`,
+        borderRadius: 10, marginTop: 18,
+        width: "100%", cursor: "pointer",
+        fontFamily: "inherit", color: "inherit", textAlign: "left",
+      }}
+    >
+      <CoachMonogram size={24} dark={false} />
+      <div style={{ flex: 1 }}>
+        <div style={{
+          fontFamily: "Georgia, 'Times New Roman', serif",
+          fontSize: 12, color: COLORS.gold,
+        }}>{title}</div>
+        <div style={{
+          fontFamily: "Georgia, 'Times New Roman', serif",
+          fontStyle: "italic", color: "#888",
+          fontSize: 10, marginTop: 2,
+        }}>{body}</div>
+      </div>
+      <span style={{ color: COLORS.gold, fontSize: 14 }}>→</span>
+    </button>
+  );
+}
+
+/* ── SubscreenShell — shared chrome for all Coach's File sub-screens ──
+   Header: back chevron + italic Georgia gold page title.
+   Subtitle: italic Georgia gray, single line.
+   Children: scrollable body.
+
+   Every sub-screen on Coach's File (Plan / Rules / Progress /
+   Observations) wears this shell so back-navigation and the
+   "this is part of Coach's File" feel stay consistent.
+*/
+function SubscreenShell({ title, subtitle, onBack, children, footer }) {
+  return (
+    <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, position: "relative", background: COLORS.bg }}>
+      <div style={{ padding: "8px 24px 18px", display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+        <button
+          onClick={onBack}
+          aria-label="Back"
+          style={{ background: "transparent", border: "none", padding: 8, margin: -8, cursor: "pointer", color: "#888", display: "flex", alignItems: "center" }}
+        >
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="15 18 9 12 15 6" />
+          </svg>
+        </button>
+        <span style={{
+          fontFamily: "Georgia, 'Times New Roman', serif",
+          fontStyle: "italic", color: COLORS.gold, fontSize: 14,
+        }}>{title}</span>
+      </div>
+      <div style={{ flex: 1, padding: "0 24px 24px", overflowY: "auto", minHeight: 0, display: "flex", flexDirection: "column" }}>
+        {subtitle && (
+          <div style={{
+            fontFamily: "Georgia, 'Times New Roman', serif",
+            fontStyle: "italic", color: "#888",
+            fontSize: 11, lineHeight: 1.6, marginBottom: 18,
+          }}>{subtitle}</div>
+        )}
+        <div style={{ flex: 1 }}>{children}</div>
+        {footer}
+      </div>
+    </div>
+  );
+}
+
+/* ── PlanSubscreen — P1 tap-to-expand inline edit (Bible §6.5) ──────
+   Each field shows as a read-only row by default (label left, value
+   right, small pencil glyph on far right). Tap the row → row expands
+   inline with #0f0f0f background lift, showing chip picker for that
+   field. Only one field in edit mode at a time. Selecting a chip
+   commits immediately (no global save). Days/week field uses
+   slider+number display instead of chips. Time Away row is visible
+   only when Level ≠ Beginner; toggles in/out smoothly when Level
+   changes.
+
+   This is the canonical inline-edit pattern; Equipment and Body Stats
+   inherit it.
+*/
+function PlanSubscreen({
+  planGoal, fitnessLevel, timeAway, planDaysPerWeek,
+  onChangeGoal, onChangeLevel, onChangeTimeAway, onChangeDaysPerWeek,
+  onBack,
+}) {
+  // editingField ∈ "goal" | "level" | "timeAway" | "days" | null
+  const [editingField, setEditingField] = useState(null);
+
+  const showTimeAway = fitnessLevel !== "beginner";
+  // If the user switches Level → beginner while editing Time away,
+  // collapse the open row so we don't leave editingField pointing at
+  // a hidden field.
+  useEffect(() => {
+    if (!showTimeAway && editingField === "timeAway") setEditingField(null);
+  }, [showTimeAway, editingField]);
+
+  // Field definitions in display order. Each has its own picker
+  // rendered inside the expanded row. Keeping them inline (rather than
+  // extracting per-field components) makes the open/closed state easy
+  // to read — every field is one entry.
+  const TYPE = {
+    body: { fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 13, color: "#e8e8e8", lineHeight: 1.5 },
+    rowVal: { fontSize: 11, color: "#aaa", whiteSpace: "nowrap" },
+    pencil: { color: "#555", fontSize: 12 },
+    editingTag: { color: COLORS.gold, fontSize: 11, fontStyle: "italic", fontFamily: "Georgia, 'Times New Roman', serif" },
+  };
+
+  const Chip = ({ label, selected, onClick }) => (
+    <button
+      onClick={onClick}
+      style={{
+        padding: "6px 11px", borderRadius: 14,
+        background: selected ? COLORS.goldHighlight : "transparent",
+        border: `1px solid ${selected ? COLORS.gold : "#2a2a2a"}`,
+        color: selected ? COLORS.gold : "#aaa",
+        fontSize: 11, cursor: "pointer",
+        fontFamily: "-apple-system, system-ui, sans-serif",
+      }}
+    >
+      {label}
+    </button>
+  );
+
+  // Renders a read-only collapsed row OR an expanded edit row.
+  const renderField = (fieldKey, label, displayValue, pickerNode) => {
+    const isEditing = editingField === fieldKey;
+    const toggle = () => setEditingField(isEditing ? null : fieldKey);
+    if (isEditing) {
+      return (
+        <div
+          key={fieldKey}
+          style={{
+            padding: "14px 20px",
+            background: "#0f0f0f",
+            margin: "0 -20px",
+            borderBottom: "1px solid #1a1a1a",
+          }}
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+            <button
+              onClick={toggle}
+              style={{ background: "transparent", border: "none", padding: 0, cursor: "pointer", color: "inherit", fontFamily: "inherit", textAlign: "left", ...TYPE.body }}
+            >{label}</button>
+            <span style={TYPE.editingTag}>editing</span>
+          </div>
+          {pickerNode}
+        </div>
+      );
+    }
+    return (
+      <button
+        key={fieldKey}
+        onClick={toggle}
+        style={{
+          width: "100%", padding: "10px 0",
+          display: "flex", justifyContent: "space-between", alignItems: "baseline",
+          borderBottom: "1px solid #1a1a1a",
+          gap: 14, background: "transparent", border: "none", borderBottom: "1px solid #1a1a1a",
+          cursor: "pointer", fontFamily: "inherit", color: "inherit", textAlign: "left",
+        }}
+      >
+        <span style={{ ...TYPE.body, flex: 1 }}>{label}</span>
+        <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={TYPE.rowVal}>{displayValue}</span>
+          <span style={TYPE.pencil}>✎</span>
+        </span>
+      </button>
+    );
+  };
+
+  return (
+    <SubscreenShell
+      title="Plan"
+      subtitle="What Coach uses to build your sessions."
+      onBack={onBack}
+    >
+      {renderField(
+        "goal",
+        "Goal",
+        PLAN_GOAL_LABELS[planGoal] || "Build Muscle",
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+          {Object.entries(PLAN_GOAL_LABELS).map(([key, label]) => (
+            <Chip key={key} label={label} selected={planGoal === key} onClick={() => { onChangeGoal(key); setEditingField(null); }} />
+          ))}
+        </div>
+      )}
+
+      {renderField(
+        "level",
+        "Level",
+        fitnessLevel ? PLAN_LEVEL_LABELS[fitnessLevel] : "Intermediate",
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+          {Object.entries(PLAN_LEVEL_LABELS).map(([key, label]) => (
+            <Chip key={key} label={label} selected={fitnessLevel === key} onClick={() => { onChangeLevel(key); setEditingField(null); }} />
+          ))}
+        </div>
+      )}
+
+      {showTimeAway && renderField(
+        "timeAway",
+        "Time away",
+        timeAway ? PLAN_TIME_AWAY_LABELS[timeAway] : "Currently training",
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+          {Object.entries(PLAN_TIME_AWAY_LABELS).map(([key, label]) => (
+            <Chip key={key} label={label} selected={timeAway === key} onClick={() => { onChangeTimeAway(key); setEditingField(null); }} />
+          ))}
+        </div>
+      )}
+
+      {renderField(
+        "days",
+        "Days / week",
+        String(planDaysPerWeek || 3),
+        <div>
+          {/* Slider + number readout. 1–7. Commit immediately on each
+              change so backing out preserves the current value. */}
+          <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+            <input
+              type="range" min={1} max={7} step={1}
+              value={planDaysPerWeek || 3}
+              onChange={(e) => onChangeDaysPerWeek(parseInt(e.target.value, 10))}
+              style={{ flex: 1, accentColor: COLORS.gold }}
+            />
+            <span style={{
+              fontFamily: "Georgia, 'Times New Roman', serif",
+              fontSize: 18, color: COLORS.gold,
+              minWidth: 22, textAlign: "right",
+            }}>{planDaysPerWeek || 3}</span>
+          </div>
+          <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4, fontFamily: "-apple-system, system-ui, sans-serif", fontSize: 9, color: "#555", letterSpacing: 1 }}>
+            <span>1</span><span>7</span>
+          </div>
+        </div>
+      )}
+    </SubscreenShell>
+  );
+}
+
+/* ── RulesSubscreen (Bible §6.5) ─────────────────────────────────────
+   Sentence list, inline timestamps, ⋯ delete per row. Below the list:
+   gold Coach-CTA card for adding via chat. Counter line at bottom
+   ("4 of 15 rules"). Empty state: centered italic placeholder +
+   "Set your first rule" CTA + EXAMPLES block.
+*/
+function RulesSubscreen({ coachRules, onDeleteRule, onOpenCoachChat, onBack }) {
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+  const sorted = [...(coachRules || [])].sort((a, b) => b.createdAt - a.createdAt);
+  const ruleCap = 15; // Bible §12.6
+
+  const TYPE = {
+    body: { fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 13, color: "#e8e8e8", lineHeight: 1.5 },
+    meta: { fontFamily: "-apple-system, system-ui, sans-serif", fontSize: 9, color: "#555", letterSpacing: 1 },
+    counter: { fontFamily: "Georgia, 'Times New Roman', serif", fontStyle: "italic", color: "#555", fontSize: 10, textAlign: "center", marginTop: 16 },
+  };
+
+  if (sorted.length === 0) {
+    return (
+      <SubscreenShell
+        title="Rules"
+        subtitle="Standing orders Coach follows. Set them by chatting with Coach."
+        onBack={onBack}
+      >
+        <div style={{ textAlign: "center", padding: "32px 16px 24px", fontFamily: "Georgia, 'Times New Roman', serif", fontStyle: "italic", color: "#888", fontSize: 13, lineHeight: 1.7 }}>
+          You haven&apos;t set any rules.<br />Tell Coach what to follow and he&apos;ll write it down.
+        </div>
+        <CoachCTACard
+          title="Set your first rule"
+          body="Open Coach chat to get started."
+          onClick={onOpenCoachChat}
+        />
+        <div style={{
+          marginTop: 22, fontFamily: "Georgia, 'Times New Roman', serif",
+          fontStyle: "italic", color: "#555", fontSize: 11,
+          lineHeight: 1.6, padding: "0 14px",
+        }}>
+          <span style={{ color: COLORS.gold, fontStyle: "normal", fontSize: 10, letterSpacing: 1, fontFamily: "-apple-system, system-ui, sans-serif" }}>EXAMPLES</span>
+          <br />
+          <span>&quot;No deadlifts on Mondays&quot;<br />&quot;Keep sessions under 60 minutes&quot;<br />&quot;Always start with a compound lift&quot;</span>
+        </div>
+      </SubscreenShell>
+    );
+  }
+
+  return (
+    <SubscreenShell
+      title="Rules"
+      subtitle="Standing orders Coach follows. Set them by chatting with Coach."
+      onBack={onBack}
+    >
+      {sorted.map((r) => (
+        <div key={r.id} style={{
+          padding: "10px 0", display: "flex",
+          justifyContent: "space-between", alignItems: "baseline",
+          borderBottom: "1px solid #1a1a1a", gap: 14,
+        }}>
+          <span style={{ ...TYPE.body, flex: 1 }}>{r.text}</span>
+          <span style={{ ...TYPE.meta, whiteSpace: "nowrap" }}>{formatDaysAgoCap(r.createdAt)}</span>
+          <button
+            onClick={() => setConfirmDeleteId(r.id)}
+            aria-label="Delete rule"
+            style={{ background: "transparent", border: "none", padding: 4, margin: -4, cursor: "pointer", color: "#666", fontSize: 14, flexShrink: 0 }}
+          >⋯</button>
+        </div>
+      ))}
+      <CoachCTACard
+        title="Add a rule via Coach"
+        body="Tell Coach in chat, he'll write it down."
+        onClick={onOpenCoachChat}
+      />
+      <div style={TYPE.counter}>{sorted.length} of {ruleCap} rules</div>
+
+      {/* Per-row delete confirm */}
+      {confirmDeleteId && (
+        <>
+          <div onClick={() => setConfirmDeleteId(null)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 100 }} />
+          <div style={{
+            position: "fixed", top: "50%", left: "50%", transform: "translate(-50%,-50%)",
+            zIndex: 101, background: COLORS.card, border: `1px solid ${COLORS.border}`,
+            borderRadius: 14, padding: "22px 22px 18px", width: 280,
+            boxShadow: "0 12px 32px rgba(0,0,0,0.7)",
+          }}>
+            <div style={{ color: COLORS.text, fontSize: 16, fontWeight: 600, marginBottom: 8, textAlign: "center" }}>
+              Delete this rule?
+            </div>
+            <div style={{ color: COLORS.textSecondary, fontSize: 13, lineHeight: 1.5, marginBottom: 18, textAlign: "center", fontStyle: "italic", fontFamily: "Georgia, 'Times New Roman', serif" }}>
+              &ldquo;{sorted.find((r) => r.id === confirmDeleteId)?.text}&rdquo;
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button
+                onClick={() => setConfirmDeleteId(null)}
+                style={{ flex: 1, padding: 11, background: "transparent", border: `1px solid ${COLORS.border}`, borderRadius: 8, color: COLORS.text, fontSize: 13, fontWeight: 500, cursor: "pointer" }}
+              >Cancel</button>
+              <button
+                onClick={() => { onDeleteRule(confirmDeleteId); setConfirmDeleteId(null); }}
+                style={{ flex: 1, padding: 11, background: "#3A1A1A", border: "1px solid #5A2A2A", borderRadius: 8, color: "#FF6B6B", fontSize: 13, fontWeight: 600, cursor: "pointer" }}
+              >Delete</button>
+            </div>
+          </div>
+        </>
+      )}
+    </SubscreenShell>
+  );
+}
+
+/* ── ProgressSubscreen (Bible §6.5) ─────────────────────────────────
+   Read-only. Rows grouped by time period with small spaced-cap section
+   headers (THIS WEEK / EARLIER THIS MONTH / LAST MONTH / EARLIER).
+   PR rows show gold value + gold "PR" tag, NEW rows show "NEW" tag.
+   No ⋯ menu (Coach owns the data). Signed "— C" footer at bottom.
+
+   Filter matches the landing: only PR-or-NEW rows shown — non-PR
+   working sets belong in workout history, not on Coach's File
+   (session 36 decision).
+*/
+function ProgressSubscreen({ progressPRs, onBack }) {
+  const TYPE = {
+    body: { fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 13, color: "#e8e8e8", lineHeight: 1.5 },
+    meta: { fontFamily: "-apple-system, system-ui, sans-serif", fontSize: 9, color: "#555", letterSpacing: 1.5 },
+    rowVal: { fontSize: 11, color: "#aaa", whiteSpace: "nowrap" },
+    rowValUp: { fontSize: 11, color: COLORS.gold, whiteSpace: "nowrap" },
+    tagInline: { color: COLORS.gold, fontSize: 9, letterSpacing: 1, marginLeft: 4, fontFamily: "-apple-system, system-ui, sans-serif" },
+    sigFooter: { fontFamily: "Georgia, 'Times New Roman', serif", fontStyle: "italic", color: "#666", fontSize: 10 },
+  };
+
+  // Time-period bucketing. Bible vocabulary:
+  //   THIS WEEK (≤ 7 days), EARLIER THIS MONTH (8–30), LAST MONTH (31–60), EARLIER (>60).
+  // Computed from achievedAt relative to now.
+  const now = Date.now();
+  const filtered = (progressPRs || []).filter((p) => p.isPR || p.isNew);
+  const buckets = { "This week": [], "Earlier this month": [], "Last month": [], "Earlier": [] };
+  for (const p of filtered) {
+    const days = Math.floor((now - p.achievedAt) / (24 * 60 * 60 * 1000));
+    if (days <= 7) buckets["This week"].push(p);
+    else if (days <= 30) buckets["Earlier this month"].push(p);
+    else if (days <= 60) buckets["Last month"].push(p);
+    else buckets["Earlier"].push(p);
+  }
+  // Sort within each bucket: most recent first.
+  for (const key of Object.keys(buckets)) {
+    buckets[key].sort((a, b) => b.achievedAt - a.achievedAt);
+  }
+
+  const isEmpty = filtered.length === 0;
+  const footer = (
+    <div style={{
+      marginTop: 22, paddingTop: 12,
+      borderTop: "1px dashed #1a1a1a",
+      textAlign: "right",
+    }}>
+      <span style={TYPE.sigFooter}>— C{isEmpty ? ", waiting on first session" : ""}</span>
+    </div>
+  );
+
+  return (
+    <SubscreenShell
+      title="Progress"
+      subtitle="Numerical wins Coach has logged from your sessions."
+      onBack={onBack}
+      footer={footer}
+    >
+      {isEmpty ? (
+        <div style={{ textAlign: "center", padding: "48px 16px 32px", fontFamily: "Georgia, 'Times New Roman', serif", fontStyle: "italic", color: "#888", fontSize: 13, lineHeight: 1.7 }}>
+          Nothing logged yet.<br />Your first PR will show up here.
+        </div>
+      ) : (
+        Object.entries(buckets).map(([periodLabel, rows]) => {
+          if (rows.length === 0) return null;
+          return (
+            <div key={periodLabel}>
+              <div style={{ ...TYPE.meta, margin: "18px 0 8px", textTransform: "uppercase" }}>{periodLabel}</div>
+              {rows.map((p) => (
+                <div key={p.id} style={{
+                  padding: "10px 0", display: "flex",
+                  justifyContent: "space-between", alignItems: "baseline",
+                  borderBottom: "1px solid #1a1a1a", gap: 14,
+                }}>
+                  <span style={{ ...TYPE.body, flex: 1 }}>
+                    {p.exerciseName}
+                    {p.isPR && <span style={TYPE.tagInline}>PR</span>}
+                    {p.isNew && !p.isPR && <span style={TYPE.tagInline}>NEW</span>}
+                  </span>
+                  <span style={p.isPR ? TYPE.rowValUp : TYPE.rowVal}>{p.value}</span>
+                </div>
+              ))}
+            </div>
+          );
+        })
+      )}
+    </SubscreenShell>
+  );
+}
+
+/* ── ObservationsSubscreen (Bible §6.5) ─────────────────────────────
+   Same row grammar as Rules: sentence + inline timestamp + ⋯ delete.
+   NO CoachCTACard (Coach writes these, user doesn't add). At the bottom:
+   red-bordered "Reset all observations" destructive button. Empty state:
+   placeholder + signed "— C" footer, no CTA.
+*/
+function ObservationsSubscreen({ coachObservations, onDeleteObservation, onResetAll, onBack }) {
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+  const [confirmResetAll, setConfirmResetAll] = useState(false);
+  const sorted = [...(coachObservations || [])].sort((a, b) => b.createdAt - a.createdAt);
+
+  const TYPE = {
+    body: { fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 13, color: "#e8e8e8", lineHeight: 1.5 },
+    meta: { fontFamily: "-apple-system, system-ui, sans-serif", fontSize: 9, color: "#555", letterSpacing: 1 },
+    sigFooter: { fontFamily: "Georgia, 'Times New Roman', serif", fontStyle: "italic", color: "#666", fontSize: 10 },
+  };
+
+  if (sorted.length === 0) {
+    const footer = (
+      <div style={{
+        marginTop: 22, paddingTop: 12,
+        borderTop: "1px dashed #1a1a1a",
+        textAlign: "right",
+      }}>
+        <span style={TYPE.sigFooter}>— C</span>
+      </div>
+    );
+    return (
+      <SubscreenShell
+        title="Observations"
+        subtitle="Patterns Coach has noticed about how you train."
+        onBack={onBack}
+        footer={footer}
+      >
+        <div style={{ textAlign: "center", padding: "48px 16px 32px", fontFamily: "Georgia, 'Times New Roman', serif", fontStyle: "italic", color: "#888", fontSize: 13, lineHeight: 1.7 }}>
+          Coach hasn&apos;t noticed anything yet.<br />A few sessions in, patterns will appear here.
+        </div>
+      </SubscreenShell>
+    );
+  }
+
+  return (
+    <SubscreenShell
+      title="Observations"
+      subtitle="Patterns Coach has noticed about how you train."
+      onBack={onBack}
+    >
+      {sorted.map((o) => (
+        <div key={o.id} style={{
+          padding: "10px 0", display: "flex",
+          justifyContent: "space-between", alignItems: "baseline",
+          borderBottom: "1px solid #1a1a1a", gap: 14,
+        }}>
+          <span style={{ ...TYPE.body, flex: 1 }}>{o.text}</span>
+          <span style={{ ...TYPE.meta, whiteSpace: "nowrap" }}>{formatDaysAgoCap(o.createdAt)}</span>
+          <button
+            onClick={() => setConfirmDeleteId(o.id)}
+            aria-label="Delete observation"
+            style={{ background: "transparent", border: "none", padding: 4, margin: -4, cursor: "pointer", color: "#666", fontSize: 14, flexShrink: 0 }}
+          >⋯</button>
+        </div>
+      ))}
+
+      {/* Reset all destructive button — red-bordered transparent bg,
+          italic Georgia gray text. Matches the Logout button vocabulary
+          but in the body of the screen rather than at the very bottom. */}
+      <button
+        onClick={() => setConfirmResetAll(true)}
+        style={{
+          width: "100%", padding: 12, marginTop: 24,
+          background: "transparent",
+          border: "1px solid #442222", borderRadius: 8,
+          color: "#cc4444", fontSize: 12,
+          fontFamily: "Georgia, 'Times New Roman', serif",
+          fontStyle: "italic", cursor: "pointer",
+        }}
+      >Reset all observations</button>
+
+      {confirmDeleteId && (
+        <>
+          <div onClick={() => setConfirmDeleteId(null)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 100 }} />
+          <div style={{
+            position: "fixed", top: "50%", left: "50%", transform: "translate(-50%,-50%)",
+            zIndex: 101, background: COLORS.card, border: `1px solid ${COLORS.border}`,
+            borderRadius: 14, padding: "22px 22px 18px", width: 280,
+            boxShadow: "0 12px 32px rgba(0,0,0,0.7)",
+          }}>
+            <div style={{ color: COLORS.text, fontSize: 16, fontWeight: 600, marginBottom: 8, textAlign: "center" }}>
+              Delete this observation?
+            </div>
+            <div style={{ color: COLORS.textSecondary, fontSize: 13, lineHeight: 1.5, marginBottom: 18, textAlign: "center", fontStyle: "italic", fontFamily: "Georgia, 'Times New Roman', serif" }}>
+              &ldquo;{sorted.find((o) => o.id === confirmDeleteId)?.text}&rdquo;
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button
+                onClick={() => setConfirmDeleteId(null)}
+                style={{ flex: 1, padding: 11, background: "transparent", border: `1px solid ${COLORS.border}`, borderRadius: 8, color: COLORS.text, fontSize: 13, fontWeight: 500, cursor: "pointer" }}
+              >Cancel</button>
+              <button
+                onClick={() => { onDeleteObservation(confirmDeleteId); setConfirmDeleteId(null); }}
+                style={{ flex: 1, padding: 11, background: "#3A1A1A", border: "1px solid #5A2A2A", borderRadius: 8, color: "#FF6B6B", fontSize: 13, fontWeight: 600, cursor: "pointer" }}
+              >Delete</button>
+            </div>
+          </div>
+        </>
+      )}
+
+      {confirmResetAll && (
+        <>
+          <div onClick={() => setConfirmResetAll(false)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 100 }} />
+          <div style={{
+            position: "fixed", top: "50%", left: "50%", transform: "translate(-50%,-50%)",
+            zIndex: 101, background: COLORS.card, border: `1px solid ${COLORS.border}`,
+            borderRadius: 14, padding: "22px 22px 18px", width: 300,
+            boxShadow: "0 12px 32px rgba(0,0,0,0.7)",
+          }}>
+            <div style={{ color: COLORS.text, fontSize: 16, fontWeight: 600, marginBottom: 8, textAlign: "center" }}>
+              Reset all observations?
+            </div>
+            <div style={{ color: COLORS.textSecondary, fontSize: 13, lineHeight: 1.5, marginBottom: 18, textAlign: "center" }}>
+              Coach will start over watching how you train. This can&apos;t be undone.
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button
+                onClick={() => setConfirmResetAll(false)}
+                style={{ flex: 1, padding: 11, background: "transparent", border: `1px solid ${COLORS.border}`, borderRadius: 8, color: COLORS.text, fontSize: 13, fontWeight: 500, cursor: "pointer" }}
+              >Cancel</button>
+              <button
+                onClick={() => { onResetAll(); setConfirmResetAll(false); }}
+                style={{ flex: 1, padding: 11, background: "#3A1A1A", border: "1px solid #5A2A2A", borderRadius: 8, color: "#FF6B6B", fontSize: 13, fontWeight: 600, cursor: "pointer" }}
+              >Reset all</button>
+            </div>
+          </div>
+        </>
+      )}
+    </SubscreenShell>
   );
 }
 
@@ -8554,9 +10269,25 @@ export default function MYGFitness() {
   // so the name renders identically everywhere. See Bible §6.1.
   const [userName, setUserName] = useState(h.userName || "Tyler");
 
+  // ── Fitness level + time-away ──
+  // Collected on Screens 3 and 3b. fitnessLevel ∈ {beginner, intermediate, advanced, null}.
+  // timeAway ∈ {current, lt1yr, 1to3yr, gt3yr, null} — only meaningful for
+  // intermediate/advanced; beginners skip Screen 3b entirely. Both feed the
+  // future Coach AI context packet (Bible §10 returning-lifter awareness)
+  // and surface in the Plan section of Coach's File (Bible §6.5 v26).
+  // Persisted as of Session 36 — see note in saveSnapshot above.
+  const [fitnessLevel, setFitnessLevel] = useState(h.fitnessLevel || null);
+  const [timeAway, setTimeAway] = useState(h.timeAway || null);
+
   const goTo = (s) => setScreen(s);
 
-  const progressScreens = ["goals", "level", "aboutyou", "days", "equipment", "account", "name"];
+  // Progress bar steps. Beginner skips the timeaway screen (asking a beginner
+  // about time away from training is incoherent), so the total step count
+  // shrinks for that branch. Recomputed every render — if the user changes
+  // their level on Screen 3 via Back, the bar recalculates correctly.
+  const progressScreens = fitnessLevel === "beginner"
+    ? ["goals", "level", "aboutyou", "days", "equipment", "account", "name"]
+    : ["goals", "level", "timeaway", "aboutyou", "days", "equipment", "account", "name"];
   const pIdx = progressScreens.indexOf(screen);
 
   // In-app sub-screens that overlay the tab UI (e.g. equipment editor opened
@@ -8651,6 +10382,15 @@ export default function MYGFitness() {
   // is the natural "browse" order.
   const [exerciseSort, setExerciseSort] = useState(() => h.exerciseSort || { mode: "alpha", dir: "asc" });
 
+  // ── Rest timer preferences ──
+  // Lifted from per-workout state so the user's preferred mode and
+  // countdown duration persist across workouts. Snapshot-persisted.
+  // Cleared on logout (like other prefs). Profile tab redesign session
+  // will add a Settings row that surfaces these for direct editing;
+  // for now the only change UI is the in-workout gear menu.
+  const [restTimerModePref, setRestTimerModePref] = useState(() => h.restTimerModePref || "countup");
+  const [restCountdownTargetPref, setRestCountdownTargetPref] = useState(() => typeof h.restCountdownTargetPref === "number" ? h.restCountdownTargetPref : 90);
+
   const addCustomExercise = (ex) => {
     setCustomExercises((prev) => [...prev, ex]);
   };
@@ -8740,6 +10480,31 @@ export default function MYGFitness() {
   const [workoutHistory, setWorkoutHistory] = useState(h.workoutHistory !== null && h.workoutHistory !== undefined ? h.workoutHistory : MOCK_WORKOUT_HISTORY);
   const [openHistoryId, setOpenHistoryId] = useState(null);
 
+  // ── Coach's File state (Bible §6.5, v26) ──
+  // Backs the redesigned Profile tab. Same hydration pattern as
+  // workoutHistory above: if a snapshot exists with non-null arrays,
+  // use them (including empty); otherwise seed with mock data so the
+  // landing page demos correctly on first run.
+  //
+  // Mutations live in the App so the landing and each sub-screen share
+  // a single source of truth. Truncation counts on the landing
+  // ("+ 1 more →", "View all 7 →") are derived from .length.
+  const [planGoal, setPlanGoal] = useState(h.planGoal || "build_muscle");
+  const [planDaysPerWeek, setPlanDaysPerWeek] = useState(typeof h.planDaysPerWeek === "number" ? h.planDaysPerWeek : 3);
+  const [coachRules, setCoachRules] = useState(h.coachRules !== null && h.coachRules !== undefined ? h.coachRules : MOCK_COACH_RULES);
+  const [coachObservations, setCoachObservations] = useState(h.coachObservations !== null && h.coachObservations !== undefined ? h.coachObservations : MOCK_COACH_OBSERVATIONS);
+  const [progressPRs, setProgressPRs] = useState(h.progressPRs !== null && h.progressPRs !== undefined ? h.progressPRs : MOCK_PROGRESS_PRS);
+  const [bodyStats, setBodyStats] = useState(h.bodyStats || MOCK_BODY_STATS);
+  // First-open / last-update timestamps for the signed footer. If we
+  // have no snapshot the file is "opened today" — store now. Last update
+  // is whichever of the section mutations was most recent.
+  const [coachFileOpenedAt, setCoachFileOpenedAt] = useState(typeof h.coachFileOpenedAt === "number" ? h.coachFileOpenedAt : Date.now());
+  const [coachFileLastUpdatedAt, setCoachFileLastUpdatedAt] = useState(typeof h.coachFileLastUpdatedAt === "number" ? h.coachFileLastUpdatedAt : NOW_FOR_SEED - 2 * DAY);
+  // Settings prefs surfaced on the Settings sub-screen.
+  const [unitsPref, setUnitsPref] = useState(h.unitsPref === "kg" ? "kg" : "lbs");
+  const [streakRemindersOn, setStreakRemindersOn] = useState(typeof h.streakRemindersOn === "boolean" ? h.streakRemindersOn : true);
+  const [leaderboardOn, setLeaderboardOn] = useState(typeof h.leaderboardOn === "boolean" ? h.leaderboardOn : false);
+
   // ── Save effect ──
   // Fires any time a persisted piece of state changes. saveSnapshot
   // handles the serialization (Dates → ISO strings, Set → Array) and
@@ -8761,6 +10526,8 @@ export default function MYGFitness() {
       onboardingComplete,
       userName,
       selectedEquipment,
+      fitnessLevel,
+      timeAway,
       activeTab,
       activeWorkout,
       coachChats,
@@ -8768,11 +10535,26 @@ export default function MYGFitness() {
       workoutHistory,
       customExercises,
       exerciseSort,
+      restTimerModePref,
+      restCountdownTargetPref,
+      planGoal,
+      planDaysPerWeek,
+      coachRules,
+      coachObservations,
+      progressPRs,
+      bodyStats,
+      coachFileOpenedAt,
+      coachFileLastUpdatedAt,
+      unitsPref,
+      streakRemindersOn,
+      leaderboardOn,
     });
   }, [
     onboardingComplete,
     userName,
     selectedEquipment,
+    fitnessLevel,
+    timeAway,
     activeTab,
     activeWorkout,
     coachChats,
@@ -8780,6 +10562,19 @@ export default function MYGFitness() {
     workoutHistory,
     customExercises,
     exerciseSort,
+    restTimerModePref,
+    restCountdownTargetPref,
+    planGoal,
+    planDaysPerWeek,
+    coachRules,
+    coachObservations,
+    progressPRs,
+    bodyStats,
+    coachFileOpenedAt,
+    coachFileLastUpdatedAt,
+    unitsPref,
+    streakRemindersOn,
+    leaderboardOn,
   ]);
 
   const startEmptyWorkout = () => {
@@ -8788,7 +10583,9 @@ export default function MYGFitness() {
       exercises: [],
       workoutName: deriveWorkoutName([], now),
       startTime: now,
-      restTimerMode: "countup",
+      // restTimerMode and countdown target now live on App-level prefs
+      // (restTimerModePref / restCountdownTargetPref) so they persist
+      // across workouts. WorkoutTab and SessionBar receive them as props.
       restTimer: null,
       nameWasEdited: false,
     });
@@ -8849,7 +10646,6 @@ export default function MYGFitness() {
       exercises: newExercises,
       workoutName: deriveWorkoutName(newExercises, now),
       startTime: now,
-      restTimerMode: "countup",
       restTimer: null,
       nameWasEdited: false,
     });
@@ -9023,10 +10819,27 @@ export default function MYGFitness() {
     setAppSubScreen(null);
     setUserName("Tyler");
     setSelectedEquipment(new Set());
+    setFitnessLevel(null);
+    setTimeAway(null);
+    setRestTimerModePref("countup");
+    setRestCountdownTargetPref(90);
     setWorkoutHistory(MOCK_WORKOUT_HISTORY);
     setOnboardingComplete(false);
     setCustomExercises([]);
     setExerciseSort({ mode: "alpha", dir: "asc" });
+    // Coach's File state. Mirror the workoutHistory pattern: bring back
+    // the mock seeds so the demo flows correctly on next sign-in.
+    setPlanGoal("build_muscle");
+    setPlanDaysPerWeek(3);
+    setCoachRules(MOCK_COACH_RULES);
+    setCoachObservations(MOCK_COACH_OBSERVATIONS);
+    setProgressPRs(MOCK_PROGRESS_PRS);
+    setBodyStats(MOCK_BODY_STATS);
+    setCoachFileOpenedAt(Date.now());
+    setCoachFileLastUpdatedAt(NOW_FOR_SEED - 2 * DAY);
+    setUnitsPref("lbs");
+    setStreakRemindersOn(true);
+    setLeaderboardOn(false);
     // Reset Coach chats to a single fresh chat
     const newId = `c${Date.now()}`;
     setCoachChats([{ id: newId, createdAt: Date.now(), messages: [] }]);
@@ -9047,6 +10860,10 @@ export default function MYGFitness() {
           setOpenHistoryId={setOpenHistoryId}
           finishedSession={finishedSession}
           customExercises={customExercises}
+          restTimerMode={restTimerModePref}
+          restCountdownTarget={restCountdownTargetPref}
+          onChangeRestTimerMode={setRestTimerModePref}
+          onChangeRestCountdownTarget={setRestCountdownTargetPref}
           onStartEmpty={requestStartEmptyWorkout}
           onUpdateWorkout={updateActiveWorkout}
           onMinimize={minimizeWorkout}
@@ -9086,7 +10903,60 @@ export default function MYGFitness() {
           onDeleteCustom={deleteCustomExercise}
         />
       );
-      case "profile": return <ProfileTab onOpenEquipmentEditor={openEquipmentEditor} equipmentCount={selectedEquipment.size} onLogout={handleLogout} userName={userName} />;
+      case "profile": {
+        // ── Vitals for Coach's File landing ──
+        // sessionsCount: count of all workouts in history.
+        // streakDays: existing computeStreak helper (calendar-day consecutive).
+        // mostTrainedMuscle: highest-count primary muscle across all logged
+        //   exercises. Resolved via findExerciseByName (handles built-in +
+        //   customs). Ties broken by alpha order; falls back to "—" if empty.
+        const sessionsCount = workoutHistory.length;
+        const streakDays = computeStreak(workoutHistory);
+        const muscleCounts = {};
+        for (const w of workoutHistory) {
+          for (const ex of (w.exercises || [])) {
+            const def = findExerciseByName(ex.name, customExercises);
+            const primary = def && def.primary;
+            if (!primary) continue;
+            muscleCounts[primary] = (muscleCounts[primary] || 0) + 1;
+          }
+        }
+        let mostTrainedMuscle = "—";
+        const muscleEntries = Object.entries(muscleCounts);
+        if (muscleEntries.length > 0) {
+          muscleEntries.sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+          mostTrainedMuscle = muscleEntries[0][0];
+        }
+        return (
+          <ProfileTab
+            userName={userName}
+            planGoal={planGoal}
+            fitnessLevel={fitnessLevel}
+            timeAway={timeAway}
+            planDaysPerWeek={planDaysPerWeek}
+            equipmentCount={selectedEquipment.size}
+            coachRules={coachRules}
+            progressPRs={progressPRs}
+            coachObservations={coachObservations}
+            sessionsCount={sessionsCount}
+            streakDays={streakDays}
+            mostTrainedMuscle={mostTrainedMuscle}
+            coachFileOpenedAt={coachFileOpenedAt}
+            coachFileLastUpdatedAt={coachFileLastUpdatedAt}
+            // Sub-screen openers. Equipment routes to the existing
+            // EquipmentDetailScreen via openEquipmentEditor. Settings,
+            // Plan, Rules, Progress, Observations all route through
+            // appSubScreen state — handlers in renderAppContent mount
+            // the matching sub-screen component.
+            onOpenSettings={() => setAppSubScreen("settings")}
+            onOpenPlan={() => setAppSubScreen("plan")}
+            onOpenEquipment={openEquipmentEditor}
+            onOpenRules={() => setAppSubScreen("rules")}
+            onOpenProgress={() => setAppSubScreen("progress")}
+            onOpenObservations={() => setAppSubScreen("observations")}
+          />
+        );
+      }
       default: return <HomeTab onTabChange={setActiveTab} userName={userName} history={workoutHistory} />;
     }
   };
@@ -9105,6 +10975,87 @@ export default function MYGFitness() {
         />
       );
     }
+    if (appSubScreen === "settings") {
+      return (
+        <SettingsSubscreen
+          onBack={() => setAppSubScreen(null)}
+          unitsPref={unitsPref}
+          onChangeUnits={setUnitsPref}
+          restTimerMode={restTimerModePref}
+          onChangeRestTimerMode={setRestTimerModePref}
+          restCountdownTarget={restCountdownTargetPref}
+          onChangeRestCountdownTarget={setRestCountdownTargetPref}
+          streakRemindersOn={streakRemindersOn}
+          onChangeStreakReminders={setStreakRemindersOn}
+          leaderboardOn={leaderboardOn}
+          onChangeLeaderboard={setLeaderboardOn}
+          onLogout={handleLogout}
+          bodyStats={bodyStats}
+        />
+      );
+    }
+    if (appSubScreen === "plan") {
+      // Plan sub-screen mutates four fields. Every change commits
+      // immediately (no global save). coachFileLastUpdatedAt bumps
+      // on each change so the signed-footer recency on the landing
+      // reflects the user's most recent edit.
+      const stamp = () => setCoachFileLastUpdatedAt(Date.now());
+      return (
+        <PlanSubscreen
+          onBack={() => setAppSubScreen(null)}
+          planGoal={planGoal}
+          fitnessLevel={fitnessLevel}
+          timeAway={timeAway}
+          planDaysPerWeek={planDaysPerWeek}
+          onChangeGoal={(v) => { setPlanGoal(v); stamp(); }}
+          onChangeLevel={(v) => { setFitnessLevel(v); stamp(); }}
+          onChangeTimeAway={(v) => { setTimeAway(v); stamp(); }}
+          onChangeDaysPerWeek={(v) => { setPlanDaysPerWeek(v); stamp(); }}
+        />
+      );
+    }
+    if (appSubScreen === "rules") {
+      // Rules CTA card deep-links to Coach chat. Closing the sub-screen
+      // first and then switching tabs keeps the back-stack sane (if
+      // user navigates back from Coach later they land on the
+      // Coach's File landing, not the Rules sub-screen).
+      const openCoachChat = () => { setAppSubScreen(null); setActiveTab("coach"); };
+      return (
+        <RulesSubscreen
+          onBack={() => setAppSubScreen(null)}
+          coachRules={coachRules}
+          onDeleteRule={(id) => {
+            setCoachRules((prev) => prev.filter((r) => r.id !== id));
+            setCoachFileLastUpdatedAt(Date.now());
+          }}
+          onOpenCoachChat={openCoachChat}
+        />
+      );
+    }
+    if (appSubScreen === "progress") {
+      return (
+        <ProgressSubscreen
+          onBack={() => setAppSubScreen(null)}
+          progressPRs={progressPRs}
+        />
+      );
+    }
+    if (appSubScreen === "observations") {
+      return (
+        <ObservationsSubscreen
+          onBack={() => setAppSubScreen(null)}
+          coachObservations={coachObservations}
+          onDeleteObservation={(id) => {
+            setCoachObservations((prev) => prev.filter((o) => o.id !== id));
+            setCoachFileLastUpdatedAt(Date.now());
+          }}
+          onResetAll={() => {
+            setCoachObservations([]);
+            setCoachFileLastUpdatedAt(Date.now());
+          }}
+        />
+      );
+    }
     // SessionBar is shown whenever an active workout exists AND
     //   - the user is not on the workout tab, OR
     //   - the workout is minimized
@@ -9118,7 +11069,7 @@ export default function MYGFitness() {
     return (
       <>
         {renderTab()}
-        {showSessionBar && <SessionBar workout={activeWorkout} onTap={expandWorkoutFromBar} />}
+        {showSessionBar && <SessionBar workout={activeWorkout} restTimerMode={restTimerModePref} restCountdownTarget={restCountdownTargetPref} onTap={expandWorkoutFromBar} />}
         {!hideTabBar && <TabBar active={activeTab} onTab={setActiveTab} />}
 
         {showStartConflict && (
@@ -9195,9 +11146,33 @@ export default function MYGFitness() {
       case "goals":
         return <GoalsScreen onNext={() => goTo("level")} onBack={() => goTo("welcome")} onSkip={() => goTo("level")} />;
       case "level":
-        return <FitnessLevelScreen onNext={() => goTo("aboutyou")} onBack={() => goTo("goals")} onSkip={() => goTo("aboutyou")} />;
+        return (
+          <FitnessLevelScreen
+            value={fitnessLevel}
+            onChange={(lvl) => {
+              setFitnessLevel(lvl);
+              // Picking Beginner invalidates any previously-chosen timeAway
+              // (Beginners don't see Screen 3b). Clear so a back-and-forth
+              // between Intermediate→Beginner doesn't leave stale state.
+              if (lvl === "beginner") setTimeAway(null);
+            }}
+            onNext={() => goTo(fitnessLevel === "beginner" ? "aboutyou" : "timeaway")}
+            onBack={() => goTo("goals")}
+            onSkip={() => goTo("aboutyou")}
+          />
+        );
+      case "timeaway":
+        return (
+          <TimeAwayScreen
+            value={timeAway}
+            onChange={setTimeAway}
+            onNext={() => goTo("aboutyou")}
+            onBack={() => goTo("level")}
+            onSkip={() => goTo("aboutyou")}
+          />
+        );
       case "aboutyou":
-        return <AboutYouScreen onNext={() => goTo("days")} onBack={() => goTo("level")} onSkip={() => goTo("days")} />;
+        return <AboutYouScreen onNext={() => goTo("days")} onBack={() => goTo(fitnessLevel === "beginner" || fitnessLevel === null ? "level" : "timeaway")} onSkip={() => goTo("days")} />;
       case "days":
         return <DaysScreen onNext={() => goTo("equipment")} onBack={() => goTo("aboutyou")} onSkip={() => goTo("equipment")} />;
       case "equipment":
@@ -9258,8 +11233,62 @@ export default function MYGFitness() {
   };
 
   return (
-    <div style={{ width: "100vw", minHeight: "100vh", background: COLORS.bg }}>
+    <div style={{ width: "100vw", minHeight: "100dvh", background: COLORS.bg }}>
       <style>{`
+        /* ── iOS-native feel ────────────────────────────────────────────
+           These rules eliminate the common "this is a webapp, not a real
+           app" giveaways on iOS Safari + standalone home-screen launches. */
+
+        html, body, #root {
+          margin: 0;
+          padding: 0;
+          width: 100%;
+          height: 100%;
+          background: ${COLORS.bg};
+          overscroll-behavior: none; /* kills rubber-band bounce at edges */
+          -webkit-text-size-adjust: 100%; /* prevent iOS auto-resize of text on rotate */
+        }
+
+        /* Remove the gray flash that iOS draws on tap. Single biggest
+           "webapp" tell — native iOS apps never show this. */
+        * {
+          -webkit-tap-highlight-color: transparent;
+        }
+
+        /* Disable the long-press "Copy / Share / Lookup" menu on UI
+           elements. Inputs and textareas opt back in below. */
+        button, a, div, span, label, svg, img {
+          -webkit-touch-callout: none;
+          -webkit-user-select: none;
+          user-select: none;
+        }
+
+        /* Allow selection inside text inputs and textareas — disabling it
+           globally would break copy/paste in form fields. */
+        input, textarea {
+          -webkit-user-select: text;
+          user-select: text;
+          -webkit-touch-callout: default;
+        }
+
+        /* iOS zooms inputs on focus if font-size is < 16px. Force 16px
+           minimum on form fields to prevent that "page zooms in when I
+           tap the field" jump. */
+        input, textarea, select {
+          font-size: 16px;
+        }
+
+        /* Remove the 300ms tap delay iOS imposes on clickable elements
+           waiting for a possible double-tap-zoom. Buttons feel instant. */
+        button, a, [role="button"] {
+          touch-action: manipulation;
+        }
+
+        /* Prevent pinch-zoom on the whole app — native apps don't zoom. */
+        body {
+          touch-action: pan-x pan-y;
+        }
+
         input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 24px; height: 24px; border-radius: 50%; background: #FFD700; cursor: pointer; border: 3px solid #111111; box-shadow: 0 0 8px rgba(255,215,0,0.4); }
         input[type="range"]::-moz-range-thumb { width: 24px; height: 24px; border-radius: 50%; background: #FFD700; cursor: pointer; border: 3px solid #111111; box-shadow: 0 0 8px rgba(255,215,0,0.4); }
         @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
