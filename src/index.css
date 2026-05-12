@@ -1,0 +1,35 @@
+/* Reset defaults that break full-viewport mobile apps.
+   html and body must both fill the viewport exactly — no margins, no
+   default overflow scrolling — so that the PhoneFrame's height: 100dvh
+   resolves to the actual screen height. Without this, the body can grow
+   past the viewport and you get a gap of empty space below the TabBar. */
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  background: #111111;
+  /* Prevent iOS rubber-band bounce when scrolling reaches the top/bottom
+     of a list. The PhoneFrame is a fixed-height container, so the body
+     itself should never need to scroll. */
+  overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* The Vite-generated #root div is the React mount point. It also needs
+   to fill the viewport for PhoneFrame's 100dvh to have anything to
+   measure against. */
+#root {
+  height: 100%;
+  width: 100%;
+}
+
+/* iOS Safari auto-zooms into any input with font-size below 16px on
+   focus, and with user-scalable=no in the viewport meta it doesn't zoom
+   back out cleanly. Floor all inputs at 16px to prevent this. */
+input, textarea, select {
+  font-size: 16px;
+}
