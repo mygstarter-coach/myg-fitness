@@ -1171,18 +1171,27 @@ function formatShortDate(isoDate) {
 /* ── Shared Components ───────────────────────────────────────── */
 
 function PhoneFrame({ children }) {
-  // Real-device frame: fills the entire phone viewport, edge-to-edge.
-  // No safe-area padding at this level — applying it here shrinks the
-  // whole app uniformly and pushes everything (including the TabBar) up
-  // away from the bottom of the screen. Instead, safe-area insets are
-  // pushed down into the individual components that touch the edges:
-  //   • TabBar absorbs the bottom inset as internal padding, so its
-  //     dark background extends to the true bottom while its icons sit
-  //     above the home indicator
-  //   • Top-of-screen content (status bar area) sits below the OS chrome
-  //     because the browser already accounts for it when viewport-fit=cover
-  //     is set in the viewport meta tag
-  // 100dvh resizes correctly as the mobile URL bar shows/hides.
+  // Real-device frame. Two pieces of safe-area handling, deliberately split:
+  //
+  //   1. TOP inset goes HERE on the frame itself. In PWA mode (added to
+  //      home screen, no Safari URL bar), iOS draws our app under the
+  //      status bar, so without this padding the header collides with the
+  //      time/signal/battery glyphs. paddingTop: env(safe-area-inset-top)
+  //      pushes our content cleanly below the OS chrome.
+  //
+  //   2. BOTTOM inset does NOT go here — it lives inside TabBar instead
+  //      (as internal padding). If we put bottom padding here too, the
+  //      TabBar's dark background would stop short of the screen edge
+  //      and the area below would be the page's background color, looking
+  //      like a gap. Pushing the inset down into TabBar lets its background
+  //      extend to the true bottom while the icons themselves lift above
+  //      the home indicator.
+  //
+  //   3. LEFT/RIGHT are not currently handled because the app is portrait-
+  //      only. If we add landscape later, add symmetric padding here.
+  //
+  // 100dvh resizes correctly as the mobile URL bar shows/hides. The parent
+  // html/body must also be height-constrained — see index.css.
   return (
     <div
       style={{
@@ -1194,9 +1203,10 @@ function PhoneFrame({ children }) {
         fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
         display: "flex",
         flexDirection: "column",
+        paddingTop: "env(safe-area-inset-top)",
       }}
     >
-      <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
+      <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column", minHeight: 0 }}>
         {children}
       </div>
     </div>
@@ -1322,7 +1332,7 @@ function WelcomeScreen({ onGetStarted, onSignIn }) {
       {/* V.5 marker — temporary build indicator so we can confirm the file
           actually updated on the device after each push. Top-right corner,
           dimmed, doesn't compete with the logo. Remove before shipping. */}
-      <div style={{ position: "absolute", top: 16, right: 20, color: COLORS.textSecondary, fontSize: 11, fontWeight: 500, letterSpacing: 1, opacity: 0.7 }}>V.5</div>
+      <div style={{ position: "absolute", top: 16, right: 20, color: COLORS.textSecondary, fontSize: 11, fontWeight: 500, letterSpacing: 1, opacity: 0.7 }}>V.6</div>
       <div style={{ position: "absolute", top: "40%", textAlign: "center", opacity: logoV ? 1 : 0, transform: logoV ? "translateY(-50%) scale(1)" : "translateY(-50%) scale(1.08)", transition: "all 0.9s cubic-bezier(0.22,1,0.36,1)" }}>
         <h1 style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 92, fontWeight: 700, color: COLORS.gold, margin: 0, letterSpacing: 8 }}>MYG</h1>
       </div>
