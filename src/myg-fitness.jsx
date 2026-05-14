@@ -1177,6 +1177,12 @@ function PhoneFrame({ children }) {
   // a real iPhone it produced a phone-in-a-phone effect. Now it just
   // provides a flex column container; the surrounding outer wrapper sets
   // the height, and the existing screen flex layout fills it correctly.
+  //
+  // paddingTop: env(safe-area-inset-top) — in PWA mode (saved to home
+  // screen), iOS draws the app under the status bar. Without this, the
+  // first row of every screen collides with the iOS clock and battery
+  // icons. The bottom safe-area is handled inside TabBar instead, so
+  // the TabBar's background can extend to the true bottom edge.
   return (
     <div
       style={{
@@ -1188,6 +1194,7 @@ function PhoneFrame({ children }) {
         fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
         display: "flex",
         flexDirection: "column",
+        paddingTop: "env(safe-area-inset-top)",
       }}
     >
       <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
@@ -1315,7 +1322,7 @@ function WelcomeScreen({ onGetStarted, onSignIn }) {
     <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "0 32px", position: "relative" }}>
       {/* V.8 marker — temporary build indicator. Bump with each push to
           verify cache isn't serving stale code. Remove before shipping. */}
-      <div style={{ position: "absolute", top: 16, right: 20, color: COLORS.textSecondary, fontSize: 11, fontWeight: 500, letterSpacing: 1, opacity: 0.7 }}>V.8</div>
+      <div style={{ position: "absolute", top: 16, right: 20, color: COLORS.textSecondary, fontSize: 11, fontWeight: 500, letterSpacing: 1, opacity: 0.7 }}>V.9</div>
       <div style={{ position: "absolute", top: "40%", textAlign: "center", opacity: logoV ? 1 : 0, transform: logoV ? "translateY(-50%) scale(1)" : "translateY(-50%) scale(1.08)", transition: "all 0.9s cubic-bezier(0.22,1,0.36,1)" }}>
         <h1 style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 92, fontWeight: 700, color: COLORS.gold, margin: 0, letterSpacing: 8 }}>MYG</h1>
       </div>
@@ -11588,7 +11595,7 @@ function TabBar({ active, onTab }) {
     { id: "profile", label: "Profile", icon: (c) => <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="1.8"><circle cx="12" cy="8" r="4" /><path d="M4 20c0-4 4-6 8-6s8 2 8 6" /></svg> },
   ];
   return (
-    <div style={{ display: "flex", justifyContent: "space-around", padding: "10px 0 2px", borderTop: `1px solid ${COLORS.border}`, background: COLORS.bg, flexShrink: 0 }}>
+    <div style={{ display: "flex", justifyContent: "space-around", padding: "10px 0 2px", paddingBottom: "calc(2px + env(safe-area-inset-bottom))", borderTop: `1px solid ${COLORS.border}`, background: COLORS.bg, flexShrink: 0 }}>
       {tabs.map((t) => { const a = active === t.id; const c = a ? COLORS.gold : COLORS.inactive; return <button key={t.id} onClick={() => onTab(t.id)} style={{ background: "none", border: "none", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 4, padding: "4px 8px" }}>{t.icon(c)}<span style={{ fontSize: 10, color: c, fontWeight: a ? 600 : 400 }}>{t.label}</span></button>; })}
     </div>
   );
