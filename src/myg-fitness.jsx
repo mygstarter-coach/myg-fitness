@@ -187,7 +187,7 @@ function loadSnapshot() {
       coachRules: Array.isArray(parsed.coachRules) ? parsed.coachRules : null,
       coachObservations: Array.isArray(parsed.coachObservations) ? parsed.coachObservations : null,
       progressPRs: Array.isArray(parsed.progressPRs) ? parsed.progressPRs : null,
-      bodyStats: parsed.bodyStats && typeof parsed.bodyStats === "object" ? parsed.bodyStats : null,
+      bodyStats: parsed.bodyStats && typeof parsed.bodyStats === "object" ? migrateBodyStats(parsed.bodyStats) : null,
       coachFileOpenedAt: typeof parsed.coachFileOpenedAt === "number" ? parsed.coachFileOpenedAt : null,
       coachFileLastUpdatedAt: typeof parsed.coachFileLastUpdatedAt === "number" ? parsed.coachFileLastUpdatedAt : null,
       unitsPref: parsed.unitsPref === "kg" ? "kg" : "lbs",
@@ -1171,34 +1171,27 @@ function formatShortDate(isoDate) {
 /* ── Shared Components ───────────────────────────────────────── */
 
 function PhoneFrame({ children }) {
+  // Stripped-down passthrough wrapper for real-device rendering.
+  // Previously this rendered a fake 375×812 phone bezel with a fake "9:41"
+  // status bar and home indicator — fine for the artifact preview, but on
+  // a real iPhone it produced a phone-in-a-phone effect. Now it just
+  // provides a flex column container; the surrounding outer wrapper sets
+  // the height, and the existing screen flex layout fills it correctly.
   return (
     <div
       style={{
-        width: 375, height: 812, borderRadius: 44, background: COLORS.bg,
-        position: "relative", overflow: "hidden",
-        boxShadow: "0 25px 80px rgba(0,0,0,0.6), 0 0 0 2px #333",
+        width: "100%",
+        height: "100%",
+        background: COLORS.bg,
+        position: "relative",
+        overflow: "hidden",
         fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-        display: "flex", flexDirection: "column",
+        display: "flex",
+        flexDirection: "column",
       }}
     >
-      <div
-        style={{
-          height: 50, display: "flex", alignItems: "center", justifyContent: "space-between",
-          padding: "0 28px", fontSize: 14, fontWeight: 600, color: COLORS.text, flexShrink: 0,
-        }}
-      >
-        <span>9:41</span>
-        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-          <svg width="17" height="12" viewBox="0 0 17 12" fill="white"><rect x="0" y="3" width="3" height="9" rx="1" /><rect x="4.5" y="2" width="3" height="10" rx="1" /><rect x="9" y="0" width="3" height="12" rx="1" /><rect x="13.5" y="1" width="3" height="11" rx="1" fillOpacity="0.3" /></svg>
-          <svg width="16" height="12" viewBox="0 0 16 12" fill="white"><path d="M8 2.4C10.6 2.4 13 3.5 14.7 5.3L16 4C14 1.9 11.1 .5 8 .5S2 1.9 0 4L1.3 5.3C3 3.5 5.4 2.4 8 2.4z" fillOpacity="0.3" /><path d="M8 5.4C9.8 5.4 11.4 6.1 12.6 7.3L13.9 6C12.4 4.5 10.3 3.5 8 3.5S3.6 4.5 2.1 6L3.4 7.3C4.6 6.1 6.2 5.4 8 5.4z" fillOpacity="0.6" /><path d="M8 8.4C9 8.4 9.9 8.8 10.5 9.5L8 12 5.5 9.5C6.1 8.8 7 8.4 8 8.4z" /></svg>
-          <svg width="27" height="13" viewBox="0 0 27 13" fill="white"><rect x="0" y="0.5" width="23" height="12" rx="3.5" stroke="white" strokeWidth="1" fill="none" /><rect x="24.5" y="4" width="2" height="5" rx="1" fillOpacity="0.4" /><rect x="1.5" y="2" width="18" height="9" rx="2" fill="white" /></svg>
-        </div>
-      </div>
       <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
         {children}
-      </div>
-      <div style={{ height: 34, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-        <div style={{ width: 134, height: 5, borderRadius: 3, background: "rgba(255,255,255,0.2)" }} />
       </div>
     </div>
   );
@@ -1320,6 +1313,9 @@ function WelcomeScreen({ onGetStarted, onSignIn }) {
   useEffect(() => { setTimeout(() => setLogoV(true), 200); setTimeout(() => setContentV(true), 900); }, []);
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "0 32px", position: "relative" }}>
+      {/* V.8 marker — temporary build indicator. Bump with each push to
+          verify cache isn't serving stale code. Remove before shipping. */}
+      <div style={{ position: "absolute", top: 16, right: 20, color: COLORS.textSecondary, fontSize: 11, fontWeight: 500, letterSpacing: 1, opacity: 0.7 }}>V.8</div>
       <div style={{ position: "absolute", top: "40%", textAlign: "center", opacity: logoV ? 1 : 0, transform: logoV ? "translateY(-50%) scale(1)" : "translateY(-50%) scale(1.08)", transition: "all 0.9s cubic-bezier(0.22,1,0.36,1)" }}>
         <h1 style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 92, fontWeight: 700, color: COLORS.gold, margin: 0, letterSpacing: 8 }}>MYG</h1>
       </div>
@@ -1448,13 +1444,20 @@ function TimeAwayScreen({ value, onChange, onNext, onBack, onSkip }) {
   );
 }
 
-function AboutYouScreen({ onNext, onBack, onSkip }) {
-  const [gender, setGender] = useState(null);
-  const [ageRange, setAgeRange] = useState(null);
+function AboutYouScreen({ initialGender, initialAgeRange, onNext, onBack, onSkip }) {
+  // AboutYouScreen was previously local-only — gender and ageRange were
+  // collected into local state and discarded on unmount. As of the Step 1
+  // (this session) schema migration, both fields are now the source of
+  // truth for bodyStats.gender and bodyStats.ageRange on Coach's File.
+  // onNext receives the picked values; onSkip fires onNext with nulls
+  // (skip is an explicit "don't capture" signal, not a "use current local
+  // state silently" — keeps the skip behavior auditable).
+  const [gender, setGender] = useState(initialGender || null);
+  const [ageRange, setAgeRange] = useState(initialAgeRange || null);
   const genders = ["Male", "Female", "Prefer not to say"];
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
-      <TopBar onBack={onBack} onSkip={onSkip} />
+      <TopBar onBack={onBack} onSkip={() => onSkip({ gender: null, ageRange: null })} />
       <div style={{ flex: 1, minHeight: 0, padding: "0 24px", overflowY: "auto", WebkitOverflowScrolling: "touch" }}>
         <h2 style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 28, color: COLORS.text, margin: "12px 0 8px", fontWeight: 400 }}>A bit about you</h2>
         <p style={{ color: COLORS.textSecondary, fontSize: 15, margin: "0 0 28px" }}>Helps your Coach tailor recommendations.</p>
@@ -1472,7 +1475,7 @@ function AboutYouScreen({ onNext, onBack, onSkip }) {
         <div style={{ height: 16 }} />
       </div>
       <div style={{ padding: "12px 24px 16px", flexShrink: 0, borderTop: `1px solid ${COLORS.border}`, background: COLORS.bg }}>
-        <GoldButton onClick={onNext}>Continue</GoldButton>
+        <GoldButton onClick={() => onNext({ gender, ageRange })}>Continue</GoldButton>
       </div>
     </div>
   );
@@ -1886,107 +1889,424 @@ function CompletionScreen({ onEnter }) {
 
 /* ── MAIN TABS ───────────────────────────────────────────────── */
 
-function HomeTab({ onTabChange, userName, history }) {
-  // Recent workouts: pull from the real history (most recent 3) rather
-  // than a hardcoded list. Falls back to a friendly empty state below
-  // if the user has no workouts yet.
-  const recent = (history || []).slice(0, 3);
+/* HOME_NOTES_V1 — hardcoded NOTES feed for v1 Home screen. Mixed
+   Coach tips + app updates; rendered identically (no visual kind
+   distinction in v1). Replace with a real content pipeline later;
+   the array shape ({id, text}) is what HomeTab consumes, so the
+   replacement is a drop-in swap from this constant to a fetched
+   value. Empty array → NOTES section hides entirely. */
+const HOME_NOTES_V1 = [
+  { id: "tip-log-between-sets", text: "Log between sets when you can — rest data is only useful when it's real." },
+  { id: "update-v14-swap", text: "New in v1.4 — swipe to swap exercises mid-workout." },
+];
 
-  // Streak derivation — Bible §7.1. Count consecutive days (anchored
-  // to the most recent workout) on which at least one workout was
-  // logged. A session logged "today" extends the streak; a gap of
-  // more than one day breaks it. Today counts even if no workout
-  // logged yet (most recent workout = yesterday is still a 1-day
-  // streak that the user can extend by training today).
-  const streak = computeStreak(history);
+/* ── Home Tab ─────────────────────────────────────────────────────
+   Session 44 rebuild. Direction #4 from the heavy-mockup explore:
+   vitals-first dashboard built on Coach's File row grammar. Replaces
+   the prior gamification dashboard (Streak / XP / Workouts cards +
+   recent workouts list). Locked spec:
 
-  // Total workouts — simple count from history.
-  const totalWorkouts = (history || []).length;
+     - Header: greeting + avatar. No level badge, no date line.
+     - Coach CTA at top — three states:
+         A) Mode 0 carry-forward exists → "<session name> ready when
+            you are" / "Tap to start"; routes to Workout tab and
+            starts the prepared session.
+         B) No carry-forward → "Coach's Pick" / "Generate today's
+            workout"; routes to Coach tab with a pre-filled draft
+            (Claude not yet wired — D-053; this is the bridge
+            behavior).
+         C) Workout already in progress → "Resume your workout";
+            routes back into the active logger. Standard pattern,
+            already handled elsewhere in the app; CTA defers to A or
+            B if no workout is active.
+     - Below the CTA: three sections in Coach's File row grammar
+       (15px gold sectionHead caps, #3a2e00 underline rule, #2a2a2a
+       section-bottom hairline, Georgia 15px row labels, 12px sans
+       row values; rowValUp gold for "earned" values).
+         THIS WEEK  — Sessions, Volume, PRs (rolling Mon-anchored)
+         MOMENTUM   — Streak, Most trained, Last session
+         NOTES      — Coach tips + app updates mixed feed (paragraph
+                      rows, no value column; hidden if empty)
+     - Rows are display-only in v1. Tappability is a future pass
+       (some have natural destinations, some don't; consistency
+       deferred per Session 44 decision).
+     - Cold-start (no workouts logged): sections hide, single italic
+       Georgia "Log your first workout to see your training stats
+       here." line replaces them. CTA stays — State B can fire on
+       day 1 (Claude doesn't need history to generate from
+       onboarding data).
+
+   Props the App now passes (computed in the renderTab case "home"
+   block, mirroring how ProfileTab's vitals are computed):
+     - userName, history (already passed before)
+     - customExercises (for findExerciseByName during muscle-count)
+     - nextSession (Mode 0 carry-forward; null until that pipeline
+       is wired — Bible §10 / D-039)
+     - notes (array of {id, text}; hardcoded mock for v1, content
+       pipeline lands later)
+
+   Why Coach's File grammar on Home: Session 35–43 stabilized that
+   row pattern across PLAN / RULES / OBSERVATIONS / BODY STATS. Home
+   was the only main surface still using its own visual language
+   (gold-bordered stat cards + outlined recent-workout cards). Unify-
+   ing on the same grammar means one type system across the app,
+   which is what Session 36 said the typography work was for. */
+function HomeTab({ onTabChange, userName, history, customExercises, nextSession, notes }) {
+  const hist = history || [];
+  const hasWorkouts = hist.length > 0;
 
   const initial = (userName || "").trim().charAt(0).toUpperCase() || "?";
 
+  // ── Coach CTA copy — picks State A or State B ──
+  // State A wins if a prepared session exists; State B is the
+  // Coach's Pick fallback that routes to the Coach tab with a draft
+  // (Claude isn't wired yet — D-053 / Session 44 locked Option 2).
+  // Wiring: App passes nextSession=null today; once Mode 0 carry-
+  // forward exists, App will pass {name, sessionId} here.
+  const ctaState = nextSession ? "A" : "B";
+  const ctaTitle = ctaState === "A"
+    ? `${nextSession.name} ready when you are`
+    : "Coach's Pick";
+  const ctaSub = ctaState === "A"
+    ? "Tap to start"
+    : "Generate today's workout";
+  const onCtaTap = () => {
+    if (ctaState === "A") {
+      // Future: dispatch "start prepared session" into Workout tab.
+      // For now, just route to Workout tab — when nextSession is
+      // null this branch can't fire, so this stays safe even though
+      // the start handoff isn't wired.
+      onTabChange("workout");
+    } else {
+      // State B: Coach's Pick. Route to Coach tab. Pre-filling the
+      // draft message is a Coach-tab concern (separate task); this
+      // CTA's job ends at routing.
+      onTabChange("coach");
+    }
+  };
+
+  // ── Vitals derivation ──
+  // All computed inline from history to keep HomeTab a pure render
+  // of what the App already has. If any of these grow expensive we
+  // can lift them into App + memoize, but for ≤1000 sessions the
+  // per-render cost is negligible.
+  const sessionsThisWeek = countSessionsThisWeek(hist);
+  const volumeThisWeek = sumVolumeThisWeek(hist);
+  const prsThisWeek = countPRsThisWeek(hist);
+  const streak = computeStreak(hist);
+  const mostTrained = computeMostTrainedMuscle(hist, customExercises || []);
+  const lastSessionLabel = hist[0] ? formatRelativeDate(hist[0].date) : "—";
+
+  // ── Shared Coach's File row grammar ──
+  // Mirrors the TYPE / rowLineStyle / sectionBlockStyle / section
+  // HeadBtnStyle in ProfileTab. Duplicated here rather than lifted
+  // to module scope because the rest of the app is also using
+  // local TYPE objects per-component — keeps the locality of the
+  // typography decision and avoids a premature shared-styles file.
+  const TYPE = {
+    body: { fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 15, color: "#e8e8e8", lineHeight: 1.5 },
+    sectionHead: { fontFamily: "-apple-system, system-ui, sans-serif", fontSize: 15, color: COLORS.gold, fontWeight: 700, letterSpacing: 2, textTransform: "uppercase" },
+    sectionRule: { border: "none", height: 1, background: "#3a2e00", margin: 0, width: "100%" },
+    rowVal: { fontSize: 12, color: "#aaa", whiteSpace: "nowrap" },
+    rowValUp: { fontSize: 12, color: COLORS.gold, whiteSpace: "nowrap" },
+    noteBody: { fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 14, color: "#ccc", lineHeight: 1.5 },
+    emptyNote: { fontFamily: "Georgia, 'Times New Roman', serif", fontStyle: "italic", color: "#666", fontSize: 14, lineHeight: 1.6 },
+  };
+  const rowLineStyle = {
+    padding: "10px 0",
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "baseline",
+    gap: 14,
+  };
+  // isLast drops the bottom hairline on the final section. NOTES is
+  // last when present; MOMENTUM is last when NOTES is empty/hidden.
+  const sectionBlockStyle = (isLast) => ({
+    marginTop: 22,
+    paddingBottom: 6,
+    borderBottom: isLast ? "none" : "1px solid #2a2a2a",
+  });
+  const sectionHeadStyle = {
+    display: "flex", flexDirection: "column", gap: 6, marginBottom: 12,
+  };
+
+  const visibleNotes = notes || [];
+  const showNotes = visibleNotes.length > 0;
+
+  // ── THIS WEEK rows ──
+  // PRs uses rowValUp (gold) when > 0 — it's an "earned" value, same
+  // convention Coach's File uses for highlighted values like the
+  // PR-or-NEW tags in BENCHMARKS.
+  const thisWeekRows = [
+    { label: "Sessions", value: `${sessionsThisWeek} of ${planDaysForWeek()}`, up: false },
+    { label: "Volume", value: `${formatVolumeLb(volumeThisWeek)} lb`, up: false },
+    { label: "PRs", value: prsThisWeek > 0 ? `${prsThisWeek} new` : "0", up: prsThisWeek > 0 },
+  ];
+
+  // ── MOMENTUM rows ──
+  // Streak uses rowValUp (gold) when > 0 — same convention. Locked
+  // Session 44: streak earns a row on Home even though it was
+  // dropped from Coach's File Vitals (Session 35). Different
+  // audience — Coach's File is for Coach, Home is for the user.
+  const momentumRows = [
+    { label: "Streak", value: streak > 0 ? `${streak} ${streak === 1 ? "day" : "days"}` : "—", up: streak > 0 },
+    { label: "Most trained", value: mostTrained || "—", up: false },
+    { label: "Last session", value: lastSessionLabel, up: false },
+  ];
+
   return (
     <div style={{ flex: 1, padding: "20px 24px", overflowY: "auto" }}>
+
+      {/* Header row — greeting + avatar. Matches ProfileTab header
+          shape (no level badge, no date subline). */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <h2 style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 22, color: COLORS.text, margin: "0 0 2px", fontWeight: 400 }}>Good morning, {userName}</h2>
-          <p style={{ color: COLORS.textSecondary, fontSize: 13, margin: 0 }}>Level 2 · Grinder</p>
-        </div>
-
-        {/* Corner streak pill — subtle, only visible when streak > 0.
-            Bible §7.1: "quiet motivator — never intrusive." */}
-        {streak > 0 && (
-          <div style={{
-            display: "flex", alignItems: "center", gap: 4,
-            padding: "4px 10px", borderRadius: 12,
-            background: "rgba(255,215,0,0.08)",
-            border: `1px solid rgba(255,215,0,0.2)`,
-            marginRight: 10, flexShrink: 0,
-          }}>
-            <span style={{ fontSize: 13 }}>🔥</span>
-            <span style={{ color: COLORS.gold, fontSize: 13, fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>{streak}</span>
-          </div>
-        )}
-
+        <h2 style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 22, color: COLORS.text, margin: 0, fontWeight: 400 }}>Hey, {userName}</h2>
         <div style={{ width: 40, height: 40, borderRadius: 20, background: COLORS.card, border: `2px solid ${COLORS.gold}`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
           <span style={{ color: COLORS.gold, fontFamily: "Georgia, 'Times New Roman', serif", fontWeight: 700, fontSize: 16 }}>{initial}</span>
         </div>
       </div>
-      <button onClick={() => onTabChange("coach")} style={{ width: "100%", padding: 20, background: COLORS.goldHighlight, border: `1.5px solid ${COLORS.gold}`, borderRadius: 12, cursor: "pointer", textAlign: "left", marginBottom: 16 }}>
+
+      {/* Coach CTA — gold-bordered card with C monogram + title +
+          subtitle + chevron. CoachMonogram is the same component
+          Coach's File uses for its header monogram, so the visual
+          link between this CTA and Coach as an identity is
+          deliberate. */}
+      <button
+        onClick={onCtaTap}
+        style={{
+          width: "100%", padding: 20,
+          background: COLORS.goldHighlight,
+          border: `1.5px solid ${COLORS.gold}`,
+          borderRadius: 12,
+          cursor: "pointer", textAlign: "left",
+          display: "block",
+        }}
+      >
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <div style={{ width: 40, height: 40, borderRadius: 20, background: COLORS.gold, display: "flex", alignItems: "center", justifyContent: "center" }}>
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={COLORS.bg} strokeWidth="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z" /></svg>
+          <CoachMonogram size={40} />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ color: COLORS.gold, fontSize: 16, fontWeight: 600, marginBottom: 2 }}>{ctaTitle}</div>
+            <div style={{ color: COLORS.textSecondary, fontSize: 13 }}>{ctaSub}</div>
           </div>
-          <div>
-            <div style={{ color: COLORS.gold, fontSize: 16, fontWeight: 600, marginBottom: 2 }}>Chat with Coach AI</div>
-            <div style={{ color: COLORS.textSecondary, fontSize: 13 }}>Get a personalized workout or ask anything</div>
-          </div>
+          <span style={{ color: COLORS.gold, fontSize: 20, lineHeight: 1, flexShrink: 0 }}>›</span>
         </div>
       </button>
-      <div style={{ display: "flex", gap: 10, marginBottom: 16 }}>
-        {[
-          { l: "Streak", v: String(streak), u: streak === 1 ? "day" : "days", c: COLORS.gold },
-          { l: "XP", v: "750", u: "/ 1,500", c: COLORS.gold },
-          { l: "Workouts", v: String(totalWorkouts), u: "total", c: COLORS.text },
-        ].map((s, i) => (
-          <div key={i} style={{ flex: 1, background: COLORS.card, borderRadius: 10, padding: 16, border: `1px solid ${COLORS.border}` }}>
-            <div style={{ color: COLORS.textSecondary, fontSize: 11, marginBottom: 4, textTransform: "uppercase", letterSpacing: 0.5 }}>{s.l}</div>
-            <div style={{ display: "flex", alignItems: "baseline", gap: 4 }}>
-              <span style={{ color: s.c, fontSize: 28, fontFamily: "Georgia, 'Times New Roman', serif", fontWeight: 700 }}>{s.v}</span>
-              <span style={{ color: COLORS.textSecondary, fontSize: 12 }}>{s.u}</span>
-            </div>
-          </div>
-        ))}
-      </div>
-      <p style={{ color: COLORS.textSecondary, fontSize: 12, margin: "0 0 10px", textTransform: "uppercase", letterSpacing: 1, fontWeight: 500 }}>Recent Workouts</p>
-      {recent.length === 0 ? (
-        <div style={{ background: COLORS.card, borderRadius: 10, padding: 20, border: `1px solid ${COLORS.border}`, textAlign: "center" }}>
-          <div style={{ color: COLORS.textSecondary, fontSize: 13, fontStyle: "italic" }}>
-            No workouts yet. Log one to start your streak.
-          </div>
+
+      {!hasWorkouts ? (
+        /* ── Cold-start ── Sections hidden until first workout
+            logged. Single italic Georgia line invites the user to
+            train without nagging — same emptyNote style Coach's
+            File uses for empty RULES / OBSERVATIONS. */
+        <div style={{ ...TYPE.emptyNote, padding: "32px 4px", textAlign: "center" }}>
+          Log your first workout to see your training stats here.
         </div>
       ) : (
-        recent.map((w, i) => {
-          // Build a muscle-group summary from the session's exercises.
-          const groups = [...new Set(
-            (w.exercises || []).map((ex) => {
-              const lib = EXERCISE_LIBRARY.find((x) => x.name === ex.name);
-              return lib ? lib.primary : null;
-            }).filter(Boolean)
-          )].slice(0, 3).join(", ");
-          return (
-            <div key={w.id || i} style={{ background: COLORS.card, borderRadius: 10, padding: 16, marginBottom: 8, border: `1px solid ${COLORS.border}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <div>
-                <div style={{ color: COLORS.text, fontSize: 15, fontWeight: 500, marginBottom: 2 }}>{w.name}</div>
-                <div style={{ color: COLORS.textSecondary, fontSize: 12 }}>{groups || "—"}</div>
-              </div>
-              <span style={{ color: COLORS.textSecondary, fontSize: 12 }}>{formatRelativeDate(w.date)}</span>
+        <>
+          {/* ── THIS WEEK ── */}
+          <div style={sectionBlockStyle(false)}>
+            <div style={sectionHeadStyle}>
+              <span style={TYPE.sectionHead}>THIS WEEK</span>
+              <hr style={TYPE.sectionRule} />
             </div>
-          );
-        })
+            {thisWeekRows.map((r) => (
+              <div key={r.label} style={rowLineStyle}>
+                <span style={{ ...TYPE.body, flex: 1 }}>{r.label}</span>
+                <span style={r.up ? TYPE.rowValUp : TYPE.rowVal}>{r.value}</span>
+              </div>
+            ))}
+          </div>
+
+          {/* ── MOMENTUM ── */}
+          <div style={sectionBlockStyle(!showNotes)}>
+            <div style={sectionHeadStyle}>
+              <span style={TYPE.sectionHead}>MOMENTUM</span>
+              <hr style={TYPE.sectionRule} />
+            </div>
+            {momentumRows.map((r) => (
+              <div key={r.label} style={rowLineStyle}>
+                <span style={{ ...TYPE.body, flex: 1 }}>{r.label}</span>
+                <span style={r.up ? TYPE.rowValUp : TYPE.rowVal}>{r.value}</span>
+              </div>
+            ))}
+          </div>
+
+          {/* ── NOTES ── Mixed Coach-tip / app-update feed. Hidden
+              entirely when empty. v1 ships with a hardcoded array
+              from App; content pipeline is later. Note kind not
+              visually distinguished — tips and updates render as
+              identical Georgia paragraphs. Per-note hairline
+              between, no hairline above the first or after the
+              last (the section bottom hairline handles the latter
+              when not the last section). */}
+          {showNotes && (
+            <div style={sectionBlockStyle(true)}>
+              <div style={sectionHeadStyle}>
+                <span style={TYPE.sectionHead}>NOTES</span>
+                <hr style={TYPE.sectionRule} />
+              </div>
+              {visibleNotes.map((n, i) => (
+                <div
+                  key={n.id || i}
+                  style={{
+                    padding: "12px 0",
+                    borderTop: i === 0 ? "none" : "1px solid #2a2a2a",
+                    ...TYPE.noteBody,
+                  }}
+                >
+                  {n.text}
+                </div>
+              ))}
+            </div>
+          )}
+        </>
       )}
     </div>
   );
+}
+
+/* ── Home vitals helpers ──────────────────────────────────────────
+   Pulled out of HomeTab so the component body stays readable. All
+   are pure functions over history; safe to call on empty arrays.
+
+   Week boundary: Monday-anchored, local time. Standard fitness-app
+   convention (matches how Strong / Hevy define "this week"). Sunday
+   sessions belong to the week that ended that day.
+
+   Date strings in history are "YYYY-MM-DD" (toISODate output); the
+   per-day comparison uses string equality on those, no Date math
+   inside the loop. */
+function mondayOfThisWeek() {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  // getDay(): 0 = Sun, 1 = Mon, ... 6 = Sat. We want Monday as the
+  // anchor. Shift: Sun → back 6 days; Mon → 0; Tue → 1; etc.
+  const dow = d.getDay();
+  const shift = dow === 0 ? 6 : dow - 1;
+  d.setDate(d.getDate() - shift);
+  return d;
+}
+
+function countSessionsThisWeek(history) {
+  if (!history || history.length === 0) return 0;
+  const monday = mondayOfThisWeek();
+  const mondayISO = toISODate(monday);
+  // Count workouts with date >= mondayISO. String comparison on
+  // YYYY-MM-DD is correct ordering, so this is safe.
+  return history.filter((w) => (w.date || "") >= mondayISO).length;
+}
+
+function sumVolumeThisWeek(history) {
+  if (!history || history.length === 0) return 0;
+  const monday = mondayOfThisWeek();
+  const mondayISO = toISODate(monday);
+  let total = 0;
+  for (const w of history) {
+    if ((w.date || "") < mondayISO) continue;
+    for (const ex of (w.exercises || [])) {
+      for (const s of (ex.sets || [])) {
+        // Only count completed sets that have both weight and reps.
+        // Warmup sets count toward volume (Strong-app convention) —
+        // a deliberate decision that may be revisited if dogfooding
+        // surfaces a complaint. Today: volume is "lb moved" regard-
+        // less of set type.
+        const w_lb = Number(s.weight);
+        const reps = Number(s.reps);
+        if (!s.completed) continue;
+        if (!Number.isFinite(w_lb) || !Number.isFinite(reps)) continue;
+        total += w_lb * reps;
+      }
+    }
+  }
+  return total;
+}
+
+function countPRsThisWeek(history) {
+  // PR detection: a set is a PR if its weight×reps tuple beats every
+  // prior set of the same exercise across all earlier history. We
+  // walk history in chronological order, maintaining a per-exercise
+  // running max of e1RM. A set this week that bumps the e1RM counts
+  // as one PR (the heaviest of multiple this-week PRs on the same
+  // lift still counts as one — same convention as Strong).
+  //
+  // e1RM via Epley: w * (1 + reps/30). Stable enough for PR detection
+  // even though it's not a true 1RM. Switching to a different formula
+  // (Brzycki, Lombardi) is a one-line change here.
+  if (!history || history.length === 0) return 0;
+  const monday = mondayOfThisWeek();
+  const mondayISO = toISODate(monday);
+  // Sort ascending by date so we can walk chronologically. history
+  // is stored most-recent-first elsewhere, so we don't mutate it.
+  const chrono = [...history].sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+  const maxByEx = new Map();
+  const prExercisesThisWeek = new Set();
+  for (const w of chrono) {
+    const isThisWeek = (w.date || "") >= mondayISO;
+    for (const ex of (w.exercises || [])) {
+      const name = ex.name;
+      if (!name) continue;
+      for (const s of (ex.sets || [])) {
+        if (!s.completed) continue;
+        const w_lb = Number(s.weight);
+        const reps = Number(s.reps);
+        if (!Number.isFinite(w_lb) || !Number.isFinite(reps) || w_lb <= 0 || reps <= 0) continue;
+        const e1 = w_lb * (1 + reps / 30);
+        const prior = maxByEx.get(name) || 0;
+        if (e1 > prior) {
+          maxByEx.set(name, e1);
+          if (isThisWeek) prExercisesThisWeek.add(name);
+        }
+      }
+    }
+  }
+  return prExercisesThisWeek.size;
+}
+
+function computeMostTrainedMuscle(history, customExercises) {
+  // Lookback window: last 30 days. Bigger than "this week" because
+  // training emphasis is something you see over a mesocycle, not a
+  // week. Falls through to all-time if 30-day window is empty.
+  if (!history || history.length === 0) return null;
+  const thirtyAgo = new Date();
+  thirtyAgo.setHours(0, 0, 0, 0);
+  thirtyAgo.setDate(thirtyAgo.getDate() - 30);
+  const cutoffISO = toISODate(thirtyAgo);
+
+  const tally = (filterFn) => {
+    const counts = {};
+    for (const w of history) {
+      if (filterFn && !filterFn(w)) continue;
+      for (const ex of (w.exercises || [])) {
+        const def = findExerciseByName(ex.name, customExercises);
+        const primary = def && def.primary;
+        if (!primary) continue;
+        counts[primary] = (counts[primary] || 0) + 1;
+      }
+    }
+    const entries = Object.entries(counts);
+    if (entries.length === 0) return null;
+    entries.sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+    return entries[0][0];
+  };
+
+  return tally((w) => (w.date || "") >= cutoffISO) || tally(null);
+}
+
+function formatVolumeLb(n) {
+  // 38,240 lb reads cleaner than 38240 lb on a tight row. Under 1000
+  // we keep the bare number; above we use thousands separators. No
+  // unit conversion here — that's the units-pref concern and Volume
+  // doesn't go through the same display layer as bodyweight yet.
+  const v = Math.round(Number(n) || 0);
+  if (v < 1000) return String(v);
+  return v.toLocaleString("en-US");
+}
+
+function planDaysForWeek() {
+  // Stub: when planDaysPerWeek is threaded into HomeTab, return that
+  // value instead. Until then, "Sessions · 4 of 6" reads sensibly
+  // for most users; refining to the user's actual plan is a one-line
+  // change once the prop comes through. Tracked as a follow-up.
+  return 6;
 }
 
 // Consecutive-day streak walking backward from the most recent workout.
@@ -2883,7 +3203,28 @@ const MOCK_WORKOUT_HISTORY = [
    - rule: { id, text, createdAt (epoch ms) }
    - observation: { id, text, createdAt (epoch ms) }
    - progressPR: { id, exerciseName, value (display string), isPR, isNew, achievedAt (epoch ms) }
-   - bodyStats: { heightIn (number), weightLb (number), ageYears (number), gender ("M"|"F"|"X") }
+   - bodyStats: {
+       heightIn (number | null),
+       // weightLog (this session): array of daily weigh-in entries.
+       //   Schema: [{ id (string), lb (number), loggedAt (epoch ms) }, ...]
+       //   Sorted oldest→newest internally for chart consumption; the
+       //   "current weight" displayed in the header / Settings is the
+       //   most recent entry's lb (helpers in getCurrentWeightLb /
+       //   getLastWeightLogAt below). One entry per calendar day —
+       //   logging the same day overwrites the existing entry.
+       weightLog (array),
+       // Optional goal target — single number, units lb. Direction
+       // declares which way the target is from the user's perspective
+       // (gain / lose / maintain). Chart draws a horizontal target line
+       // and shows "X lb to go." Goal is independent of planGoal (user
+       // sets direction directly), per Session 42 lock.
+       weightGoalTarget (number | null),
+       weightGoalDirection (string | null, "lose" | "gain" | "maintain"),
+       ageRange (string | null, "18–24" | "25–34" | "35–44" | "45–54" | "55+") — set in onboarding,
+       ageYears (number | null) — optional, set later in Body Stats sub-screen if user wants exact,
+       gender (string | null, "Male" | "Female" | "Prefer not to say") — set in onboarding
+     }
+   - weightLogEntry: { id (string), lb (number), loggedAt (epoch ms) }
 
    All createdAt / achievedAt values are computed at module load relative
    to "now" so they read as "12D", "22D", etc. on first run. The signed-
@@ -2923,7 +3264,38 @@ const MOCK_PROGRESS_PRS = [
   { id: "p8", exerciseName: "Bulgarian Split Squat", value: "155 × 8", isPR: false, isNew: true, achievedAt: NOW_FOR_SEED - 45 * DAY },
 ];
 
-const MOCK_BODY_STATS = { heightIn: 70, weightLb: 178, ageYears: 28, gender: "M" };
+// Mock weight log generator. Produces ~30 days of weigh-ins trending
+// slightly downward from a baseline, with realistic noise so the chart
+// has something to render in development. Cadence is daily-ish with
+// occasional skipped days — matches typical user behavior. Used only
+// for prototype mock data; real users start with an empty log.
+const generateMockWeightLog = (baselineLb, days = 30, trendDelta = -3) => {
+  const log = [];
+  for (let i = days - 1; i >= 0; i--) {
+    // Skip ~15% of days to simulate gaps.
+    if (Math.random() < 0.15) continue;
+    // Pseudo-random but deterministic noise — water/food/etc.
+    const noise = (Math.sin(i * 1.3) + Math.cos(i * 0.7)) * 0.8;
+    const progress = (days - 1 - i) / (days - 1); // 0 → 1 from oldest to newest
+    const targetWeight = baselineLb + (trendDelta * progress) + noise;
+    log.push({
+      id: `w${i}`,
+      lb: Math.round(targetWeight * 10) / 10, // one decimal
+      loggedAt: NOW_FOR_SEED - i * DAY,
+    });
+  }
+  return log;
+};
+
+const MOCK_BODY_STATS = {
+  heightIn: 70,
+  weightLog: generateMockWeightLog(181, 30, -3),
+  weightGoalTarget: 170,
+  weightGoalDirection: "lose",
+  ageRange: "25–34",
+  ageYears: null,
+  gender: "Male",
+};
 
 /* Auto-naming logic per spec: derived from primary muscle groups of
    exercises in the session. Empty session → date + time-of-day fallback.
@@ -6548,7 +6920,7 @@ function getChatDisplayName(chat) {
   return formatChatDefaultName(chat.createdAt);
 }
 
-function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFocused, onAppendMessage, onNewChat, onSwitchChat, onDeleteChat, onRenameChat }) {
+function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFocused, onAppendMessage, onUpdateLastMessage, onNewChat, onSwitchChat, onDeleteChat, onRenameChat }) {
   // Bible §4.7: hard cap on user message length. Keeps one chat message
   // within a single API call's budget and prevents runaway prompts. The
   // counter only appears in the last 100 chars so it doesn't distract
@@ -6558,10 +6930,17 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
 
   const [input, setInput] = useState("");
   // Bible §4.4 — "Coach is thinking..." indicator. Text-based, gold accent,
-  // no spinner. Fires when a user message is sent and clears when the
-  // simulated Coach reply arrives. In the real build this will be driven
-  // by the streaming API response (shown until the first token streams).
+  // no spinner. Fires the moment a user message is sent; clears the moment
+  // the FIRST streamed token of the Coach reply lands (per §6.3 streaming
+  // spec — thinking indicator only covers the pre-first-token window).
   const [isThinking, setIsThinking] = useState(false);
+  // True while the mock Coach reply is mid-stream (between first-token and
+  // final-token). Used to gate the send button so the user can't fire a
+  // second message on top of a streaming one. The bubble renderer reads
+  // the per-message `streaming` flag for layout decisions (e.g. whether
+  // to render the Start This Workout button); this top-level flag is
+  // strictly for input-side gating.
+  const [isStreaming, setIsStreaming] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   // Per-row 3-dot menu: id of the chat whose menu is open, or null.
   const [openMenuId, setOpenMenuId] = useState(null);
@@ -6570,6 +6949,11 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
   // Delete confirm target: chat object or null.
   const [deleteTarget, setDeleteTarget] = useState(null);
   const bottomRef = useRef(null);
+  // Refs that hold the in-flight stream timers so chat-switch and unmount
+  // can cancel cleanly. firstTokenTimeoutRef = the pre-first-token delay;
+  // streamIntervalRef = the per-chunk setInterval that grows the text.
+  const firstTokenTimeoutRef = useRef(null);
+  const streamIntervalRef = useRef(null);
   // Textarea ref for auto-grow. We measure scrollHeight on every input
   // change and resize up to a max. Past the max it scrolls internally.
   const textareaRef = useRef(null);
@@ -6592,6 +6976,59 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
     el.style.height = `${next}px`;
   }, [input]);
 
+  // ── Mock Coach reply scripts ─────────────────────────────────────
+  //
+  // The real Coach AI is not yet wired (see Bible §15 "Coach is still
+  // fully faked" and §16 launch checklist). These two scripts are the
+  // demo replies the mock plays back through a fake streaming loop so
+  // the chat surface can be screenshotted, dogfooded, and shown in
+  // demos before the Claude integration lands.
+  //
+  // FIRST_TOKEN_DELAY_MS — pre-first-token wait. Mirrors the ~300ms
+  //   "Coach is thinking..." → first-token transition called out in
+  //   §6.3 Response streaming. The thinking indicator covers this gap.
+  //
+  // STREAM_TICK_MS / STREAM_CHARS_PER_TICK — the per-chunk cadence of
+  //   the fake stream. Tuned to land near 40-50 chars/sec which sits
+  //   inside the 30-60 t/s band D-051 measured on Sonnet.
+  //
+  // LEG_DAY_SCRIPT is the FIRST-MESSAGE reply: a leg-day prescription
+  // rendered with the structured `kind: "workout"` bubble (Variant B
+  // gold-rule header layout). Independent of training history — the
+  // mock has no concept of user history yet. The workout object shape
+  // mirrors what the real Coach output schema will probably look like
+  // once D-001 is locked, but it's not authoritative; it's mock-only
+  // data and will get rewritten when the schema session happens.
+  //
+  // COMING_SOON_SCRIPT is the SUBSEQUENT-MESSAGE reply: a short text
+  // bubble explaining the mock is single-shot and pointing the user
+  // at "start a new chat" if they want to see the demo again.
+  const FIRST_TOKEN_DELAY_MS = 350;
+  const STREAM_TICK_MS = 70;
+  const STREAM_CHARS_PER_TICK = 4;
+
+  const LEG_DAY_SCRIPT = {
+    kind: "workout",
+    intro: "Today's leg day — full gym, 6 exercises, ~20 working sets.",
+    title: "Leg Day",
+    exercises: [
+      { name: "Back Squat",            scheme: "4×6–8"   },
+      { name: "Romanian Deadlift",     scheme: "3×8–10"  },
+      { name: "Bulgarian Split Squat", scheme: "3×8–10"  },
+      { name: "Lying Leg Curl",        scheme: "3×10–12" },
+      { name: "Leg Extension",         scheme: "3×10–12" },
+      { name: "Standing Calf Raise",   scheme: "4×12–15" },
+    ],
+    outro: "Ready when you are.",
+  };
+
+  const COMING_SOON_SCRIPT = {
+    kind: "text",
+    text: "Coming soon — real Coach AI launching in a few weeks. For now, try sending a fresh message in a new chat to see a workout demo.",
+  };
+
+  // ─────────────────────────────────────────────────────────────────
+
   // Cold-start message is derived at render time if the current chat
   // has no messages yet. Bible §4.5 — real copy is deferred.
   const coldStart = `Hey ${userName}! I'm your Coach. I see you're focused on building muscle with 3 days per week at a full gym. Want me to build you a workout for today, or do you have a question?`;
@@ -6600,25 +7037,108 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
     : [{ role: "coach", text: coldStart }];
 
   const currentIsEmpty = !chat || chat.messages.length === 0;
-  const canSend = isOnline && input.trim().length > 0 && input.length <= MAX_MESSAGE_CHARS;
+  // canSend gates both the button visual and the send call. Disabled while
+  // Coach is thinking or streaming so the user can't fire a second message
+  // on top of an in-flight reply.
+  const canSend = isOnline && !isThinking && !isStreaming && input.trim().length > 0 && input.length <= MAX_MESSAGE_CHARS;
   const remaining = MAX_MESSAGE_CHARS - input.length;
   const showCounter = remaining <= COUNTER_SHOW_AT_REMAINING;
+
+  // Cancel any in-flight stream timers. Called from chat-switch + unmount
+  // cleanup. Safe to call repeatedly; no-op when both refs are already null.
+  const cancelStream = () => {
+    if (firstTokenTimeoutRef.current !== null) {
+      clearTimeout(firstTokenTimeoutRef.current);
+      firstTokenTimeoutRef.current = null;
+    }
+    if (streamIntervalRef.current !== null) {
+      clearInterval(streamIntervalRef.current);
+      streamIntervalRef.current = null;
+    }
+  };
+
+  // Streaming helper. Given the FULL final text and the metadata for the
+  // empty placeholder message to append, this:
+  //   1. Appends the placeholder Coach message (with streaming: true).
+  //   2. Starts a setInterval that grows the message's `text` field by
+  //      STREAM_CHARS_PER_TICK each tick.
+  //   3. When the full text has been delivered, clears the interval and
+  //      flips the message's streaming flag to false (which is what the
+  //      renderer reads to decide whether to show the workout CTA button).
+  //
+  // The streaming append uses updateLastCoachMessage to mutate the LAST
+  // message in the chat — which is the one we just appended. If the user
+  // switches chats mid-stream, cancelStream() will fire via the chat-switch
+  // useEffect and the interval will be killed before it can clobber the
+  // wrong chat. (updateLastCoachMessage is also chat-id-scoped on the App
+  // side, so even a race wouldn't leak across chats.)
+  const streamText = (fullText, placeholder) => {
+    onAppendMessage({ ...placeholder, text: "", streaming: true });
+    let i = 0;
+    setIsStreaming(true);
+    streamIntervalRef.current = setInterval(() => {
+      i = Math.min(fullText.length, i + STREAM_CHARS_PER_TICK);
+      onUpdateLastMessage({ text: fullText.slice(0, i) });
+      if (i >= fullText.length) {
+        clearInterval(streamIntervalRef.current);
+        streamIntervalRef.current = null;
+        onUpdateLastMessage({ streaming: false });
+        setIsStreaming(false);
+      }
+    }, STREAM_TICK_MS);
+  };
 
   const send = () => {
     if (!canSend) return;
     const u = input.trim();
     setInput("");
     // Seed the cold-start on first user message so the persisted chat
-    // history reads coherently when reopened.
-    if (chat.messages.length === 0) {
+    // history reads coherently when reopened. Note: we check
+    // `chat.messages.length === 0` BEFORE appending the user message so
+    // this branch is true exactly when this is the user's first message
+    // in the current chat — the same condition that picks the leg-day
+    // script below.
+    const isFirstUserMessage = chat.messages.length === 0;
+    if (isFirstUserMessage) {
       onAppendMessage({ role: "coach", text: coldStart });
     }
     onAppendMessage({ role: "user", text: u });
+
+    // §6.3 streaming sequence:
+    //   thinking indicator → ~350ms wait → first token arrives,
+    //   indicator clears, message grows token-by-token.
     setIsThinking(true);
-    setTimeout(() => {
+    firstTokenTimeoutRef.current = setTimeout(() => {
+      firstTokenTimeoutRef.current = null;
       setIsThinking(false);
-      onAppendMessage({ role: "coach", text: "Here's what I'd suggest for today — a Push day focused on chest and shoulders. Want me to build it out with sets and reps?" });
-    }, 800);
+
+      if (isFirstUserMessage) {
+        // First user message → render the structured leg-day workout
+        // bubble. Streaming surface = the intro line + outro line; the
+        // workout block (title + rows) renders alongside the streamed
+        // prose without itself being chunked. This matches what the
+        // real Coach API will probably do — structured tool_use blocks
+        // appear in full once their tool result is back, not character
+        // by character. (Open per D-001; revisit when the schema lands.)
+        const introOutroBuffer = `${LEG_DAY_SCRIPT.intro}\n${LEG_DAY_SCRIPT.outro}`;
+        streamText(introOutroBuffer, {
+          role: "coach",
+          kind: "workout",
+          workout: {
+            title: LEG_DAY_SCRIPT.title,
+            exercises: LEG_DAY_SCRIPT.exercises,
+          },
+          intro: LEG_DAY_SCRIPT.intro,
+          outro: LEG_DAY_SCRIPT.outro,
+        });
+      } else {
+        // Subsequent message → "coming soon" canned text reply.
+        streamText(COMING_SOON_SCRIPT.text, {
+          role: "coach",
+          kind: "text",
+        });
+      }
+    }, FIRST_TOKEN_DELAY_MS);
   };
 
   // Auto-scroll to the latest message. We scroll the messages container
@@ -6641,19 +7161,32 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
   // Close any open per-row menu when the drawer closes
   useEffect(() => { if (!historyOpen) setOpenMenuId(null); }, [historyOpen]);
 
-  // Clear stale thinking indicator on chat switch — otherwise if the user
-  // sends a message, switches chats before the fake reply lands, the new
-  // chat would show a "Coach is thinking..." that isn't really theirs.
-  useEffect(() => { setIsThinking(false); }, [chat?.id]);
+  // Clear stale thinking indicator AND cancel any in-flight stream on chat
+  // switch — otherwise if the user sends a message, switches chats before
+  // the streamed reply finishes, the timers would keep firing against the
+  // (no-longer-current) chat. updateLastCoachMessage is chat-id-scoped so
+  // it wouldn't actually clobber the wrong chat's data, but the local
+  // isThinking / isStreaming flags would get stuck on the new chat.
+  useEffect(() => {
+    setIsThinking(false);
+    setIsStreaming(false);
+    cancelStream();
+    // cancelStream is stable enough for this purpose (closes over refs).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chat?.id]);
 
   // Safety: on unmount, make sure the App-level focus flag is cleared so
   // the TabBar can't be "stuck hidden" if we ever get torn down while
   // focused. In normal use onBlur covers this, but this guards against
   // edge cases (e.g. navigating away via a non-input-blurring path).
+  // Also cancel any in-flight stream so timers don't keep firing after
+  // the component is gone.
   useEffect(() => {
     return () => {
       if (onSetInputFocused) onSetInputFocused(false);
+      cancelStream();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [onSetInputFocused]);
 
   return (
@@ -6721,20 +7254,138 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
 
       {/* Messages */}
       <div style={{ flex: 1, minHeight: 0, padding: "16px 24px", overflowY: "auto", WebkitOverflowScrolling: "touch" }}>
-        {messages.map((m, i) => (
-          <div key={i} style={{ marginBottom: 12, display: "flex", justifyContent: m.role === "user" ? "flex-end" : "flex-start" }}>
-            <div style={{
-              maxWidth: "80%", padding: "12px 16px", borderRadius: 16,
-              background: m.role === "user" ? COLORS.gold : COLORS.card,
-              color: m.role === "user" ? COLORS.bg : COLORS.text,
-              fontSize: 14, lineHeight: 1.5,
-              borderBottomRightRadius: m.role === "user" ? 4 : 16,
-              borderBottomLeftRadius: m.role === "coach" ? 4 : 16,
-            }}>
-              {m.text}
+        {messages.map((m, i) => {
+          // ── Workout-kind Coach message (mock leg-day reply) ──────────
+          // Wider max-width so the workout block doesn't crush. Renders
+          // three parts inside one bubble:
+          //   1. intro line  (streams in via m.text; appears as prose)
+          //   2. workout block (gold-italic Georgia title + #3a2e00 gold
+          //      hairline + Georgia exercise rows with sans 12px schemes
+          //      on the right + #2a2a2a row dividers — Coach's File row
+          //      grammar one level deeper, per Variant B design lock)
+          //   3. outro line  (streams in once the intro buffer crosses
+          //      the embedded \n boundary)
+          // Below the bubble (still left-justified): the gold "Start This
+          // Workout" CTA, rendered only once streaming completes — buttons
+          // popping in mid-stream feels jumpy.
+          if (m.role === "coach" && m.kind === "workout") {
+            // The streamed buffer is `${intro}\n${outro}`. While streaming,
+            // we split on \n to decide what's "in" vs "still incoming":
+            //   - before the \n is reached → only partial intro is visible
+            //   - after the \n is reached → full intro + workout block
+            //     materialize, outro starts typing in
+            // This matches how real streaming UIs handle structured blocks:
+            // the block appears at its position in the stream, not chunked.
+            const buf = m.text || "";
+            const nlIdx = buf.indexOf("\n");
+            const introVisible = nlIdx >= 0 ? buf.slice(0, nlIdx) : buf;
+            const outroVisible = nlIdx >= 0 ? buf.slice(nlIdx + 1) : "";
+            const showWorkoutBlock = nlIdx >= 0;
+            const isDone = m.streaming === false;
+            return (
+              <div key={i} style={{ marginBottom: 12 }}>
+                <div style={{ display: "flex", justifyContent: "flex-start" }}>
+                  <div style={{
+                    maxWidth: "92%", padding: "14px 16px", borderRadius: 16,
+                    background: COLORS.card,
+                    color: COLORS.text,
+                    fontSize: 14, lineHeight: 1.5,
+                    borderBottomLeftRadius: 4,
+                  }}>
+                    {/* Intro line — streams in */}
+                    <div style={{ marginBottom: showWorkoutBlock ? 12 : 0 }}>{introVisible}</div>
+
+                    {/* Workout block — materializes in full once the \n
+                        in the stream buffer is reached. Coach's File row
+                        grammar: gold italic Georgia caps title over a
+                        #3a2e00 gold hairline, then Georgia 13px label +
+                        sans 12px #aaa scheme, #2a2a2a row dividers. */}
+                    {showWorkoutBlock && m.workout && (
+                      <div>
+                        <div style={{
+                          fontFamily: "Georgia, 'Times New Roman', serif",
+                          fontStyle: "italic",
+                          color: COLORS.gold,
+                          fontSize: 13,
+                          letterSpacing: 2,
+                          textTransform: "uppercase",
+                          paddingBottom: 6,
+                          borderBottom: "1px solid #3a2e00",
+                          marginBottom: 8,
+                        }}>{m.workout.title}</div>
+                        {m.workout.exercises.map((ex, j) => (
+                          <div key={j} style={{
+                            fontFamily: "Georgia, 'Times New Roman', serif",
+                            fontSize: 13,
+                            padding: "6px 0",
+                            borderBottom: j === m.workout.exercises.length - 1 ? "none" : "1px solid #2a2a2a",
+                            display: "flex",
+                            justifyContent: "space-between",
+                            alignItems: "baseline",
+                            gap: 12,
+                          }}>
+                            <span>{ex.name}</span>
+                            <span style={{ color: "#aaa", fontFamily: "-apple-system, system-ui, sans-serif", fontSize: 12, fontVariantNumeric: "tabular-nums" }}>{ex.scheme}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Outro line — streams in after the \n boundary */}
+                    {showWorkoutBlock && (
+                      <div style={{ marginTop: 12 }}>{outroVisible}</div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Start This Workout CTA — left-justified directly under
+                    the bubble. Only renders once streaming completes so it
+                    doesn't pop in mid-stream. No-op tap for v1 (real wiring
+                    is the export-to-Workout pipeline behind D-001 Coach
+                    output schema lock); logs to console as a breadcrumb. */}
+                {isDone && (
+                  <div style={{ display: "flex", justifyContent: "flex-start", marginTop: 8 }}>
+                    <button
+                      onClick={() => console.log("[mock] Start This Workout tapped — export pipeline not yet wired (D-001)")}
+                      style={{
+                        background: COLORS.gold,
+                        color: COLORS.bg,
+                        border: "none",
+                        padding: "10px 18px",
+                        borderRadius: 12,
+                        fontSize: 14,
+                        fontWeight: 600,
+                        cursor: "pointer",
+                        fontFamily: "inherit",
+                      }}
+                    >
+                      Start This Workout
+                    </button>
+                  </div>
+                )}
+              </div>
+            );
+          }
+
+          // ── Default rendering: plain text bubble ─────────────────────
+          // Covers user messages, the cold-start, all legacy persisted
+          // messages (no `kind` field), and the "coming soon" reply.
+          // Behavior identical to the pre-mock-reply implementation.
+          return (
+            <div key={i} style={{ marginBottom: 12, display: "flex", justifyContent: m.role === "user" ? "flex-end" : "flex-start" }}>
+              <div style={{
+                maxWidth: "80%", padding: "12px 16px", borderRadius: 16,
+                background: m.role === "user" ? COLORS.gold : COLORS.card,
+                color: m.role === "user" ? COLORS.bg : COLORS.text,
+                fontSize: 14, lineHeight: 1.5,
+                borderBottomRightRadius: m.role === "user" ? 4 : 16,
+                borderBottomLeftRadius: m.role === "coach" ? 4 : 16,
+              }}>
+                {m.text}
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
         {/* Thinking indicator — Bible §4.4. Text-based (no spinner), gold
             accent, slides in where the next Coach message will appear. The
             three dots animate in sequence. Removed the moment a real Coach
@@ -8806,19 +9457,21 @@ function EmptyTabState({ message }) {
   );
 }
 
-/* ── Profile Tab — Coach's File (Bible §6.5, v26) ─────────────────
+/* ── Profile Tab — Coach's File (Bible §6.5, v26+) ────────────────
    The Profile tab is reframed as Coach's File — the page Coach keeps
    on you. Third-person notation in Coach's voice. Five fixed sections
-   on the landing (PLAN, EQUIPMENT, RULES, PROGRESS, OBSERVATIONS) plus
-   a vitals strip and a signed footer. Administrative settings (Email,
-   Membership, Body Stats, Units, Workout Preferences, Notifications,
-   Leaderboard, Logout) are displaced to a Settings sub-screen reached
-   via gear icon top-right.
+   on the landing (PLAN, EQUIPMENT, RULES, OBSERVATIONS, BENCHMARKS)
+   plus a Variant D intake-form header and a signed footer at the
+   bottom. Administrative settings (Email, Membership, Body Stats,
+   Units, Workout Preferences, Notifications, Leaderboard, Logout)
+   are displaced to a Settings sub-screen reached via gear icon
+   top-right.
 
    Typography deliberately departs from the rest of the app: Georgia
-   13px body, sans-serif 9px metadata, italic Georgia subtitles + page
-   titles. Profile is a display surface, not a navigation surface.
-   See Bible §6.5 "Typography conventions (Profile-specific)" table.
+   15px body, sans-serif 10px metadata, italic Georgia subtitles +
+   page titles. Profile is a display surface, not a navigation
+   surface. See Bible §6.5 "Typography conventions (Profile-specific)"
+   table.
 
    Truncation rules:
    - Rules: first 3, then "+ N more →" link.
@@ -8852,6 +9505,15 @@ const PLAN_TIME_AWAY_LABELS = {
   gt3yr: "More than 3 years",
 };
 
+// Body Stats option lists. Age ranges match onboarding Screen 4 buckets
+// exactly (so a value set in onboarding survives unchanged into the sub-
+// screen and back). Genders match AboutYouScreen's three-option set.
+// Both are arrays-of-strings rather than {key: label} maps because the
+// stored value IS the label — see bodyStats schema in §15 trade-offs
+// (Session 39 migration).
+const BODY_STATS_AGE_RANGES = ["18–24", "25–34", "35–44", "45–54", "55+"];
+const BODY_STATS_GENDERS = ["Male", "Female", "Prefer not to say"];
+
 // "Updated 2d ago" / "12D" formatters. Bible §6.5 calls for inline
 // timestamps in sans-serif 9px spaced caps next to rule/observation
 // rows (e.g. "12D"), and a longer signed-footer line ("updated 2d ago").
@@ -8884,6 +9546,106 @@ function formatShortDateCap(epochMs) {
   return `${month} ${d.getDate()}`;
 }
 
+// ── Weight log helpers ──
+// The bodyStats.weightLog is the canonical store for body weight over
+// time. Helpers here derive everything else (current weight, trend
+// direction, smoothed series) so the rest of the app reads weight
+// through a single interface — same way getVariantHistory abstracts
+// over workoutHistory for exercises.
+//
+// Internal sort assumption: weightLog is NOT sorted by storage; helpers
+// sort defensively before returning. Keeps mutation simple (push +
+// reassign on log) while keeping reads stable.
+
+// YYYY-MM-DD key for same-day collision detection. Local time, not UTC
+// — a 9pm Sunday weigh-in shouldn't collide with a 1am Monday one in a
+// different timezone interpretation.
+function weightDayKey(epochMs) {
+  const d = new Date(epochMs);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+// Returns latest weight entry's lb value, or null if log empty.
+function getCurrentWeightLb(weightLog) {
+  if (!Array.isArray(weightLog) || weightLog.length === 0) return null;
+  let latest = weightLog[0];
+  for (const e of weightLog) {
+    if (e.loggedAt > latest.loggedAt) latest = e;
+  }
+  return latest.lb;
+}
+
+// Returns epoch ms of the most recent weigh-in, or null.
+function getLastWeightLogAt(weightLog) {
+  if (!Array.isArray(weightLog) || weightLog.length === 0) return null;
+  let latest = weightLog[0];
+  for (const e of weightLog) {
+    if (e.loggedAt > latest.loggedAt) latest = e;
+  }
+  return latest.loggedAt;
+}
+
+// Returns one of "up" | "down" | "flat" | null based on the trend over
+// the last 30 days. Compares the most recent entry to the entry closest
+// to 30 days before it. Threshold for "flat" is ±1 lb (noise band).
+// Used for the trend arrow on Coach's File header WEIGHT cell.
+function getWeightTrend30d(weightLog) {
+  if (!Array.isArray(weightLog) || weightLog.length < 2) return null;
+  const sorted = [...weightLog].sort((a, b) => a.loggedAt - b.loggedAt);
+  const latest = sorted[sorted.length - 1];
+  const cutoff = latest.loggedAt - 30 * 24 * 60 * 60 * 1000;
+  // Find entry closest to cutoff (could be before or just after).
+  let baseline = sorted[0];
+  for (const e of sorted) {
+    if (Math.abs(e.loggedAt - cutoff) < Math.abs(baseline.loggedAt - cutoff)) {
+      baseline = e;
+    }
+  }
+  const delta = latest.lb - baseline.lb;
+  if (Math.abs(delta) < 1) return "flat";
+  return delta > 0 ? "up" : "down";
+}
+
+// Add or overwrite a weigh-in for today. Same-day entries replace each
+// other; different-day entries append. Returns the new log array
+// (caller spreads into setBodyStats). lb is rounded to one decimal.
+function upsertWeightEntry(weightLog, lb, loggedAt = Date.now()) {
+  const arr = Array.isArray(weightLog) ? [...weightLog] : [];
+  const key = weightDayKey(loggedAt);
+  const idx = arr.findIndex((e) => weightDayKey(e.loggedAt) === key);
+  const rounded = Math.round(lb * 10) / 10;
+  const entry = { id: `w${loggedAt}`, lb: rounded, loggedAt };
+  if (idx >= 0) {
+    arr[idx] = entry;
+  } else {
+    arr.push(entry);
+  }
+  return arr;
+}
+
+// One-time migration shim for snapshots from before this session.
+// Pre-Session-42 snapshots stored bodyStats.weightLb (single number).
+// This session, weight became weightLog (array of entries). On hydration,
+// detect the legacy shape and convert: weightLb → a single-entry log
+// timestamped "today" so the chart has at least one anchor.
+// Also fills in the new goal fields with nulls if missing.
+// Idempotent: calling on already-new-shape bodyStats is a no-op.
+function migrateBodyStats(bs) {
+  if (!bs || typeof bs !== "object") return bs;
+  const next = { ...bs };
+  if (next.weightLb != null && !Array.isArray(next.weightLog)) {
+    next.weightLog = [{ id: `w_migrated_${Date.now()}`, lb: next.weightLb, loggedAt: Date.now() }];
+    delete next.weightLb;
+  }
+  if (!Array.isArray(next.weightLog)) next.weightLog = [];
+  if (next.weightGoalTarget === undefined) next.weightGoalTarget = null;
+  if (next.weightGoalDirection === undefined) next.weightGoalDirection = null;
+  return next;
+}
+
 // Coach monogram — gold C in a gold-bordered circle. Used in the
 // header bar (22px), the signed footer (18px), and inside the future
 // CoachCTACard (24px). Single source so the visual identity is one
@@ -8913,6 +9675,15 @@ function ProfileTab({
   equipmentCount,
   // Other section data
   coachRules, progressPRs, coachObservations,
+  // Body stats — surfaced in the header intake form (Step 2 this session).
+  // Replaces the v27 identity-only header. Cells tap to edit; tap routes
+  // to onOpenBodyStats which is a no-op stub until the Body Stats sub-
+  // screen ships (tracked in §14 backlog).
+  bodyStats,
+  // Units preference (lb / kg). Drives WEIGHT cell display in the header
+  // intake form. Stored value is always lb in weightLog; display converts
+  // at render time when unitsPref === "kg".
+  unitsPref,
   // Vitals
   sessionsCount, streakDays, mostTrainedMuscle,
   // Metadata
@@ -8922,7 +9693,7 @@ function ProfileTab({
   // open ones to real screens and silently no-ops the not-yet-built
   // ones (a TODO comment in App marks which are stubbed).
   onOpenSettings, onOpenPlan, onOpenEquipment, onOpenRules,
-  onOpenProgress, onOpenObservations,
+  onOpenProgress, onOpenObservations, onOpenBodyStats,
 }) {
   // Empty-state detection. Bible §6.5: first-launch shows vitals in
   // muted gray, "New file" subtitle, one-liner italic placeholders per
@@ -8934,13 +9705,14 @@ function ProfileTab({
 
   // Truncation helpers. Each section shows first 3 rows + a link
   // when there are more. Sort by recency for Rules/Observations,
-  // by achievedAt for Progress (most recent first).
+  // by achievedAt for Benchmarks (most recent first).
   //
-  // Progress filters to PR-only and NEW-only rows. Plain gray rows
-  // ("recent working set, not a PR") were dropped per session 36
-  // feedback: if Progress is "numerical wins Coach has logged,"
-  // every row should earn its place. A non-PR Bench Press session
-  // belongs in workout history, not on a clipboard.
+  // Benchmarks (formerly PROGRESS, renamed this session) filters to
+  // PR-only and NEW-only rows. Plain gray non-PR rows were dropped
+  // per session 36 feedback: every row should earn its place — a
+  // non-PR Bench Press session belongs in workout history, not on
+  // the clipboard. Storage / internal identifiers still use the
+  // progressPRs name; only user-facing strings are renamed.
   const sortedRules = [...(coachRules || [])].sort((a, b) => b.createdAt - a.createdAt);
   const sortedObs = [...(coachObservations || [])].sort((a, b) => b.createdAt - a.createdAt);
   const sortedPRs = [...(progressPRs || [])]
@@ -8961,35 +9733,30 @@ function ProfileTab({
   const levelLabel = fitnessLevel ? PLAN_LEVEL_LABELS[fitnessLevel] : "Intermediate";
 
   // ── Shared styles ──
-  // Section header treatment (session 36 lock — "option C"): sans-serif
-  // 10px gold spaced caps over a thin dark-gold underline rule. Gives
-  // each section a stamped magazine-column look that holds together
-  // with the gold Coach monogram up top, without the airy thinness of
-  // the original Georgia spaced-caps spec. The header is rendered as
-  // a two-line block (label + hr) inside the section, not in the
-  // sectionHeadRow flex row — see the JSX below.
+  // Type scale bumped from 13→15 body this session per Tyler's feedback.
+  // The whole rhythm scales proportionally: section heads + row values
+  // and metadata caps move up so the relationships hold (a 15px body
+  // next to a 11px meta would look weirdly disconnected). Settings
+  // sub-screen typography stays put — that's intentionally demoted and
+  // does not share Profile's display-surface typography.
   //
-  // Divider strategy (session 36 lock):
-  // - Section dividers (#2a2a2a hairline at section bottom) carry the
-  //   visual structure. Sections are the real units of the file.
-  // - No row dividers inside sections. Spacing + baseline rhythm carry
-  //   the list. The clipboard / paper-artifact metaphor reads better
-  //   with rows held together by typography than by grid lines.
-  // - Signed footer keeps its dashed line — end-of-document signal.
+  // Section header treatment retained from session 36 lock: sans-serif
+  // bold gold spaced caps over a thin dark-gold underline rule. Just
+  // slightly bigger now.
   //
-  // Edit affordance: removed entirely. The whole section header is
-  // tappable; if the contents look configurable the user will tap.
+  // Divider strategy retained: section-bottom #2a2a2a hairlines, no
+  // row dividers inside sections.
   const TYPE = {
-    body: { fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 13, color: "#e8e8e8", lineHeight: 1.5 },
-    meta: { fontFamily: "-apple-system, system-ui, sans-serif", fontSize: 9, color: "#555", letterSpacing: 1.5 },
-    sectionHead: { fontFamily: "-apple-system, system-ui, sans-serif", fontSize: 13, color: COLORS.gold, fontWeight: 700, letterSpacing: 2, textTransform: "uppercase" },
+    body: { fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 15, color: "#e8e8e8", lineHeight: 1.5 },
+    meta: { fontFamily: "-apple-system, system-ui, sans-serif", fontSize: 10, color: "#555", letterSpacing: 1.5 },
+    sectionHead: { fontFamily: "-apple-system, system-ui, sans-serif", fontSize: 15, color: COLORS.gold, fontWeight: 700, letterSpacing: 2, textTransform: "uppercase" },
     sectionRule: { border: "none", height: 1, background: "#3a2e00", margin: 0, width: "100%" },
-    rowVal: { fontSize: 11, color: "#aaa", whiteSpace: "nowrap" },
-    rowValUp: { fontSize: 11, color: COLORS.gold, whiteSpace: "nowrap" },
-    sigFooter: { fontFamily: "Georgia, 'Times New Roman', serif", fontStyle: "italic", color: "#666", fontSize: 10 },
-    tagInline: { color: COLORS.gold, fontSize: 9, letterSpacing: 1, marginLeft: 4, fontFamily: "-apple-system, system-ui, sans-serif" },
-    viewAll: { padding: "10px 0 4px", fontSize: 10, color: "#666", textAlign: "right", letterSpacing: 0.5, fontFamily: "-apple-system, system-ui, sans-serif", background: "transparent", border: "none", width: "100%", cursor: "pointer" },
-    emptyNote: { fontFamily: "Georgia, 'Times New Roman', serif", fontStyle: "italic", color: "#666", fontSize: 12, lineHeight: 1.6, padding: "14px 0" },
+    rowVal: { fontSize: 12, color: "#aaa", whiteSpace: "nowrap" },
+    rowValUp: { fontSize: 12, color: COLORS.gold, whiteSpace: "nowrap" },
+    sigFooter: { fontFamily: "Georgia, 'Times New Roman', serif", fontStyle: "italic", color: "#666", fontSize: 11 },
+    tagInline: { color: COLORS.gold, fontSize: 10, letterSpacing: 1, marginLeft: 4, fontFamily: "-apple-system, system-ui, sans-serif" },
+    viewAll: { padding: "10px 0 4px", fontSize: 11, color: "#666", textAlign: "right", letterSpacing: 0.5, fontFamily: "-apple-system, system-ui, sans-serif", background: "transparent", border: "none", width: "100%", cursor: "pointer" },
+    emptyNote: { fontFamily: "Georgia, 'Times New Roman', serif", fontStyle: "italic", color: "#666", fontSize: 13, lineHeight: 1.6, padding: "14px 0" },
   };
 
   // Row line — used by every section's content rows. No inline divider
@@ -9037,7 +9804,7 @@ function ProfileTab({
             fontFamily: "Georgia, 'Times New Roman', serif",
             fontStyle: "italic",
             color: COLORS.gold,
-            fontSize: 13,
+            fontSize: 15,
           }}>Coach&apos;s File</span>
         </div>
         <button
@@ -9058,25 +9825,128 @@ function ProfileTab({
       {/* Scrollable body */}
       <div style={{ flex: 1, padding: "0 24px 24px", overflowY: "auto", minHeight: 0 }}>
 
-        {/* Identity block — name only. Subtitle ("Intermediate · Level 2 ·
-            Grinder") and the SESSIONS/STREAK/MOST TRAINED vitals strip
-            were removed per session 36 feedback: the landing was reading
-            cluttered, and Level/badge/streak surfaces decoratively rather
-            than telling Coach anything new about the user. Vitals will
-            return in v2 on the Home tab where they earn their place. */}
-        <div style={{ marginBottom: 22 }}>
-          <div style={{
-            fontFamily: "Georgia, 'Times New Roman', serif",
-            fontSize: 28,
-            lineHeight: 1,
-            letterSpacing: -0.5,
-            color: COLORS.text,
-          }}>{userName}</div>
-        </div>
+        {/* Identity / intake block — Variant D (this session). The bare
+            "Tyler" name from v27 was rewritten as a clipboard-style intake
+            form: name on a labeled underline at top, then a 2-column grid
+            of HEIGHT / WEIGHT / AGE / SEX below, each on its own underline.
+            Form-field underlines + the all-caps spaced-cap field labels
+            make the metaphor explicit ("Coach has filled this in about
+            you"), which is the whole point of the Profile-tab redesign.
+            Tap any cell to edit — routes through onOpenBodyStats which
+            is a no-op until Body Stats sub-screen ships (§14 backlog).
+            Empty height/weight render as " — "; "Prefer not to say"
+            hides the SEX row entirely; age prefers exact ageYears if
+            set, otherwise the ageRange bucket from onboarding.
+
+            v3 (this session): replaced the labeled-underline grid
+            with a row-list that matches the PLAN section grammar
+            directly below it — Georgia serif label on the left,
+            sans-serif gray value on the right, hairline divider per
+            row. The page now reads as one continuous list of facts
+            (name + body stats + plan + ...) rather than "fancy header
+            + simple body." Trend arrow dropped from this surface;
+            once the Weight tracker ships next turn, the chart is the
+            trend display. */}
+        {(() => {
+          const bs = bodyStats || {};
+          // Height: stored as inches; render as feet'inches".
+          const heightStr = typeof bs.heightIn === "number"
+            ? `${Math.floor(bs.heightIn / 12)}'${bs.heightIn % 12}"`
+            : "—";
+          // Weight: read latest entry from weightLog. Unit follows
+          // unitsPref. Stored value is always lb; kg is converted at
+          // the display layer.
+          const currentLb = getCurrentWeightLb(bs.weightLog);
+          const weightStr = typeof currentLb === "number"
+            ? (unitsPref === "kg" ? `${(currentLb * 0.453592).toFixed(1)} kg` : `${currentLb} lb`)
+            : "—";
+          // Age: exact wins if set, else range bucket, else placeholder.
+          let ageStr = "—";
+          if (typeof bs.ageYears === "number") ageStr = String(bs.ageYears);
+          else if (typeof bs.ageRange === "string" && bs.ageRange) ageStr = bs.ageRange;
+          // Sex row hidden entirely on "Prefer not to say" — same
+          // edge case as before. Null/unset shows "—" so the row stays.
+          const showSex = bs.gender && bs.gender !== "Prefer not to say";
+          const sexStr = bs.gender || "—";
+
+          // Tap handler factory. Each row deep-links to the Body Stats
+          // sub-screen with the matching fieldKey, so tapping HEIGHT
+          // opens with height pre-expanded, etc. Matches the Plan
+          // landing pattern from Session 39.
+          const tapField = (fieldKey) => () => {
+            if (onOpenBodyStats) onOpenBodyStats(fieldKey);
+          };
+
+          // Row style — same exact grammar as the PLAN rows directly
+          // below. Reusing rowLineStyle() + TYPE.body / TYPE.rowVal so
+          // any future change to the row vocabulary propagates here
+          // automatically.
+          const rowBtnStyle = {
+            ...rowLineStyle(),
+            width: "100%",
+            background: "transparent", border: "none",
+            cursor: "pointer", fontFamily: "inherit", color: "inherit",
+            textAlign: "left",
+          };
+
+          // Rows: name is the big heading at top, then height/weight/
+          // age/sex as four list items below it. The whole block sits
+          // above the PLAN section and shares its visual language.
+          const statRows = [
+            { key: "height", label: "Height", value: heightStr },
+            { key: "weight", label: "Weight", value: weightStr },
+            { key: "age", label: "Age", value: ageStr },
+            ...(showSex ? [{ key: "sex", label: "Sex", value: sexStr }] : []),
+          ];
+
+          return (
+            <div style={{ ...sectionBlockStyle(false), marginTop: 0 }}>
+              {/* Name — large Georgia serif as the page heading. Sits
+                  above a gold #3a2e00 hairline (same color/weight as
+                  TYPE.sectionRule used by PLAN / EQUIPMENT / etc.) —
+                  the name is the title of the whole file, the gold
+                  rule below ties it to the section-head language used
+                  throughout the rest of the page. Tap targets Name. */}
+              <button
+                onClick={tapField("name")}
+                style={{
+                  background: "transparent", border: "none", padding: 0,
+                  cursor: "pointer", color: "inherit", fontFamily: "inherit",
+                  textAlign: "left", display: "block", width: "100%",
+                  marginBottom: 14, paddingBottom: 8,
+                  borderBottom: "1px solid #3a2e00",
+                }}
+              >
+                <span style={{
+                  fontFamily: "Georgia, 'Times New Roman', serif",
+                  fontSize: 32, color: COLORS.text,
+                  lineHeight: 1, letterSpacing: -0.5,
+                }}>{userName || "—"}</span>
+              </button>
+              {/* Body stats as four rows, identical to PLAN row grammar.
+                  The section gets its closing gray hairline from
+                  sectionBlockStyle(false) above, same as every other
+                  section on the file. */}
+              {statRows.map((r) => (
+                <button key={r.key} onClick={tapField(r.key)} style={rowBtnStyle}>
+                  <span style={{ ...TYPE.body, flex: 1 }}>{r.label}</span>
+                  <span style={TYPE.rowVal}>{r.value}</span>
+                </button>
+              ))}
+            </div>
+          );
+        })()}
 
         {/* ── Section: PLAN ── */}
+        {/* Each PLAN row is now a tappable button that deep-links to
+            the Plan sub-screen with that field pre-expanded. Tap the
+            section header instead → opens with no specific field
+            (collapsed start). This makes the row feel like the edit
+            target it implies — previously you had to tap PLAN, then
+            tap the row again inside the sub-screen, which felt weird
+            since the row already showed the value. */}
         <div style={sectionBlockStyle(false)}>
-          <button onClick={onOpenPlan} style={sectionHeadBtnStyle}>
+          <button onClick={() => onOpenPlan()} style={sectionHeadBtnStyle}>
             <span style={TYPE.sectionHead}>PLAN</span>
             <hr style={TYPE.sectionRule} />
           </button>
@@ -9089,16 +9959,26 @@ function ProfileTab({
             // a Time Away row, so we treat null as "not yet set, hide".
             const showTimeAway = fitnessLevel !== "beginner" && timeAway != null;
             const rows = [
-              { label: "Goal", value: PLAN_GOAL_LABELS[planGoal] || "Build Muscle" },
-              { label: "Level", value: levelLabel },
-              ...(showTimeAway ? [{ label: "Time away", value: PLAN_TIME_AWAY_LABELS[timeAway] }] : []),
-              { label: "Days / week", value: String(planDaysPerWeek || 3) },
+              { key: "goal", label: "Goal", value: PLAN_GOAL_LABELS[planGoal] || "Build Muscle" },
+              { key: "level", label: "Level", value: levelLabel },
+              ...(showTimeAway ? [{ key: "timeAway", label: "Time away", value: PLAN_TIME_AWAY_LABELS[timeAway] }] : []),
+              { key: "days", label: "Days / week", value: String(planDaysPerWeek || 3) },
             ];
             return rows.map((r) => (
-              <div key={r.label} style={rowLineStyle()}>
+              <button
+                key={r.label}
+                onClick={() => onOpenPlan(r.key)}
+                style={{
+                  ...rowLineStyle(),
+                  width: "100%",
+                  background: "transparent", border: "none",
+                  cursor: "pointer", fontFamily: "inherit", color: "inherit",
+                  textAlign: "left",
+                }}
+              >
                 <span style={{ ...TYPE.body, flex: 1 }}>{r.label}</span>
                 <span style={TYPE.rowVal}>{r.value}</span>
-              </div>
+              </button>
             ));
           })()}
         </div>
@@ -9140,10 +10020,46 @@ function ProfileTab({
           )}
         </div>
 
-        {/* ── Section: PROGRESS ── */}
+        {/* ── Section: OBSERVATIONS ── */}
+        {/* Order this session: OBSERVATIONS now precedes BENCHMARKS.
+            Rules + Observations are both Coach-authored text rows with
+            identical row grammar (sentence + timestamp + delete in the
+            sub-screen); pairing them adjacent makes the visual rhythm
+            of the file cleaner. Benchmarks (formerly Progress) is the
+            longest list and lives at the bottom as reference data. */}
         <div style={sectionBlockStyle(false)}>
+          <button onClick={onOpenObservations} style={sectionHeadBtnStyle}>
+            <span style={TYPE.sectionHead}>OBSERVATIONS</span>
+            <hr style={TYPE.sectionRule} />
+          </button>
+          {visibleObs.length === 0 ? (
+            <div style={TYPE.emptyNote}>Coach hasn&apos;t noticed anything yet.</div>
+          ) : (
+            <>
+              {visibleObs.map((o) => (
+                <div key={o.id} style={rowLineStyle()}>
+                  <span style={{ ...TYPE.body, flex: 1 }}>{o.text}</span>
+                  <span style={{ ...TYPE.meta, whiteSpace: "nowrap", letterSpacing: 1 }}>{formatDaysAgoCap(o.createdAt)}</span>
+                </div>
+              ))}
+              {moreObs > 0 && (
+                <button onClick={onOpenObservations} style={TYPE.viewAll}>View all {sortedObs.length} →</button>
+              )}
+            </>
+          )}
+        </div>
+
+        {/* ── Section: BENCHMARKS ── */}
+        {/* Renamed from PROGRESS this session. The data Coach references
+            when reasoning about progression — PRs and new working weights
+            — is what the §12.7 / §12.5 architecture calls "anchors and
+            PR events." "Benchmarks" is the user-facing name that matches
+            what Coach actually uses. Filter still PR-or-NEW only, sort
+            still recency-desc (achievedAt). No item cap (locked this
+            session — full list available in the sub-screen). */}
+        <div style={sectionBlockStyle(true)}>
           <button onClick={onOpenProgress} style={sectionHeadBtnStyle}>
-            <span style={TYPE.sectionHead}>PROGRESS</span>
+            <span style={TYPE.sectionHead}>BENCHMARKS</span>
             <hr style={TYPE.sectionRule} />
           </button>
           {visiblePRs.length === 0 ? (
@@ -9163,29 +10079,6 @@ function ProfileTab({
               ))}
               {morePRs > 0 && (
                 <button onClick={onOpenProgress} style={TYPE.viewAll}>View all {sortedPRs.length} →</button>
-              )}
-            </>
-          )}
-        </div>
-
-        {/* ── Section: OBSERVATIONS ── */}
-        <div style={sectionBlockStyle(true)}>
-          <button onClick={onOpenObservations} style={sectionHeadBtnStyle}>
-            <span style={TYPE.sectionHead}>OBSERVATIONS</span>
-            <hr style={TYPE.sectionRule} />
-          </button>
-          {visibleObs.length === 0 ? (
-            <div style={TYPE.emptyNote}>Coach hasn&apos;t noticed anything yet.</div>
-          ) : (
-            <>
-              {visibleObs.map((o) => (
-                <div key={o.id} style={rowLineStyle()}>
-                  <span style={{ ...TYPE.body, flex: 1 }}>{o.text}</span>
-                  <span style={{ ...TYPE.meta, whiteSpace: "nowrap", letterSpacing: 1 }}>{formatDaysAgoCap(o.createdAt)}</span>
-                </div>
-              ))}
-              {moreObs > 0 && (
-                <button onClick={onOpenObservations} style={TYPE.viewAll}>View all {sortedObs.length} →</button>
               )}
             </>
           )}
@@ -9243,6 +10136,13 @@ function SettingsSubscreen({
   leaderboardOn, onChangeLeaderboard,
   onLogout,
   bodyStats,
+  // Body Stats editor entry point — opens BodyStatsSubscreen with no
+  // initialField (sub-screen opens collapsed; user picks which field
+  // to edit). Session 41: real route. Header intake cells on the
+  // Coach's File landing call the same opener but pass a field key
+  // for pre-expansion; Settings → Body Stats row doesn't because the
+  // user hasn't expressed which field they want to edit.
+  onOpenBodyStats,
   // Read-only for now — Email/Membership/Body Stats sub-sub-screens
   // are deferred to a later turn.
   emailDisplay = "alex@email.com",
@@ -9267,9 +10167,35 @@ function SettingsSubscreen({
     return "—";
   })();
   const unitsLabel = unitsPref === "kg" ? "Kilograms (kg)" : "Pounds (lbs)";
-  const bodyStatsLabel = bodyStats
-    ? `${Math.floor(bodyStats.heightIn / 12)}'${bodyStats.heightIn % 12}" · ${bodyStats.weightLb} lb · ${bodyStats.ageYears} yr · ${bodyStats.gender}`
-    : "Not set";
+  // Body stats label — handles the new schema (Step 1, this session):
+  // height/weight are nullable now (onboarding doesn't ask for them);
+  // age picks exact ageYears if set, otherwise falls back to ageRange
+  // bucket; gender is a full string ("Male" | "Female" | "Prefer not
+  // to say") — the latter omits the gender segment so it doesn't leak
+  // the "I don't want to share" choice as a displayed value.
+  const bodyStatsLabel = (() => {
+    if (!bodyStats) return "Not set";
+    const parts = [];
+    if (typeof bodyStats.heightIn === "number") {
+      parts.push(`${Math.floor(bodyStats.heightIn / 12)}'${bodyStats.heightIn % 12}"`);
+    }
+    // Weight: pull from weightLog now that bodyStats.weightLb is gone.
+    // Schema migrated this session; old snapshots are normalized on
+    // hydration so this path always sees the new shape.
+    const currentLb = getCurrentWeightLb(bodyStats.weightLog);
+    if (typeof currentLb === "number") {
+      parts.push(unitsPref === "kg" ? `${(currentLb * 0.453592).toFixed(1)} kg` : `${currentLb} lb`);
+    }
+    if (typeof bodyStats.ageYears === "number") {
+      parts.push(`${bodyStats.ageYears} yr`);
+    } else if (typeof bodyStats.ageRange === "string" && bodyStats.ageRange) {
+      parts.push(bodyStats.ageRange);
+    }
+    if (bodyStats.gender && bodyStats.gender !== "Prefer not to say") {
+      parts.push(bodyStats.gender);
+    }
+    return parts.length ? parts.join(" · ") : "Not set";
+  })();
 
   // Shared styles. F1 register — no gold on section headers, sans-serif
   // throughout, generic settings vocabulary.
@@ -9397,7 +10323,7 @@ function SettingsSubscreen({
         <div style={headStyleFirst}>ACCOUNT</div>
         <Row label="Email & password" desc={emailDisplay} onClick={() => { /* TODO: email & password sub-screen */ }} />
         <Row label="Membership" desc={membershipDisplay} onClick={() => { /* TODO: membership viewer */ }} />
-        <Row label="Body Stats" desc={bodyStatsLabel} onClick={() => { /* TODO: body stats editor — built in BodyStatsSubscreen */ }} />
+        <Row label="Body Stats" desc={bodyStatsLabel} onClick={() => { if (onOpenBodyStats) onOpenBodyStats(); }} />
 
         {/* ── APP ── */}
         <div style={headStyle}>APP</div>
@@ -9702,7 +10628,7 @@ function SubscreenShell({ title, subtitle, onBack, children, footer }) {
         </button>
         <span style={{
           fontFamily: "Georgia, 'Times New Roman', serif",
-          fontStyle: "italic", color: COLORS.gold, fontSize: 14,
+          fontStyle: "italic", color: COLORS.gold, fontSize: 16,
         }}>{title}</span>
       </div>
       <div style={{ flex: 1, padding: "0 24px 24px", overflowY: "auto", minHeight: 0, display: "flex", flexDirection: "column" }}>
@@ -9710,7 +10636,7 @@ function SubscreenShell({ title, subtitle, onBack, children, footer }) {
           <div style={{
             fontFamily: "Georgia, 'Times New Roman', serif",
             fontStyle: "italic", color: "#888",
-            fontSize: 11, lineHeight: 1.6, marginBottom: 18,
+            fontSize: 13, lineHeight: 1.6, marginBottom: 18,
           }}>{subtitle}</div>
         )}
         <div style={{ flex: 1 }}>{children}</div>
@@ -9737,9 +10663,14 @@ function PlanSubscreen({
   planGoal, fitnessLevel, timeAway, planDaysPerWeek,
   onChangeGoal, onChangeLevel, onChangeTimeAway, onChangeDaysPerWeek,
   onBack,
+  // Pre-expand a specific field on mount. Set from the landing's per-row
+  // tap (e.g. tap "Goal" row → opens with "goal" pre-expanded). Tap of
+  // the section header itself comes through with no initialField, so
+  // the sub-screen opens fully collapsed.
+  initialField,
 }) {
   // editingField ∈ "goal" | "level" | "timeAway" | "days" | null
-  const [editingField, setEditingField] = useState(null);
+  const [editingField, setEditingField] = useState(initialField || null);
 
   const showTimeAway = fitnessLevel !== "beginner";
   // If the user switches Level → beginner while editing Time away,
@@ -9753,23 +10684,31 @@ function PlanSubscreen({
   // rendered inside the expanded row. Keeping them inline (rather than
   // extracting per-field components) makes the open/closed state easy
   // to read — every field is one entry.
+  // Font scale bumped to match the landing (body 13→15 this session).
   const TYPE = {
-    body: { fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 13, color: "#e8e8e8", lineHeight: 1.5 },
-    rowVal: { fontSize: 11, color: "#aaa", whiteSpace: "nowrap" },
-    pencil: { color: "#555", fontSize: 12 },
-    editingTag: { color: COLORS.gold, fontSize: 11, fontStyle: "italic", fontFamily: "Georgia, 'Times New Roman', serif" },
+    body: { fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 15, color: "#e8e8e8", lineHeight: 1.5 },
+    rowVal: { fontSize: 12, color: "#aaa", whiteSpace: "nowrap" },
+    pencil: { color: "#555", fontSize: 13 },
+    editingTag: { color: COLORS.gold, fontSize: 12, fontStyle: "italic", fontFamily: "Georgia, 'Times New Roman', serif" },
   };
 
+  // Bigger chips this session per Tyler's "edit screen looks pretty
+  // bare and small" feedback. Chip padding 6/11 → 12/16, font 11 → 14,
+  // border radius 14 → 18 for the bigger pill. Selected and unselected
+  // states keep the same gold/dark palette.
   const Chip = ({ label, selected, onClick }) => (
     <button
       onClick={onClick}
       style={{
-        padding: "6px 11px", borderRadius: 14,
+        padding: "12px 16px", borderRadius: 18,
         background: selected ? COLORS.goldHighlight : "transparent",
         border: `1px solid ${selected ? COLORS.gold : "#2a2a2a"}`,
         color: selected ? COLORS.gold : "#aaa",
-        fontSize: 11, cursor: "pointer",
+        fontSize: 14, cursor: "pointer",
         fontFamily: "-apple-system, system-ui, sans-serif",
+        fontWeight: selected ? 600 : 500,
+        // Bigger tap target on phone; keeps the row from feeling cramped.
+        minHeight: 44,
       }}
     >
       {label}
@@ -9833,7 +10772,7 @@ function PlanSubscreen({
         "goal",
         "Goal",
         PLAN_GOAL_LABELS[planGoal] || "Build Muscle",
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
           {Object.entries(PLAN_GOAL_LABELS).map(([key, label]) => (
             <Chip key={key} label={label} selected={planGoal === key} onClick={() => { onChangeGoal(key); setEditingField(null); }} />
           ))}
@@ -9844,7 +10783,7 @@ function PlanSubscreen({
         "level",
         "Level",
         fitnessLevel ? PLAN_LEVEL_LABELS[fitnessLevel] : "Intermediate",
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
           {Object.entries(PLAN_LEVEL_LABELS).map(([key, label]) => (
             <Chip key={key} label={label} selected={fitnessLevel === key} onClick={() => { onChangeLevel(key); setEditingField(null); }} />
           ))}
@@ -9855,7 +10794,7 @@ function PlanSubscreen({
         "timeAway",
         "Time away",
         timeAway ? PLAN_TIME_AWAY_LABELS[timeAway] : "Currently training",
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
           {Object.entries(PLAN_TIME_AWAY_LABELS).map(([key, label]) => (
             <Chip key={key} label={label} selected={timeAway === key} onClick={() => { onChangeTimeAway(key); setEditingField(null); }} />
           ))}
@@ -9878,8 +10817,8 @@ function PlanSubscreen({
             />
             <span style={{
               fontFamily: "Georgia, 'Times New Roman', serif",
-              fontSize: 18, color: COLORS.gold,
-              minWidth: 22, textAlign: "right",
+              fontSize: 22, color: COLORS.gold,
+              minWidth: 26, textAlign: "right",
             }}>{planDaysPerWeek || 3}</span>
           </div>
           <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4, fontFamily: "-apple-system, system-ui, sans-serif", fontSize: 9, color: "#555", letterSpacing: 1 }}>
@@ -9902,10 +10841,13 @@ function RulesSubscreen({ coachRules, onDeleteRule, onOpenCoachChat, onBack }) {
   const sorted = [...(coachRules || [])].sort((a, b) => b.createdAt - a.createdAt);
   const ruleCap = 15; // Bible §12.6
 
+  // Font scale matches the bumped Profile landing (body 13→15, meta
+  // 9→10, counter 10→11) so navigating in from the landing doesn't
+  // feel like a font-size jump.
   const TYPE = {
-    body: { fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 13, color: "#e8e8e8", lineHeight: 1.5 },
-    meta: { fontFamily: "-apple-system, system-ui, sans-serif", fontSize: 9, color: "#555", letterSpacing: 1 },
-    counter: { fontFamily: "Georgia, 'Times New Roman', serif", fontStyle: "italic", color: "#555", fontSize: 10, textAlign: "center", marginTop: 16 },
+    body: { fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 15, color: "#e8e8e8", lineHeight: 1.5 },
+    meta: { fontFamily: "-apple-system, system-ui, sans-serif", fontSize: 10, color: "#555", letterSpacing: 1 },
+    counter: { fontFamily: "Georgia, 'Times New Roman', serif", fontStyle: "italic", color: "#555", fontSize: 11, textAlign: "center", marginTop: 16 },
   };
 
   if (sorted.length === 0) {
@@ -9915,7 +10857,7 @@ function RulesSubscreen({ coachRules, onDeleteRule, onOpenCoachChat, onBack }) {
         subtitle="Standing orders Coach follows. Set them by chatting with Coach."
         onBack={onBack}
       >
-        <div style={{ textAlign: "center", padding: "32px 16px 24px", fontFamily: "Georgia, 'Times New Roman', serif", fontStyle: "italic", color: "#888", fontSize: 13, lineHeight: 1.7 }}>
+        <div style={{ textAlign: "center", padding: "32px 16px 24px", fontFamily: "Georgia, 'Times New Roman', serif", fontStyle: "italic", color: "#888", fontSize: 15, lineHeight: 1.7 }}>
           You haven&apos;t set any rules.<br />Tell Coach what to follow and he&apos;ll write it down.
         </div>
         <CoachCTACard
@@ -9925,10 +10867,10 @@ function RulesSubscreen({ coachRules, onDeleteRule, onOpenCoachChat, onBack }) {
         />
         <div style={{
           marginTop: 22, fontFamily: "Georgia, 'Times New Roman', serif",
-          fontStyle: "italic", color: "#555", fontSize: 11,
+          fontStyle: "italic", color: "#555", fontSize: 13,
           lineHeight: 1.6, padding: "0 14px",
         }}>
-          <span style={{ color: COLORS.gold, fontStyle: "normal", fontSize: 10, letterSpacing: 1, fontFamily: "-apple-system, system-ui, sans-serif" }}>EXAMPLES</span>
+          <span style={{ color: COLORS.gold, fontStyle: "normal", fontSize: 11, letterSpacing: 1, fontFamily: "-apple-system, system-ui, sans-serif" }}>EXAMPLES</span>
           <br />
           <span>&quot;No deadlifts on Mondays&quot;<br />&quot;Keep sessions under 60 minutes&quot;<br />&quot;Always start with a compound lift&quot;</span>
         </div>
@@ -10008,32 +10950,29 @@ function RulesSubscreen({ coachRules, onDeleteRule, onOpenCoachChat, onBack }) {
    (session 36 decision).
 */
 function ProgressSubscreen({ progressPRs, onBack }) {
+  // Font scale matches the bumped Profile landing.
   const TYPE = {
-    body: { fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 13, color: "#e8e8e8", lineHeight: 1.5 },
-    meta: { fontFamily: "-apple-system, system-ui, sans-serif", fontSize: 9, color: "#555", letterSpacing: 1.5 },
-    rowVal: { fontSize: 11, color: "#aaa", whiteSpace: "nowrap" },
-    rowValUp: { fontSize: 11, color: COLORS.gold, whiteSpace: "nowrap" },
-    tagInline: { color: COLORS.gold, fontSize: 9, letterSpacing: 1, marginLeft: 4, fontFamily: "-apple-system, system-ui, sans-serif" },
-    sigFooter: { fontFamily: "Georgia, 'Times New Roman', serif", fontStyle: "italic", color: "#666", fontSize: 10 },
+    body: { fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 15, color: "#e8e8e8", lineHeight: 1.5 },
+    meta: { fontFamily: "-apple-system, system-ui, sans-serif", fontSize: 10, color: "#555", letterSpacing: 1.5 },
+    rowVal: { fontSize: 12, color: "#aaa", whiteSpace: "nowrap" },
+    rowValUp: { fontSize: 12, color: COLORS.gold, whiteSpace: "nowrap" },
+    tagInline: { color: COLORS.gold, fontSize: 10, letterSpacing: 1, marginLeft: 4, fontFamily: "-apple-system, system-ui, sans-serif" },
+    sigFooter: { fontFamily: "Georgia, 'Times New Roman', serif", fontStyle: "italic", color: "#666", fontSize: 11 },
   };
 
-  // Time-period bucketing. Bible vocabulary:
-  //   THIS WEEK (≤ 7 days), EARLIER THIS MONTH (8–30), LAST MONTH (31–60), EARLIER (>60).
-  // Computed from achievedAt relative to now.
-  const now = Date.now();
-  const filtered = (progressPRs || []).filter((p) => p.isPR || p.isNew);
-  const buckets = { "This week": [], "Earlier this month": [], "Last month": [], "Earlier": [] };
-  for (const p of filtered) {
-    const days = Math.floor((now - p.achievedAt) / (24 * 60 * 60 * 1000));
-    if (days <= 7) buckets["This week"].push(p);
-    else if (days <= 30) buckets["Earlier this month"].push(p);
-    else if (days <= 60) buckets["Last month"].push(p);
-    else buckets["Earlier"].push(p);
-  }
-  // Sort within each bucket: most recent first.
-  for (const key of Object.keys(buckets)) {
-    buckets[key].sort((a, b) => b.achievedAt - a.achievedAt);
-  }
+  // Flat date-sorted list (Session 40). The previous bucketed layout
+  // (THIS WEEK / EARLIER THIS MONTH / LAST MONTH / EARLIER) was a v26
+  // design that mirrored "this week's wins" framing but in practice
+  // it added visual chrome without information density — once each row
+  // carries its own date, group headers become redundant decoration.
+  // Tyler also flagged the landing-vs-sub-screen mismatch: landing
+  // showed exact dates ("APR 27"), sub-screen replaced them with
+  // bucket headers. Information density went the wrong way (glance =
+  // precise, deep = vague). New behavior: both surfaces show per-row
+  // dates; sub-screen is a flat sorted list with no group headers.
+  const filtered = (progressPRs || [])
+    .filter((p) => p.isPR || p.isNew)
+    .sort((a, b) => b.achievedAt - a.achievedAt);
 
   const isEmpty = filtered.length === 0;
   const footer = (
@@ -10048,38 +10987,38 @@ function ProgressSubscreen({ progressPRs, onBack }) {
 
   return (
     <SubscreenShell
-      title="Progress"
-      subtitle="Numerical wins Coach has logged from your sessions."
+      title="Benchmarks"
+      subtitle="Working weights Coach uses to plan your sessions."
       onBack={onBack}
       footer={footer}
     >
       {isEmpty ? (
-        <div style={{ textAlign: "center", padding: "48px 16px 32px", fontFamily: "Georgia, 'Times New Roman', serif", fontStyle: "italic", color: "#888", fontSize: 13, lineHeight: 1.7 }}>
+        <div style={{ textAlign: "center", padding: "48px 16px 32px", fontFamily: "Georgia, 'Times New Roman', serif", fontStyle: "italic", color: "#888", fontSize: 15, lineHeight: 1.7 }}>
           Nothing logged yet.<br />Your first PR will show up here.
         </div>
       ) : (
-        Object.entries(buckets).map(([periodLabel, rows]) => {
-          if (rows.length === 0) return null;
-          return (
-            <div key={periodLabel}>
-              <div style={{ ...TYPE.meta, margin: "18px 0 8px", textTransform: "uppercase" }}>{periodLabel}</div>
-              {rows.map((p) => (
-                <div key={p.id} style={{
-                  padding: "10px 0", display: "flex",
-                  justifyContent: "space-between", alignItems: "baseline",
-                  borderBottom: "1px solid #1a1a1a", gap: 14,
-                }}>
-                  <span style={{ ...TYPE.body, flex: 1 }}>
-                    {p.exerciseName}
-                    {p.isPR && <span style={TYPE.tagInline}>PR</span>}
-                    {p.isNew && !p.isPR && <span style={TYPE.tagInline}>NEW</span>}
-                  </span>
-                  <span style={p.isPR ? TYPE.rowValUp : TYPE.rowVal}>{p.value}</span>
-                </div>
-              ))}
-            </div>
-          );
-        })
+        // Each row: exercise name (+ optional PR/NEW gold tag) on left;
+        // value (gold if PR, gray otherwise) and date stamp on the right.
+        // Same row grammar as the landing now, so navigating in/out feels
+        // continuous. Row dividers retained — without group headers,
+        // a flat list reads better with a hairline between rows than
+        // pure spacing (different from the landing where sections-as-
+        // cards carry the structure).
+        filtered.map((p) => (
+          <div key={p.id} style={{
+            padding: "12px 0", display: "flex",
+            justifyContent: "space-between", alignItems: "baseline",
+            borderBottom: "1px solid #1a1a1a", gap: 14,
+          }}>
+            <span style={{ ...TYPE.body, flex: 1 }}>
+              {p.exerciseName}
+              {p.isPR && <span style={TYPE.tagInline}>PR</span>}
+              {p.isNew && !p.isPR && <span style={TYPE.tagInline}>NEW</span>}
+            </span>
+            <span style={p.isPR ? TYPE.rowValUp : TYPE.rowVal}>{p.value}</span>
+            <span style={{ ...TYPE.meta, whiteSpace: "nowrap", letterSpacing: 1 }}>{formatShortDateCap(p.achievedAt)}</span>
+          </div>
+        ))
       )}
     </SubscreenShell>
   );
@@ -10096,10 +11035,11 @@ function ObservationsSubscreen({ coachObservations, onDeleteObservation, onReset
   const [confirmResetAll, setConfirmResetAll] = useState(false);
   const sorted = [...(coachObservations || [])].sort((a, b) => b.createdAt - a.createdAt);
 
+  // Font scale matches the bumped Profile landing.
   const TYPE = {
-    body: { fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 13, color: "#e8e8e8", lineHeight: 1.5 },
-    meta: { fontFamily: "-apple-system, system-ui, sans-serif", fontSize: 9, color: "#555", letterSpacing: 1 },
-    sigFooter: { fontFamily: "Georgia, 'Times New Roman', serif", fontStyle: "italic", color: "#666", fontSize: 10 },
+    body: { fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 15, color: "#e8e8e8", lineHeight: 1.5 },
+    meta: { fontFamily: "-apple-system, system-ui, sans-serif", fontSize: 10, color: "#555", letterSpacing: 1 },
+    sigFooter: { fontFamily: "Georgia, 'Times New Roman', serif", fontStyle: "italic", color: "#666", fontSize: 11 },
   };
 
   if (sorted.length === 0) {
@@ -10119,7 +11059,7 @@ function ObservationsSubscreen({ coachObservations, onDeleteObservation, onReset
         onBack={onBack}
         footer={footer}
       >
-        <div style={{ textAlign: "center", padding: "48px 16px 32px", fontFamily: "Georgia, 'Times New Roman', serif", fontStyle: "italic", color: "#888", fontSize: 13, lineHeight: 1.7 }}>
+        <div style={{ textAlign: "center", padding: "48px 16px 32px", fontFamily: "Georgia, 'Times New Roman', serif", fontStyle: "italic", color: "#888", fontSize: 15, lineHeight: 1.7 }}>
           Coach hasn&apos;t noticed anything yet.<br />A few sessions in, patterns will appear here.
         </div>
       </SubscreenShell>
@@ -10224,6 +11164,419 @@ function ObservationsSubscreen({ coachObservations, onDeleteObservation, onReset
   );
 }
 
+/* ── BodyStatsSubscreen (Bible §6.5) ─────────────────────────────────
+   The Body Stats editor. Same P1 tap-to-expand pattern as PlanSubscreen
+   (read-only rows by default, tap to expand inline editor, only one
+   field open at a time, commit on close). Five fields in order:
+
+   1. Name      — free-text input (the one field that isn't chips). The
+                  display name Coach uses to address the user. Lives on
+                  userName at App state, not on bodyStats, but conceptually
+                  it's intake data and belongs here per Session 41 lock.
+   2. Height    — two number inputs side by side (feet + inches). Stored
+                  as total inches in bodyStats.heightIn. 48–95 in valid
+                  range (4'0" – 7'11"). Empty inputs = null = "—" display.
+   3. Weight    — single number input. Displays with unit suffix from
+                  unitsPref ("lb" / "kg"). Stored as weightLb always;
+                  kg display is computed from lb at render time and the
+                  reverse on commit. 50–700 lb valid (or kg equivalent).
+   4. Age       — chip picker for ageRange (matches onboarding) + an
+                  always-visible optional EXACT AGE number input below it.
+                  Both persist independently. Header display prefers
+                  ageYears if set, falls back to ageRange.
+   5. Sex       — three-option chip picker matching onboarding gender.
+                  "Prefer not to say" is a valid selection that hides
+                  the SEX cell on the landing intake header.
+
+   Frictionless commit pattern: chip picks commit instantly; number/
+   text inputs commit on blur or Enter. No global Save button — same
+   reasoning as PlanSubscreen (see Bible §9 Session 39 lockdown).
+
+   Validation: out-of-range or non-numeric values just don't commit
+   (silent rejection on blur). Empty inputs are always valid and clear
+   the underlying field to null, which renders as "—" on the landing.
+*/
+function BodyStatsSubscreen({
+  userName, bodyStats, unitsPref,
+  onChangeUserName, onChangeBodyStats,
+  onBack, initialField,
+}) {
+  // editingField ∈ "name" | "height" | "weight" | "age" | "sex" | null
+  const [editingField, setEditingField] = useState(initialField || null);
+
+  // Defensive defaults — bodyStats can be null on first launch or a
+  // partial object if onboarding was skipped. The editor needs a
+  // consistent shape to read from.
+  const bs = bodyStats || { heightIn: null, weightLog: [], weightGoalTarget: null, weightGoalDirection: null, ageRange: null, ageYears: null, gender: null };
+
+  // ── Typography matches PlanSubscreen / Profile landing (15px body
+  // scale per Session 39 lock). Kept inline rather than imported from
+  // a shared module to match the per-sub-screen pattern used elsewhere.
+  const TYPE = {
+    body: { fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 15, color: "#e8e8e8", lineHeight: 1.5 },
+    rowVal: { fontSize: 12, color: "#aaa", whiteSpace: "nowrap" },
+    pencil: { color: "#555", fontSize: 13 },
+    editingTag: { color: COLORS.gold, fontSize: 12, fontStyle: "italic", fontFamily: "Georgia, 'Times New Roman', serif" },
+    smallLabel: { fontFamily: "-apple-system, system-ui, sans-serif", fontSize: 10, color: "#666", letterSpacing: 1.2, textTransform: "uppercase", fontWeight: 500 },
+  };
+
+  // Same chip vocabulary as PlanSubscreen (bigger touch targets locked
+  // in Session 39). Keeping the duplicate inline component rather than
+  // hoisting to a shared module — three sub-screens × ~12 lines is fine,
+  // and a hoist would couple the sub-screens to a single chip style.
+  const Chip = ({ label, selected, onClick }) => (
+    <button
+      onClick={onClick}
+      style={{
+        padding: "12px 16px", borderRadius: 18,
+        background: selected ? COLORS.goldHighlight : "transparent",
+        border: `1px solid ${selected ? COLORS.gold : "#2a2a2a"}`,
+        color: selected ? COLORS.gold : "#aaa",
+        fontSize: 14, cursor: "pointer",
+        fontFamily: "-apple-system, system-ui, sans-serif",
+        fontWeight: selected ? 600 : 500,
+        minHeight: 44,
+      }}
+    >
+      {label}
+    </button>
+  );
+
+  // ── Renders a read-only collapsed row or an expanded edit row.
+  // Identical signature/behavior to PlanSubscreen's renderField. If we
+  // build a third sub-screen using this pattern, hoist it.
+  const renderField = (fieldKey, label, displayValue, pickerNode) => {
+    const isEditing = editingField === fieldKey;
+    const toggle = () => setEditingField(isEditing ? null : fieldKey);
+    if (isEditing) {
+      return (
+        <div
+          key={fieldKey}
+          style={{
+            padding: "14px 20px",
+            background: "#0f0f0f",
+            margin: "0 -20px",
+            borderBottom: "1px solid #1a1a1a",
+          }}
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+            <button
+              onClick={toggle}
+              style={{ background: "transparent", border: "none", padding: 0, cursor: "pointer", color: "inherit", fontFamily: "inherit", textAlign: "left", ...TYPE.body }}
+            >{label}</button>
+            <span style={TYPE.editingTag}>editing</span>
+          </div>
+          {pickerNode}
+        </div>
+      );
+    }
+    return (
+      <button
+        key={fieldKey}
+        onClick={toggle}
+        style={{
+          width: "100%", padding: "10px 0",
+          display: "flex", justifyContent: "space-between", alignItems: "baseline",
+          gap: 14, background: "transparent", border: "none", borderBottom: "1px solid #1a1a1a",
+          cursor: "pointer", fontFamily: "inherit", color: "inherit", textAlign: "left",
+        }}
+      >
+        <span style={{ ...TYPE.body, flex: 1 }}>{label}</span>
+        <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={TYPE.rowVal}>{displayValue}</span>
+          <span style={TYPE.pencil}>✎</span>
+        </span>
+      </button>
+    );
+  };
+
+  // ── Display formatters for the collapsed (read-only) state of each
+  // row. Empty fields show "—" rather than blank so the right-side
+  // value never collapses to zero width.
+  const heightDisplay = typeof bs.heightIn === "number"
+    ? `${Math.floor(bs.heightIn / 12)}'${bs.heightIn % 12}"`
+    : "—";
+  // Unit-aware weight display. Stored value is always lb; kg is
+  // converted at the display layer with one decimal. Round-trip on
+  // commit uses the same conversion factor.
+  const weightDisplay = (() => {
+    if (typeof bs.weightLb !== "number") return "—";
+    if (unitsPref === "kg") return `${(bs.weightLb * 0.453592).toFixed(1)} kg`;
+    return `${bs.weightLb} lb`;
+  })();
+  const ageDisplay = (() => {
+    if (typeof bs.ageYears === "number") return String(bs.ageYears);
+    if (typeof bs.ageRange === "string" && bs.ageRange) return bs.ageRange;
+    return "—";
+  })();
+  const sexDisplay = bs.gender || "—";
+
+  // ── Helpers to patch a single field on bodyStats while preserving
+  // the rest. Used by every chip-pick and input-blur handler below.
+  const patch = (delta) => {
+    onChangeBodyStats({ ...bs, ...delta });
+  };
+
+  // ── Field 2 (Height) editor state. Localized so a half-typed value
+  // doesn't commit to App state on every keystroke. Commits on blur
+  // when both fields parse to valid integers in the 4'0"–7'11" range.
+  // Empty either field → both clear to null heightIn.
+  const initFt = typeof bs.heightIn === "number" ? Math.floor(bs.heightIn / 12) : "";
+  const initIn = typeof bs.heightIn === "number" ? bs.heightIn % 12 : "";
+  const [heightFt, setHeightFt] = useState(initFt);
+  const [heightIn, setHeightInch] = useState(initIn);
+  // Re-sync local state if the underlying value changes from elsewhere
+  // (rare — only really happens if onboarding wrote a value). useEffect
+  // here keeps the form honest if App state moves under us.
+  useEffect(() => {
+    setHeightFt(typeof bs.heightIn === "number" ? Math.floor(bs.heightIn / 12) : "");
+    setHeightInch(typeof bs.heightIn === "number" ? bs.heightIn % 12 : "");
+  }, [bs.heightIn]);
+  const commitHeight = () => {
+    const f = parseInt(heightFt, 10);
+    const i = parseInt(heightIn, 10);
+    // Both empty → clear field.
+    if (heightFt === "" && heightIn === "") {
+      if (bs.heightIn != null) patch({ heightIn: null });
+      return;
+    }
+    // Validate: ft 4–7 inclusive, in 0–11 inclusive. Total 48–95.
+    if (!Number.isFinite(f) || !Number.isFinite(i)) return;
+    if (f < 4 || f > 7) return;
+    if (i < 0 || i > 11) return;
+    const total = f * 12 + i;
+    if (total !== bs.heightIn) patch({ heightIn: total });
+  };
+
+  // ── Field 3 (Weight) editor state. Stored as lb; display unit follows
+  // unitsPref. Local state holds the *displayed* (unit-correct) value
+  // as a string. On commit, convert to lb and store.
+  const initWeightStr = typeof bs.weightLb === "number"
+    ? (unitsPref === "kg" ? (bs.weightLb * 0.453592).toFixed(1) : String(bs.weightLb))
+    : "";
+  const [weightStr, setWeightStr] = useState(initWeightStr);
+  useEffect(() => {
+    setWeightStr(typeof bs.weightLb === "number"
+      ? (unitsPref === "kg" ? (bs.weightLb * 0.453592).toFixed(1) : String(bs.weightLb))
+      : "");
+  }, [bs.weightLb, unitsPref]);
+  const commitWeight = () => {
+    if (weightStr.trim() === "") {
+      if (bs.weightLb != null) patch({ weightLb: null });
+      return;
+    }
+    const n = parseFloat(weightStr);
+    if (!Number.isFinite(n)) return;
+    // Validate in user's chosen unit. lb: 50–700. kg: 23–318.
+    if (unitsPref === "kg") {
+      if (n < 23 || n > 318) return;
+      const lb = Math.round(n / 0.453592);
+      if (lb !== bs.weightLb) patch({ weightLb: lb });
+    } else {
+      if (n < 50 || n > 700) return;
+      const lb = Math.round(n);
+      if (lb !== bs.weightLb) patch({ weightLb: lb });
+    }
+  };
+
+  // ── Field 4 (Exact age) editor state. Optional sub-field below the
+  // ageRange chips. Empty = null = no exact age, fall back to range.
+  const [ageYearsStr, setAgeYearsStr] = useState(
+    typeof bs.ageYears === "number" ? String(bs.ageYears) : ""
+  );
+  useEffect(() => {
+    setAgeYearsStr(typeof bs.ageYears === "number" ? String(bs.ageYears) : "");
+  }, [bs.ageYears]);
+  const commitAgeYears = () => {
+    if (ageYearsStr.trim() === "") {
+      if (bs.ageYears != null) patch({ ageYears: null });
+      return;
+    }
+    const n = parseInt(ageYearsStr, 10);
+    if (!Number.isFinite(n)) return;
+    if (n < 13 || n > 120) return; // Bible §1: minimum age 13.
+    if (n !== bs.ageYears) patch({ ageYears: n });
+  };
+
+  // ── Field 1 (Name) editor state. Single text input, capped at 30 chars.
+  const [nameStr, setNameStr] = useState(userName || "");
+  useEffect(() => { setNameStr(userName || ""); }, [userName]);
+  const commitName = () => {
+    const trimmed = nameStr.trim().slice(0, 30);
+    if (trimmed === "" && (userName || "") === "") return;
+    if (trimmed !== userName) onChangeUserName(trimmed);
+  };
+
+  // ── Shared input styling for the number/text fields. Dark surface
+  // (#1a1a1a) so the input doesn't blend into the expanded row's
+  // #0f0f0f bg. Gold focus border via inline focus/blur — no :focus
+  // pseudo because everything inline here.
+  const inputStyle = {
+    background: "#1a1a1a",
+    border: "1px solid #2a2a2a",
+    borderRadius: 8,
+    padding: "10px 12px",
+    color: COLORS.text,
+    fontSize: 16,
+    fontFamily: "-apple-system, system-ui, sans-serif",
+    width: "100%",
+    boxSizing: "border-box",
+    outline: "none",
+  };
+
+  return (
+    <SubscreenShell
+      title="Body Stats"
+      subtitle="What Coach knows about you."
+      onBack={onBack}
+    >
+      {/* ── Field 1: NAME ── free-text input. */}
+      {renderField(
+        "name",
+        "Name",
+        userName || "—",
+        <div>
+          <input
+            type="text"
+            value={nameStr}
+            maxLength={30}
+            placeholder="Your name"
+            onChange={(e) => setNameStr(e.target.value)}
+            onBlur={() => { commitName(); }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") { e.target.blur(); setEditingField(null); }
+            }}
+            style={inputStyle}
+            autoFocus
+          />
+          <div style={{ ...TYPE.smallLabel, marginTop: 8, fontSize: 9, letterSpacing: 1, color: "#555", textTransform: "none" }}>
+            How Coach addresses you.
+          </div>
+        </div>
+      )}
+
+      {/* ── Field 2: HEIGHT ── feet + inches, side by side. */}
+      {renderField(
+        "height",
+        "Height",
+        heightDisplay,
+        <div>
+          <div style={{ display: "flex", gap: 10, alignItems: "flex-end" }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ ...TYPE.smallLabel, marginBottom: 6 }}>Feet</div>
+              <input
+                type="number" inputMode="numeric"
+                min={4} max={7}
+                value={heightFt}
+                placeholder="—"
+                onChange={(e) => setHeightFt(e.target.value)}
+                onBlur={commitHeight}
+                onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }}
+                style={inputStyle}
+              />
+            </div>
+            <div style={{ flex: 1 }}>
+              <div style={{ ...TYPE.smallLabel, marginBottom: 6 }}>Inches</div>
+              <input
+                type="number" inputMode="numeric"
+                min={0} max={11}
+                value={heightIn}
+                placeholder="—"
+                onChange={(e) => setHeightInch(e.target.value)}
+                onBlur={commitHeight}
+                onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }}
+                style={inputStyle}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Field 3: WEIGHT ── single input, unit follows unitsPref. */}
+      {renderField(
+        "weight",
+        "Weight",
+        weightDisplay,
+        <div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <input
+              type="number" inputMode="decimal"
+              step={unitsPref === "kg" ? 0.1 : 1}
+              min={unitsPref === "kg" ? 23 : 50}
+              max={unitsPref === "kg" ? 318 : 700}
+              value={weightStr}
+              placeholder="—"
+              onChange={(e) => setWeightStr(e.target.value)}
+              onBlur={commitWeight}
+              onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }}
+              style={{ ...inputStyle, flex: 1 }}
+            />
+            <span style={{
+              fontFamily: "-apple-system, system-ui, sans-serif",
+              fontSize: 14, color: COLORS.gold, fontWeight: 600,
+              minWidth: 22, textAlign: "left",
+            }}>{unitsPref === "kg" ? "kg" : "lb"}</span>
+          </div>
+          <div style={{ ...TYPE.smallLabel, marginTop: 8, fontSize: 9, letterSpacing: 1, color: "#555", textTransform: "none" }}>
+            Unit follows your Settings preference.
+          </div>
+        </div>
+      )}
+
+      {/* ── Field 4: AGE ── chip picker for ageRange + optional exact age below. */}
+      {renderField(
+        "age",
+        "Age",
+        ageDisplay,
+        <div>
+          <div style={{ ...TYPE.smallLabel, marginBottom: 8 }}>Age range</div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginBottom: 16 }}>
+            {BODY_STATS_AGE_RANGES.map((r) => (
+              <Chip
+                key={r}
+                label={r}
+                selected={bs.ageRange === r}
+                onClick={() => patch({ ageRange: r })}
+              />
+            ))}
+          </div>
+          <div style={{ ...TYPE.smallLabel, marginBottom: 6 }}>Exact age (optional)</div>
+          <input
+            type="number" inputMode="numeric"
+            min={13} max={120}
+            value={ageYearsStr}
+            placeholder="—"
+            onChange={(e) => setAgeYearsStr(e.target.value)}
+            onBlur={commitAgeYears}
+            onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }}
+            style={inputStyle}
+          />
+          <div style={{ ...TYPE.smallLabel, marginTop: 8, fontSize: 9, letterSpacing: 1, color: "#555", textTransform: "none" }}>
+            Coach uses age range by default. Exact age shows on your file if set.
+          </div>
+        </div>
+      )}
+
+      {/* ── Field 5: SEX ── three-chip picker matching onboarding. */}
+      {renderField(
+        "sex",
+        "Sex",
+        sexDisplay,
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
+          {BODY_STATS_GENDERS.map((g) => (
+            <Chip
+              key={g}
+              label={g}
+              selected={bs.gender === g}
+              onClick={() => patch({ gender: g })}
+            />
+          ))}
+        </div>
+      )}
+    </SubscreenShell>
+  );
+}
+
 /* ── Tab Bar ──────────────────────────────────────────────────── */
 
 function TabBar({ active, onTab }) {
@@ -10299,6 +11652,27 @@ export default function MYGFitness() {
   const [appSubScreen, setAppSubScreen] = useState(null);
   const openEquipmentEditor = () => setAppSubScreen("equipment_editor");
   const closeEquipmentEditor = () => setAppSubScreen(null);
+
+  // Pre-expansion target when opening the Plan sub-screen. Set by the
+  // landing's per-row PLAN tap (e.g. tap "Goal" row → "goal"); cleared
+  // when the sub-screen unmounts. Tap of the section header itself
+  // routes through openPlan(null) so the sub-screen opens collapsed.
+  const [planInitialField, setPlanInitialField] = useState(null);
+  const openPlan = (fieldKey) => {
+    setPlanInitialField(fieldKey || null);
+    setAppSubScreen("plan");
+  };
+
+  // Same deep-link pattern for the Body Stats sub-screen. Set by the
+  // header intake cells on the Coach's File landing (tap HEIGHT cell
+  // → "height") and by the Settings → Body Stats row (no field arg).
+  // Cleared on back so re-opening from a section header doesn't
+  // accidentally pre-expand last time's field.
+  const [bodyStatsInitialField, setBodyStatsInitialField] = useState(null);
+  const openBodyStats = (fieldKey) => {
+    setBodyStatsInitialField(fieldKey || null);
+    setAppSubScreen("body_stats");
+  };
 
   // ── Online / Offline detector ──
   // Used to gracefully disable Coach input when the user is offline.
@@ -10411,6 +11785,22 @@ export default function MYGFitness() {
     setCoachChats((prev) => prev.map((c) =>
       c.id === currentCoachChatId ? { ...c, messages: [...c.messages, msg] } : c
     ));
+  };
+
+  // Patch-merge the LAST message of the current chat. Used by the streaming
+  // mock to grow a Coach reply token-by-token: the streaming loop calls this
+  // every ~80ms with a longer `text` string, then once more with
+  // `{ streaming: false }` when the stream completes. When the real Claude
+  // API ships, the same mutator will be driven by the streaming response
+  // handler — no app-level shape change needed.
+  const updateLastCoachMessage = (patch) => {
+    setCoachChats((prev) => prev.map((c) => {
+      if (c.id !== currentCoachChatId) return c;
+      if (c.messages.length === 0) return c;
+      const next = c.messages.slice();
+      next[next.length - 1] = { ...next[next.length - 1], ...patch };
+      return { ...c, messages: next };
+    }));
   };
 
   const startNewCoachChat = () => {
@@ -10853,7 +12243,23 @@ export default function MYGFitness() {
 
   const renderTab = () => {
     switch (activeTab) {
-      case "home": return <HomeTab onTabChange={setActiveTab} userName={userName} history={workoutHistory} />;
+      case "home": return (
+        <HomeTab
+          onTabChange={setActiveTab}
+          userName={userName}
+          history={workoutHistory}
+          customExercises={customExercises}
+          // Mode 0 carry-forward — Bible §10 / D-039. Not yet wired;
+          // CTA falls through to State B ("Coach's Pick") until this
+          // pipeline lands. When it does, App computes the prepared
+          // session from Coach's last response and passes it here.
+          nextSession={null}
+          // NOTES feed — hardcoded mock for v1. Content pipeline
+          // (authored tips + changelog generation) is a later task.
+          // Empty array hides the section entirely.
+          notes={HOME_NOTES_V1}
+        />
+      );
       case "workout": return (
         <WorkoutTab
           userEquipment={selectedEquipment}
@@ -10888,6 +12294,7 @@ export default function MYGFitness() {
           inputFocused={coachInputFocused}
           onSetInputFocused={setCoachInputFocused}
           onAppendMessage={appendCoachMessage}
+          onUpdateLastMessage={updateLastCoachMessage}
           onNewChat={startNewCoachChat}
           onSwitchChat={switchCoachChat}
           onDeleteChat={deleteCoachChat}
@@ -10947,21 +12354,39 @@ export default function MYGFitness() {
             mostTrainedMuscle={mostTrainedMuscle}
             coachFileOpenedAt={coachFileOpenedAt}
             coachFileLastUpdatedAt={coachFileLastUpdatedAt}
+            bodyStats={bodyStats}
+            unitsPref={unitsPref}
             // Sub-screen openers. Equipment routes to the existing
             // EquipmentDetailScreen via openEquipmentEditor. Settings,
             // Plan, Rules, Progress, Observations all route through
             // appSubScreen state — handlers in renderAppContent mount
             // the matching sub-screen component.
             onOpenSettings={() => setAppSubScreen("settings")}
-            onOpenPlan={() => setAppSubScreen("plan")}
+            onOpenPlan={openPlan}
             onOpenEquipment={openEquipmentEditor}
             onOpenRules={() => setAppSubScreen("rules")}
             onOpenProgress={() => setAppSubScreen("progress")}
             onOpenObservations={() => setAppSubScreen("observations")}
+            // Body Stats editor — Session 41: BodyStatsSubscreen
+            // shipped, route is real. The ProfileTab header passes a
+            // fieldKey arg corresponding to the cell tapped (NAME / HEIGHT
+            // / WEIGHT / AGE / SEX → "name" / "height" / "weight" / "age"
+            // / "sex"). Tapping the Settings → Body Stats row routes
+            // here with no fieldKey, opening the sub-screen collapsed.
+            onOpenBodyStats={openBodyStats}
           />
         );
       }
-      default: return <HomeTab onTabChange={setActiveTab} userName={userName} history={workoutHistory} />;
+      default: return (
+        <HomeTab
+          onTabChange={setActiveTab}
+          userName={userName}
+          history={workoutHistory}
+          customExercises={customExercises}
+          nextSession={null}
+          notes={HOME_NOTES_V1}
+        />
+      );
     }
   };
 
@@ -10995,6 +12420,7 @@ export default function MYGFitness() {
           onChangeLeaderboard={setLeaderboardOn}
           onLogout={handleLogout}
           bodyStats={bodyStats}
+          onOpenBodyStats={() => openBodyStats()}
         />
       );
     }
@@ -11003,10 +12429,21 @@ export default function MYGFitness() {
       // immediately (no global save). coachFileLastUpdatedAt bumps
       // on each change so the signed-footer recency on the landing
       // reflects the user's most recent edit.
+      //
+      // initialField pre-expands a specific row when the user tapped
+      // a row on the landing (e.g. tap "Goal" row → opens with Goal
+      // expanded). Cleared on back so a subsequent re-open from the
+      // section header doesn't accidentally pre-expand last time's
+      // field.
       const stamp = () => setCoachFileLastUpdatedAt(Date.now());
+      const closePlan = () => {
+        setAppSubScreen(null);
+        setPlanInitialField(null);
+      };
       return (
         <PlanSubscreen
-          onBack={() => setAppSubScreen(null)}
+          onBack={closePlan}
+          initialField={planInitialField}
           planGoal={planGoal}
           fitnessLevel={fitnessLevel}
           timeAway={timeAway}
@@ -11057,6 +12494,31 @@ export default function MYGFitness() {
             setCoachObservations([]);
             setCoachFileLastUpdatedAt(Date.now());
           }}
+        />
+      );
+    }
+    if (appSubScreen === "body_stats") {
+      // BodyStatsSubscreen mutates userName (App state) and bodyStats
+      // (Coach's File state) separately. Every commit bumps
+      // coachFileLastUpdatedAt so the signed footer on the landing
+      // reflects the change. initialField pre-expands the row
+      // matching whichever header intake cell was tapped (NAME /
+      // HEIGHT / WEIGHT / AGE / SEX). Clear on back so re-opening
+      // from a different entry point doesn't accidentally pre-expand.
+      const stamp = () => setCoachFileLastUpdatedAt(Date.now());
+      const closeBodyStats = () => {
+        setAppSubScreen(null);
+        setBodyStatsInitialField(null);
+      };
+      return (
+        <BodyStatsSubscreen
+          onBack={closeBodyStats}
+          initialField={bodyStatsInitialField}
+          userName={userName}
+          bodyStats={bodyStats}
+          unitsPref={unitsPref}
+          onChangeUserName={(v) => { setUserName(v); stamp(); }}
+          onChangeBodyStats={(next) => { setBodyStats(next); stamp(); }}
         />
       );
     }
@@ -11176,7 +12638,37 @@ export default function MYGFitness() {
           />
         );
       case "aboutyou":
-        return <AboutYouScreen onNext={() => goTo("days")} onBack={() => goTo(fitnessLevel === "beginner" || fitnessLevel === null ? "level" : "timeaway")} onSkip={() => goTo("days")} />;
+        // AboutYouScreen captures gender and ageRange (Step 1 schema
+        // migration this session). Both fields now flow into bodyStats
+        // so Coach's File header and the Settings body-stats row reflect
+        // the user's onboarding answers. Skip is treated as "user did
+        // not provide" — bodyStats retains its current value (null
+        // fields on first launch, or whatever was already there if the
+        // user is re-entering onboarding for some reason).
+        return (
+          <AboutYouScreen
+            initialGender={bodyStats ? bodyStats.gender : null}
+            initialAgeRange={bodyStats ? bodyStats.ageRange : null}
+            onNext={({ gender, ageRange }) => {
+              setBodyStats((prev) => {
+                // Start from prev if present, else build a fresh skeleton.
+                // Then overlay the just-captured gender / ageRange. Empty
+                // values (null) from the screen don't clobber a previously
+                // set value — that lets a user back into onboarding without
+                // losing data.
+                const base = prev || { heightIn: null, weightLog: [], weightGoalTarget: null, weightGoalDirection: null, ageYears: null, ageRange: null, gender: null };
+                return {
+                  ...base,
+                  gender: gender || base.gender,
+                  ageRange: ageRange || base.ageRange,
+                };
+              });
+              goTo("days");
+            }}
+            onBack={() => goTo(fitnessLevel === "beginner" || fitnessLevel === null ? "level" : "timeaway")}
+            onSkip={() => goTo("days")}
+          />
+        );
       case "days":
         return <DaysScreen onNext={() => goTo("equipment")} onBack={() => goTo("aboutyou")} onSkip={() => goTo("equipment")} />;
       case "equipment":
@@ -11236,89 +12728,26 @@ export default function MYGFitness() {
     }
   };
 
-  // ── Viewport mode ──
-  // PhoneFrame (the 375×812 fake-bezel preview) is for wide screens only —
-  // claude.ai artifact preview, desktop browser, etc. On an actual phone
-  // it would push the TabBar off-screen because 812px + 80px padding is
-  // taller than iOS Safari's visible viewport, AND the fixed pixel height
-  // ignores the URL bar collapsing.
-  //
-  // On a real phone we render full-bleed using 100dvh (dynamic viewport
-  // height — the only height unit that correctly accounts for the iOS
-  // Safari URL bar showing/hiding) and pad the bottom with the home-
-  // indicator safe-area inset so the TabBar sits where the user expects.
-  //
-  // Detection: <= 500px wide ≈ phone (iPhones top out around 430). We
-  // measure on mount and on resize so rotating or opening dev tools works.
-  // Default to "phone" (true) so first paint on mobile is correct; the
-  // desktop preview will flip after mount, which is fine because the
-  // artifact iframe is always wide.
-  const [isPhone, setIsPhone] = useState(
-    typeof window !== "undefined" ? window.innerWidth <= 500 : true
-  );
-  useEffect(() => {
-    const onResize = () => setIsPhone(window.innerWidth <= 500);
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
-  }, []);
-
-  const globalStyles = (
-    <style>{`
-      input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 24px; height: 24px; border-radius: 50%; background: #FFD700; cursor: pointer; border: 3px solid #111111; box-shadow: 0 0 8px rgba(255,215,0,0.4); }
-      input[type="range"]::-moz-range-thumb { width: 24px; height: 24px; border-radius: 50%; background: #FFD700; cursor: pointer; border: 3px solid #111111; box-shadow: 0 0 8px rgba(255,215,0,0.4); }
-      @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
-      @keyframes coachDot { 0%, 60%, 100% { opacity: 0.2; } 30% { opacity: 1; } }
-      @keyframes shakeField {
-        0%, 100% { transform: translateX(0); }
-        15% { transform: translateX(-6px); }
-        30% { transform: translateX(6px); }
-        45% { transform: translateX(-4px); }
-        60% { transform: translateX(4px); }
-        75% { transform: translateX(-2px); }
-        90% { transform: translateX(2px); }
-      }
-      input::placeholder { color: #555; }
-      * { box-sizing: border-box; }
-      ::-webkit-scrollbar { width: 0; }
-    `}</style>
-  );
-
-  if (isPhone) {
-    // Full-bleed phone render. height:100dvh fills the visible viewport
-    // (and shrinks when the iOS URL bar appears, instead of overflowing).
-    // paddingBottom uses env(safe-area-inset-bottom) so the TabBar clears
-    // the home indicator. paddingTop:env(safe-area-inset-top) for the
-    // notch / Dynamic Island.
-    return (
-      <>
-        {globalStyles}
-        <div
-          style={{
-            height: "100dvh",
-            width: "100vw",
-            background: COLORS.bg,
-            display: "flex",
-            flexDirection: "column",
-            overflow: "hidden",
-            paddingTop: "env(safe-area-inset-top)",
-            paddingBottom: "env(safe-area-inset-bottom)",
-            fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-          }}
-        >
-          <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
-            {pIdx >= 0 && <ProgressBar current={pIdx + 1} total={progressScreens.length} />}
-            {renderScreen()}
-          </div>
-        </div>
-      </>
-    );
-  }
-
-  // Desktop / wide-viewport preview — keep the fake-iPhone frame so the
-  // artifact preview and design reviews still feel like "an app screen".
   return (
-    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#0a0a0a", padding: "40px 20px" }}>
-      {globalStyles}
+    <div style={{ width: "100vw", height: "100vh", background: COLORS.bg }}>
+      <style>{`
+        input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 24px; height: 24px; border-radius: 50%; background: #FFD700; cursor: pointer; border: 3px solid #111111; box-shadow: 0 0 8px rgba(255,215,0,0.4); }
+        input[type="range"]::-moz-range-thumb { width: 24px; height: 24px; border-radius: 50%; background: #FFD700; cursor: pointer; border: 3px solid #111111; box-shadow: 0 0 8px rgba(255,215,0,0.4); }
+        @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+        @keyframes coachDot { 0%, 60%, 100% { opacity: 0.2; } 30% { opacity: 1; } }
+        @keyframes shakeField {
+          0%, 100% { transform: translateX(0); }
+          15% { transform: translateX(-6px); }
+          30% { transform: translateX(6px); }
+          45% { transform: translateX(-4px); }
+          60% { transform: translateX(4px); }
+          75% { transform: translateX(-2px); }
+          90% { transform: translateX(2px); }
+        }
+        input::placeholder { color: #555; }
+        * { box-sizing: border-box; }
+        ::-webkit-scrollbar { width: 0; }
+      `}</style>
       <PhoneFrame>
         {pIdx >= 0 && <ProgressBar current={pIdx + 1} total={progressScreens.length} />}
         {renderScreen()}
