@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useLayoutEffect } from "react";
+import { useState, useEffect, useRef, useLayoutEffect, useMemo } from "react";
 
 const COLORS = {
   bg: "#111111",
@@ -1221,19 +1221,20 @@ function TopBar({ onBack, onSkip, showBack = true, showSkip = true }) {
 }
 
 function GoldButton({ children, onClick, style: s = {} }) {
-  const [h, setH] = useState(false);
+  // Press feedback (90ms instant-feedback token), not hover. Phones have
+  // no hover; the old onMouseEnter scale/brighten was dead code on the
+  // target platform. :active works for real touch. Bible motion spec,
+  // Session 47.
   return (
     <button
       onClick={onClick}
-      onMouseEnter={() => setH(true)}
-      onMouseLeave={() => setH(false)}
+      className="myg-press"
       style={{
         width: "100%", padding: "18px 24px",
-        background: h ? "#e6c200" : COLORS.gold,
+        background: COLORS.gold,
         color: COLORS.bg, border: "none", borderRadius: 12,
         fontSize: 17, fontWeight: 700, cursor: "pointer",
-        transition: "all 0.2s ease",
-        transform: h ? "scale(1.02)" : "scale(1)",
+        transition: "transform 90ms ease-out, background 90ms ease-out",
         letterSpacing: 0.3, ...s,
       }}
     >
@@ -1249,6 +1250,91 @@ function ProgressBar({ current, total }) {
         <div style={{ height: "100%", width: `${(current / total) * 100}%`, background: COLORS.gold, borderRadius: 3, transition: "width 0.4s ease" }} />
       </div>
     </div>
+  );
+}
+
+/* ── ScrollHint (Bible §2 motion, Session 47) ─────────────────────
+   Auto-hiding scroll-position indicator for long surfaces. Created
+   (not the desktop scrollbar restored — that stays killed globally).
+
+   Design decisions, all owner-locked this session:
+   • FIXED-LENGTH pill (36px), NOT a proportional thumb. A proportional
+     thumb on a medium list is a big ugly slab; a constant short pill
+     reads as a position dot, which is more on-brand for the minimalism
+     and avoids the "way too long" failure.
+   • Dim NEUTRAL GREY, not gold. The Bible rule is "gold appears once
+     per screen on the most important element only" — a scroll hint is
+     by definition not that element, so spending gold on it would break
+     a locked design rule. Grey says "orientation aid, ignore me."
+   • Visible only while scrolling; fades out 1000ms after scroll stops,
+     on the 220ms spatial-move token. At rest the surface is identical
+     to today (clean, no scrollbar).
+
+   Usage: the scroll container must be position:relative. Pass a ref to
+   it. The hint absolutely-positions itself against that container.
+
+     const scrollRef = useRef(null);
+     <div ref={scrollRef} style={{ ...overflowY:auto, position:"relative" }}>
+       <ScrollHint scrollRef={scrollRef} />
+       ...content...
+     </div>
+*/
+function ScrollHint({ scrollRef }) {
+  const PILL = 36;        // fixed pill length, px
+  const PAD = 4;          // inset from track top/bottom
+  const hintRef = useRef(null);
+  const hideTimer = useRef(null);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    const pill = hintRef.current;
+    if (!el || !pill) return;
+
+    const reposition = () => {
+      const max = el.scrollHeight - el.clientHeight;
+      // Nothing to scroll → never show.
+      if (max <= 1) {
+        pill.style.opacity = "0";
+        return;
+      }
+      const track = el.clientHeight - PILL - PAD * 2;
+      const frac = el.scrollTop / max;            // 0..1, correctly tracks position
+      const top = el.scrollTop + PAD + frac * track; // +scrollTop: pill is inside the
+                                                     // scrolled box, must ride along
+      pill.style.height = PILL + "px";
+      pill.style.top = top + "px";
+      pill.style.opacity = "1";
+      if (hideTimer.current) clearTimeout(hideTimer.current);
+      hideTimer.current = setTimeout(() => {
+        if (pill) pill.style.opacity = "0";
+      }, 1000);
+    };
+
+    el.addEventListener("scroll", reposition, { passive: true });
+    // Initial sizing pass (kept hidden until first scroll).
+    const max0 = el.scrollHeight - el.clientHeight;
+    if (max0 > 1) {
+      pill.style.height = PILL + "px";
+      pill.style.top = PAD + "px";
+    }
+    return () => {
+      el.removeEventListener("scroll", reposition);
+      if (hideTimer.current) clearTimeout(hideTimer.current);
+    };
+  }, [scrollRef]);
+
+  return (
+    <div
+      ref={hintRef}
+      aria-hidden="true"
+      style={{
+        position: "absolute", right: 3, width: 3, height: 36,
+        borderRadius: 3, background: "rgba(170,170,170,0.45)",
+        opacity: 0, pointerEvents: "none",
+        transition: "opacity 220ms cubic-bezier(0.22,1,0.36,1)",
+        zIndex: 5,
+      }}
+    />
   );
 }
 
@@ -1320,9 +1406,9 @@ function WelcomeScreen({ onGetStarted, onSignIn }) {
   useEffect(() => { setTimeout(() => setLogoV(true), 200); setTimeout(() => setContentV(true), 900); }, []);
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "0 32px", position: "relative" }}>
-      {/* V.8 marker — temporary build indicator. Bump with each push to
+      {/* V.11 marker — temporary build indicator. Bump with each push to
           verify cache isn't serving stale code. Remove before shipping. */}
-      <div style={{ position: "absolute", top: 16, right: 20, color: COLORS.textSecondary, fontSize: 11, fontWeight: 500, letterSpacing: 1, opacity: 0.7 }}>V.9</div>
+      <div style={{ position: "absolute", top: 16, right: 20, color: COLORS.textSecondary, fontSize: 11, fontWeight: 500, letterSpacing: 1, opacity: 0.7 }}>V.11</div>
       <div style={{ position: "absolute", top: "40%", textAlign: "center", opacity: logoV ? 1 : 0, transform: logoV ? "translateY(-50%) scale(1)" : "translateY(-50%) scale(1.08)", transition: "all 0.9s cubic-bezier(0.22,1,0.36,1)" }}>
         <h1 style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 92, fontWeight: 700, color: COLORS.gold, margin: 0, letterSpacing: 8 }}>MYG</h1>
       </div>
@@ -3208,7 +3294,23 @@ const MOCK_WORKOUT_HISTORY = [
 
    Schema:
    - rule: { id, text, createdAt (epoch ms) }
-   - observation: { id, text, createdAt (epoch ms) }
+   - observation: {
+       id, text, createdAt (epoch ms),
+       // D-045 confidence tier. The flag engine owns this — it is the
+       // n-count of how many times the pattern was seen, NOT anything
+       // the LLM authors. 2 = "noticed, Coach may ask"; 3 = "standing
+       // pattern Coach acts on". (n=1 silents are not surfaced here,
+       // matching the always-on layer — see Bible line 1209 backlog.)
+       tier (number, 2 | 3),
+       // Provenance: the concrete sessions/signal that tripped the flag.
+       // ENGINE-ATTACHED, never LLM-reconstructed — this is the ground
+       // truth fed into the "Ask Coach" explanation turn so Coach
+       // explains FROM real data instead of confabulating sessions it
+       // doesn't have in always-on context (always-on excludes set/
+       // weight detail — Bible line 775). Shape:
+       //   { sessions: [string label, ...], signal: string }
+       provenance ({ sessions: string[], signal: string } | null)
+     }
    - progressPR: { id, exerciseName, value (display string), isPR, isNew, achievedAt (epoch ms) }
    - bodyStats: {
        heightIn (number | null),
@@ -3248,13 +3350,27 @@ const MOCK_COACH_RULES = [
 ];
 
 const MOCK_COACH_OBSERVATIONS = [
-  { id: "o1", text: "Tests heavy on isolation sets, settles 10-15% lower", createdAt: NOW_FOR_SEED - 3 * DAY },
-  { id: "o2", text: "Pyramid pattern on plate-loaded compounds", createdAt: NOW_FOR_SEED - 5 * DAY },
-  { id: "o3", text: "Often 5+ min between sets on heavy compounds", createdAt: NOW_FOR_SEED - 7 * DAY },
-  { id: "o4", text: "Prefers free weights over machines for upper body", createdAt: NOW_FOR_SEED - 9 * DAY },
-  { id: "o5", text: "Skips warm-up sets on Leg Day primaries", createdAt: NOW_FOR_SEED - 12 * DAY },
-  { id: "o6", text: "Tends to schedule Push days for Mondays", createdAt: NOW_FOR_SEED - 15 * DAY },
-  { id: "o7", text: "Cuts sessions short when over 50 minutes", createdAt: NOW_FOR_SEED - 18 * DAY },
+  { id: "o1", text: "Tests heavy on isolation sets, settles 10-15% lower", createdAt: NOW_FOR_SEED - 3 * DAY, tier: 3,
+    provenance: { sessions: ["Push Day · Mar 2", "Pull Day · Mar 6", "Push Day · Mar 9", "Arms · Mar 13"],
+      signal: "First isolation set logged 10–15% above the weight of the remaining working sets, across 4 sessions" } },
+  { id: "o2", text: "Pyramid pattern on plate-loaded compounds", createdAt: NOW_FOR_SEED - 5 * DAY, tier: 3,
+    provenance: { sessions: ["Leg Day · Mar 1", "Push Day · Mar 4", "Leg Day · Mar 8"],
+      signal: "Ascending weight across working sets on barbell/plate-loaded compounds (Squat, Bench, Leg Press)" } },
+  { id: "o3", text: "Often 5+ min between sets on heavy compounds", createdAt: NOW_FOR_SEED - 7 * DAY, tier: 2,
+    provenance: { sessions: ["Leg Day · Mar 1", "Push Day · Mar 4"],
+      signal: "Rest-timer gaps exceeding 5:00 on sets above ~85% of the session's top set" } },
+  { id: "o4", text: "Prefers free weights over machines for upper body", createdAt: NOW_FOR_SEED - 9 * DAY, tier: 3,
+    provenance: { sessions: ["Push Day · Feb 23", "Pull Day · Feb 27", "Push Day · Mar 4"],
+      signal: "Machine alternatives swapped to barbell/dumbbell via the alternatives picker on upper-body lifts" } },
+  { id: "o5", text: "Skips warm-up sets on Leg Day primaries", createdAt: NOW_FOR_SEED - 12 * DAY, tier: 2,
+    provenance: { sessions: ["Leg Day · Feb 22", "Leg Day · Mar 1"],
+      signal: "First logged Squat set within 5% of the session's top set — no ramp sets recorded" } },
+  { id: "o6", text: "Tends to schedule Push days for Mondays", createdAt: NOW_FOR_SEED - 15 * DAY, tier: 2,
+    provenance: { sessions: ["Push Day · Feb 19 (Mon)", "Push Day · Feb 26 (Mon)"],
+      signal: "Workouts auto-named 'Push' started on consecutive Mondays" } },
+  { id: "o7", text: "Cuts sessions short when over 50 minutes", createdAt: NOW_FOR_SEED - 18 * DAY, tier: 3,
+    provenance: { sessions: ["Leg Day · Feb 15", "Push Day · Feb 20", "Pull Day · Feb 24"],
+      signal: "Final 1–2 prescribed exercises left unlogged once elapsed session time passed ~50 min" } },
 ];
 
 const MOCK_PROGRESS_PRS = [
@@ -3391,10 +3507,12 @@ function WorkoutTab({
   // metrics are font-dependent), causing the sheet to overshoot its
   // resting position during drag.
   const containerRef = useRef(null);
+  const workoutScrollRef = useRef(null);
 
   return (
     <div ref={containerRef} style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, position: "relative" }}>
-      <div style={{ flex: 1, padding: "8px 24px 20px", overflowY: "auto" }}>
+      <div ref={workoutScrollRef} style={{ flex: 1, padding: "8px 24px 20px", overflowY: "auto", position: "relative" }}>
+        <ScrollHint scrollRef={workoutScrollRef} />
         <h2 style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 22, color: COLORS.text, margin: "0 0 12px", fontWeight: 400 }}>Workout</h2>
 
         {/* CTA section — messaging only when no workout. Buttons always
@@ -3723,34 +3841,90 @@ function ActiveLogger({
     return () => clearInterval(id);
   }, [startTime]);
 
-  // When the active field changes, scroll its row to a comfortable position
-  // above the keypad. We can't use scrollIntoView({ block: "center" }) here
-  // because "center" centers the row in the FULL scroll container — but the
-  // keypad occludes the bottom ~280px of that container, so a centered row
-  // can still end up partially under the keypad on shorter content lists.
-  // Manual math: compute the visible area above the keypad and place the row's
-  // top at ~30% of that area (Strong-style comfortable position — clearly above
-  // the keypad, plenty of breathing room above to confirm context). The
-  // paddingBottom on the scroll container is 280px to match the keypad.
+  // When the active field changes, scroll its row clear of the keypad.
+  //
+  // The keypad is an absolute overlay pinned to the scroller's bottom edge,
+  // occluding roughly the bottom KEYPAD_ZONE px. We want the active row to
+  // sit just ABOVE that occluded zone with a little breathing room — so the
+  // user sees the field, what they're typing, and some context above it.
+  //
+  // The previous implementation computed a content-relative target scrollTop
+  // (node.offsetTop, then "place the row at 30% of the visible area") and
+  // clamped it to the max scrollTop. That clamp defeated the purpose for
+  // rows near the bottom of the list: their desired target exceeds the
+  // content's max scrollTop, so every bottom field collapsed to max-scroll —
+  // i.e. the row stayed pinned at the very bottom, right under the keypad.
+  // node.offsetTop was also measured against the wrong origin (offsetParent,
+  // not the scroller), making even mid-list targets imprecise.
+  //
+  // This version is viewport-relative: measure where the row currently is
+  // (getBoundingClientRect) and where the keypad's top edge is (the
+  // scroller's bottom rect minus KEYPAD_ZONE), then scroll by exactly the
+  // delta needed to seat the row's bottom GAP px above the keypad. Only
+  // scroll down if the row is actually occluded or too close; never scroll
+  // up (that would yank context away when the field is already comfortable).
+  // The paddingBottom: 280 on the scroll container supplies the scrollable
+  // slack the last row needs to travel all the way up.
   useEffect(() => {
     if (!activeField) return;
     const key = `${activeField.exerciseUid}_${activeField.setIdx}`;
     const node = setRowRefs.current[key];
     const scroller = scrollRef.current;
     if (!node || !scroller) return;
-    // Small timeout so React has committed any layout changes first
-    // (e.g. paddingBottom: 280 transition just kicked in).
-    setTimeout(() => {
-      const KEYPAD_ZONE = 260; // ~keypad height + small gap
-      const COMFORT_RATIO = 0.3; // row top sits at 30% of visible-above-keypad
-      const visibleAbove = scroller.clientHeight - KEYPAD_ZONE;
-      // Row's current top relative to the scroll container.
-      const nodeTop = node.offsetTop - scroller.offsetTop;
-      // Target scrollTop puts the row's top at COMFORT_RATIO of the visible area.
-      const target = nodeTop - visibleAbove * COMFORT_RATIO;
-      const clamped = Math.max(0, Math.min(target, scroller.scrollHeight - scroller.clientHeight));
-      scroller.scrollTo({ top: clamped, behavior: "smooth" });
-    }, 30);
+
+    // CRITICAL TIMING NOTE: focusing a field flips the scroll container's
+    // paddingBottom from 20 → 280 via a `padding-bottom 0.2s ease` CSS
+    // transition. That transition is exactly what grows scrollHeight enough
+    // for a bottom row to travel up clear of the keypad. If we measure and
+    // scroll before the transition finishes, scrollHeight (and therefore
+    // maxScroll) is still mid-grow, the target gets clamped to a too-small
+    // maxScroll, and the bottom row stays pinned under the keypad. The old
+    // fixed 30ms delay always fired mid-transition — that was the bug.
+    //
+    // So instead of guessing a delay, poll on rAF until scrollHeight stops
+    // changing (the transition has settled), then compute. A frame/iteration
+    // cap guarantees this can never loop forever.
+    let raf = 0;
+    let lastSH = -1;
+    let stableFrames = 0;
+    let iterations = 0;
+    const MAX_ITERATIONS = 60; // ~1s worst case at 60fps — hard safety cap
+
+    const settleThenScroll = () => {
+      iterations += 1;
+      const sh = scroller.scrollHeight;
+      if (sh === lastSH) {
+        stableFrames += 1;
+      } else {
+        stableFrames = 0;
+        lastSH = sh;
+      }
+      // Require a few consecutive stable frames so we don't fire on a
+      // single coincidental match mid-animation.
+      if (stableFrames < 3 && iterations < MAX_ITERATIONS) {
+        raf = requestAnimationFrame(settleThenScroll);
+        return;
+      }
+
+      const KEYPAD_ZONE = 260; // ~keypad height (matches paddingBottom: 280, less a margin)
+      const GAP = 24; // breathing room between the row's bottom and the keypad top
+      const scrollerRect = scroller.getBoundingClientRect();
+      const nodeRect = node.getBoundingClientRect();
+      // The y-coordinate of the keypad's top edge, in viewport space.
+      const keypadTopY = scrollerRect.bottom - KEYPAD_ZONE;
+      // How far the row's bottom is below where we want it (positive = the
+      // row is occluded or too close to the keypad and must move up).
+      const overlap = nodeRect.bottom - (keypadTopY - GAP);
+      if (overlap <= 0) return; // already comfortably clear — leave it
+      // Don't over-scroll past the content's end. By now the padding
+      // transition has settled, so scrollHeight (hence maxScroll) is final.
+      const maxScroll = scroller.scrollHeight - scroller.clientHeight;
+      const target = Math.min(scroller.scrollTop + overlap, maxScroll);
+      scroller.scrollTo({ top: target, behavior: "smooth" });
+    };
+
+    raf = requestAnimationFrame(settleThenScroll);
+    return () => { if (raf) cancelAnimationFrame(raf); };
   }, [activeField]);
 
   // ── Single global rest timer ──
@@ -6511,6 +6685,7 @@ function SessionBar({ workout, restTimerMode, restCountdownTarget, onTap }) {
    and variant confirm. Mirrors the patterns from ExercisesTab and
    ExerciseDetailSheet so it feels familiar, but ends in addExercise(). */
 function AddExerciseSheet({ userEquipment, customExercises = [], workoutHistory = [], onClose, onAdd }) {
+  const pickerScrollRef = useRef(null);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("All");
   const [onlyMine, setOnlyMine] = useState(false);
@@ -6659,7 +6834,8 @@ function AddExerciseSheet({ userEquipment, customExercises = [], workoutHistory 
               </div>
             </div>
 
-            <div style={{ flex: 1, padding: "4px 20px 16px", overflowY: "auto", overscrollBehavior: "contain", minHeight: 0 }}>
+            <div ref={pickerScrollRef} style={{ flex: 1, padding: "4px 20px 16px", overflowY: "auto", overscrollBehavior: "contain", minHeight: 0, position: "relative" }}>
+              <ScrollHint scrollRef={pickerScrollRef} />
               {filtered.length === 0 && (
                 <div style={{ textAlign: "center", color: COLORS.textSecondary, fontSize: 13, padding: "32px 20px" }}>
                   No exercises found.
@@ -6927,7 +7103,7 @@ function getChatDisplayName(chat) {
   return formatChatDefaultName(chat.createdAt);
 }
 
-function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFocused, onAppendMessage, onUpdateLastMessage, onNewChat, onSwitchChat, onDeleteChat, onRenameChat }) {
+function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFocused, onAppendMessage, onUpdateLastMessage, onNewChat, onSwitchChat, onDeleteChat, onRenameChat, pendingSeed, onSeedConsumed }) {
   // Bible §4.7: hard cap on user message length. Keeps one chat message
   // within a single API call's budget and prevents runaway prompts. The
   // counter only appears in the last 100 chars so it doesn't distract
@@ -6956,6 +7132,7 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
   // Delete confirm target: chat object or null.
   const [deleteTarget, setDeleteTarget] = useState(null);
   const bottomRef = useRef(null);
+  const coachScrollRef = useRef(null);
   // Refs that hold the in-flight stream timers so chat-switch and unmount
   // can cancel cleanly. firstTokenTimeoutRef = the pre-first-token delay;
   // streamIntervalRef = the per-chunk setInterval that grows the text.
@@ -7148,6 +7325,74 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
     }, FIRST_TOKEN_DELAY_MS);
   };
 
+  // ── Consume a "Ask Coach about this observation" deep-link ─────────
+  // When App sets pendingSeed, we land here (the tab has just switched
+  // to Coach). We post the user's question into the CURRENT chat and
+  // stream a Coach reply — using the exact same append→timeout→stream
+  // pattern as send() (which is the proven, race-free path). We do NOT
+  // call onNewChat() here: doing so raced the currentCoachChatId state
+  // update against onAppendMessage, so the streamed reply landed on the
+  // old chat id while the user saw an empty new one (the bug the
+  // Playwright loop caught). Appending to the current chat matches
+  // send()'s behavior and is race-free.
+  //
+  // The provenance/tier context rides on pendingSeed.context: today it
+  // grounds the canned mock explanation below; when the real Coach API
+  // is wired this same string becomes the injected context packet on
+  // the turn — no change to this component's flow.
+  //
+  // Guarded by a ref so a re-render while the seed is still non-null
+  // (or React 18 strict-mode double-invoke) can't double-post.
+  const seedHandledRef = useRef(null);
+  useEffect(() => {
+    if (!pendingSeed) return;
+    // Idempotency is enforced ONLY by this ref keyed on the seed object
+    // identity — NOT by a cleanup that cancels in-flight work. App calls
+    // onSeedConsumed() (which nulls the seed) as soon as we kick off,
+    // causing this effect to re-run; a cleanup that cleared the kickoff
+    // timer would cancel the very work we just scheduled (a bug an
+    // earlier iteration hit). The ref guard makes re-entry a no-op
+    // without touching the scheduled work.
+    if (seedHandledRef.current === pendingSeed) return;
+    seedHandledRef.current = pendingSeed;
+    const seed = pendingSeed;
+
+    // ORDERING: tapping "Ask Coach" switches the tab, so CoachTab MOUNTS
+    // fresh. The [chat?.id] effect below runs cancelStream() on mount,
+    // and React runs mount effects in definition order — a synchronously
+    // scheduled reply timer here would be created before that
+    // cancelStream() and immediately cleared by it (observed: user msg
+    // posted, reply never streamed). Deferring the kickoff to a
+    // macrotask runs it strictly after all mount effects, so
+    // cancelStream() has already fired and can't clobber our timer.
+    setTimeout(() => {
+      onAppendMessage({ role: "user", text: seed.question, seededContext: seed.context });
+      setIsThinking(true);
+      firstTokenTimeoutRef.current = setTimeout(() => {
+        firstTokenTimeoutRef.current = null;
+        setIsThinking(false);
+        const ctx = seed.context || "";
+        const sigMatch = ctx.match(/TRIGGERING SIGNAL: (.+)/);
+        const srcMatch = ctx.match(/SOURCE SESSIONS: (.+)/);
+        const tierLine = /n=3/.test(ctx)
+          ? "Because I've seen it across several sessions, I treat it as a standing part of how you train — I factor it into how I program for you."
+          : "I've only seen this a couple of times so far, so I'm holding it loosely — I might ask you about it rather than acting on it yet.";
+        const body = [
+          "Good question — here's what I meant by that.",
+          sigMatch ? `What I actually saw: ${sigMatch[1].trim()}.` : null,
+          srcMatch ? `Where it came from: ${srcMatch[1].trim()}.` : null,
+          tierLine,
+          "Why it matters for you: it tells me how to calibrate prescriptions — I won't read a hard top set as your true working capacity, and I won't mistake a deliberate pattern for a plateau. If this doesn't match how you actually train, tell me and I'll drop it.",
+          "(This explanation is a placeholder until the live Coach is connected — but it's reading your real observation data.)",
+        ].filter(Boolean).join("\n\n");
+        streamText(body, { role: "coach", kind: "text" });
+      }, FIRST_TOKEN_DELAY_MS);
+      // Consume only AFTER the kickoff has run, so the seed-nulling
+      // re-render can't pre-empt the scheduled work.
+      if (onSeedConsumed) onSeedConsumed();
+    }, 60);
+  }, [pendingSeed]);
+
   // Auto-scroll to the latest message. We scroll the messages container
   // directly (via its scrollTop) rather than calling scrollIntoView() on
   // bottomRef. scrollIntoView walks all scrollable ancestors and scrolls
@@ -7260,8 +7505,66 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
       )}
 
       {/* Messages */}
-      <div style={{ flex: 1, minHeight: 0, padding: "16px 24px", overflowY: "auto", WebkitOverflowScrolling: "touch" }}>
-        {messages.map((m, i) => {
+      <div ref={coachScrollRef} style={{ flex: 1, minHeight: 0, padding: "16px 24px", overflowY: "auto", WebkitOverflowScrolling: "touch", position: "relative" }}>
+        <ScrollHint scrollRef={coachScrollRef} />
+        {currentIsEmpty ? (
+          /* ── Empty-state (Option B, Session 47) ──────────────────────
+             Replaces the lone cold-start bubble on a fresh chat. Calm,
+             not full: gold monogram + one prompt line + 3 starter chips.
+             Chips PREFILL the input and focus it (not auto-send) so the
+             user can edit before sending. The cold-start greeting still
+             becomes the first real Coach message once the conversation
+             actually starts (messages[] logic upstream unchanged). */
+          <div style={{
+            minHeight: "100%", display: "flex", flexDirection: "column",
+            alignItems: "center", justifyContent: "center",
+            textAlign: "center", padding: "0 24px",
+          }}>
+            <div style={{
+              width: 56, height: 56, borderRadius: "50%",
+              border: `1.5px solid ${COLORS.gold}`, display: "flex",
+              alignItems: "center", justifyContent: "center",
+              fontFamily: "Georgia, 'Times New Roman', serif",
+              fontSize: 24, color: COLORS.gold,
+            }}>C</div>
+            <div style={{
+              fontFamily: "Georgia, 'Times New Roman', serif",
+              fontSize: 18, color: COLORS.text, margin: "16px 0 16px",
+            }}>
+              What can I help with?
+            </div>
+            <div style={{
+              display: "flex", flexWrap: "wrap", justifyContent: "center",
+              maxWidth: 280, gap: 0,
+            }}>
+              {[
+                "Build me today\u2019s workout",
+                "I\u2019m short on time",
+                "Check my form",
+              ].map((label) => (
+                <button
+                  key={label}
+                  className="myg-press"
+                  onClick={() => {
+                    setInput(label);
+                    if (textareaRef.current) textareaRef.current.focus();
+                  }}
+                  disabled={!isOnline}
+                  style={{
+                    padding: "10px 16px", margin: 5,
+                    border: `1px solid ${COLORS.border}`,
+                    borderRadius: 20, background: "#161616",
+                    color: isOnline ? "#bbb" : COLORS.inactive,
+                    fontSize: 13, cursor: isOnline ? "pointer" : "default",
+                    transition: "transform 90ms ease-out",
+                  }}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : messages.map((m, i) => {
           // ── Workout-kind Coach message (mock leg-day reply) ──────────
           // Wider max-width so the workout block doesn't crush. Renders
           // three parts inside one bubble:
@@ -7857,6 +8160,7 @@ function ExercisesTab({
   // Map of exercise id → DOM node for the row. Populated by refs on each
   // row button so we can scroll a specific row into view after creation.
   const rowRefs = useRef({});
+  const exScrollRef = useRef(null);
   // Timer ref so we can clear it if the highlight is dismissed early.
   const highlightTimerRef = useRef(null);
 
@@ -8114,7 +8418,8 @@ function ExercisesTab({
       </div>
 
       {/* Exercise list */}
-      <div style={{ flex: 1, padding: "4px 24px 20px", overflowY: "auto", overscrollBehavior: "contain", minHeight: 0 }}>
+      <div ref={exScrollRef} style={{ flex: 1, padding: "4px 24px 20px", overflowY: "auto", overscrollBehavior: "contain", minHeight: 0, position: "relative" }}>
+        <ScrollHint scrollRef={exScrollRef} />
         {sorted.length === 0 && (
           <div style={{ textAlign: "center", color: COLORS.textSecondary, fontSize: 13, padding: "40px 20px" }}>
             {onlyMine
@@ -9633,6 +9938,16 @@ function upsertWeightEntry(weightLog, lb, loggedAt = Date.now()) {
   return arr;
 }
 
+// Remove a single weigh-in by its id. Returns the new log array (caller
+// spreads into setBodyStats). No-op if the id isn't present. Pairs with
+// the trailing-✕ delete affordance on the recent-entries list — a tap,
+// not a swipe, deliberately (the §8 gesture bugs are all swipe-related;
+// a low-frequency destructive action shouldn't inherit that class).
+function deleteWeightEntry(weightLog, id) {
+  if (!Array.isArray(weightLog)) return [];
+  return weightLog.filter((e) => e.id !== id);
+}
+
 // One-time migration shim for snapshots from before this session.
 // Pre-Session-42 snapshots stored bodyStats.weightLb (single number).
 // This session, weight became weightLog (array of entries). On hydration,
@@ -11037,9 +11352,13 @@ function ProgressSubscreen({ progressPRs, onBack }) {
    red-bordered "Reset all observations" destructive button. Empty state:
    placeholder + signed "— C" footer, no CTA.
 */
-function ObservationsSubscreen({ coachObservations, onDeleteObservation, onResetAll, onBack }) {
+function ObservationsSubscreen({ coachObservations, onAskCoach, onDeleteObservation, onResetAll, onBack }) {
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
   const [confirmResetAll, setConfirmResetAll] = useState(false);
+  // Which observation's ⋯ menu is open (id) or null. The ⋯ is now an
+  // honest menu (Ask Coach / Delete), not a delete-only shortcut — the
+  // delete-only ⋯ was a long-standing glyph-honesty wart (Bible §6.5).
+  const [menuOpenId, setMenuOpenId] = useState(null);
   const sorted = [...(coachObservations || [])].sort((a, b) => b.createdAt - a.createdAt);
 
   // Font scale matches the bumped Profile landing.
@@ -11083,15 +11402,62 @@ function ObservationsSubscreen({ coachObservations, onDeleteObservation, onReset
         <div key={o.id} style={{
           padding: "10px 0", display: "flex",
           justifyContent: "space-between", alignItems: "baseline",
-          borderBottom: "1px solid #1a1a1a", gap: 14,
+          borderBottom: "1px solid #1a1a1a", gap: 14, position: "relative",
         }}>
           <span style={{ ...TYPE.body, flex: 1 }}>{o.text}</span>
           <span style={{ ...TYPE.meta, whiteSpace: "nowrap" }}>{formatDaysAgoCap(o.createdAt)}</span>
           <button
-            onClick={() => setConfirmDeleteId(o.id)}
-            aria-label="Delete observation"
-            style={{ background: "transparent", border: "none", padding: 4, margin: -4, cursor: "pointer", color: "#666", fontSize: 14, flexShrink: 0 }}
+            onClick={() => setMenuOpenId(menuOpenId === o.id ? null : o.id)}
+            aria-label="Observation actions"
+            aria-haspopup="menu"
+            aria-expanded={menuOpenId === o.id}
+            style={{ background: "transparent", border: "none", padding: 4, margin: -4, cursor: "pointer", color: menuOpenId === o.id ? COLORS.gold : "#666", fontSize: 14, flexShrink: 0 }}
           >⋯</button>
+
+          {menuOpenId === o.id && (
+            <>
+              {/* Tap-away scrim — closes the menu without acting. */}
+              <div
+                onClick={() => setMenuOpenId(null)}
+                style={{ position: "fixed", inset: 0, zIndex: 60 }}
+              />
+              <div
+                role="menu"
+                style={{
+                  position: "absolute", top: 30, right: 0, zIndex: 61,
+                  background: COLORS.card, border: `1px solid ${COLORS.border}`,
+                  borderRadius: 12, overflow: "hidden", minWidth: 208,
+                  boxShadow: "0 10px 28px rgba(0,0,0,0.6)",
+                }}
+              >
+                <button
+                  role="menuitem"
+                  onClick={() => { setMenuOpenId(null); onAskCoach(o); }}
+                  style={{
+                    width: "100%", textAlign: "left", padding: "13px 16px",
+                    background: "transparent", border: "none", cursor: "pointer",
+                    color: COLORS.text, fontSize: 14,
+                    fontFamily: "-apple-system, system-ui, sans-serif",
+                    borderBottom: `1px solid ${COLORS.border}`,
+                    display: "flex", alignItems: "center", gap: 10,
+                  }}
+                >
+                  <CoachMonogram size={16} />
+                  Ask Coach about this
+                </button>
+                <button
+                  role="menuitem"
+                  onClick={() => { setMenuOpenId(null); setConfirmDeleteId(o.id); }}
+                  style={{
+                    width: "100%", textAlign: "left", padding: "13px 16px",
+                    background: "transparent", border: "none", cursor: "pointer",
+                    color: "#cc4444", fontSize: 14,
+                    fontFamily: "-apple-system, system-ui, sans-serif",
+                  }}
+                >Delete observation</button>
+              </div>
+            </>
+          )}
         </div>
       ))}
 
@@ -11171,6 +11537,414 @@ function ObservationsSubscreen({ coachObservations, onDeleteObservation, onReset
   );
 }
 
+/* ── WeightTrackerCard (Bible §9, Sessions 42 + 43) ──────────────────
+   The full weight tracker that lives inside the Body Stats → Weight
+   expanded editor (NOT on Home — Session 42 lock). Four parts, top to
+   bottom: (1) log-entry form, (2) chart SVG, (3) goal editor,
+   (4) recent-entries list.
+
+   Locked design decisions this implements:
+   - Stored unit is always lb; kg is a display-layer conversion both
+     directions (Session 42).
+   - One entry per calendar day; same-day re-log overwrites silently —
+     no confirmation (owner call this session; matches the "quiet,
+     observational" §9 intent).
+   - Chart = faint mid-gray dots for raw entries + a bold gold SMOOTHED
+     trend line. Explicitly NOT connect-the-dots (§9: connecting daily
+     points encourages obsessing over noise).
+   - Y-axis = hybrid auto-fit with a 10 lb MINIMUM window so a tight
+     cluster of values doesn't get visually exaggerated (Session 42).
+   - Time-window pills 1M / 3M / 6M / 1Y / All, default 1M (Session 42).
+   - Partial-data states: 0 → prompt, 1 → single dot + flat baseline,
+     2 → bare connection, 3+ → dots + smoothed trend (Session 42).
+   - Goal is optional, independent of planGoal: direction (lose / gain /
+     maintain) + single target number. Renders a horizontal target line
+     + "X lb to go" badge (Session 42).
+   - No achievements / streaks / celebratory copy (Session 42 — weight
+     change celebration has documented harm potential).
+
+   Smoothing: centered moving average over the windowed-and-sorted
+   entries (window 5, clamped at the ends). Library-free, renders as a
+   single SVG path. Small window keeps the trend responsive without
+   being as jagged as the raw series.
+
+   Delete affordance: a trailing ✕ per recent-entries row — a tap, not
+   a swipe (owner call this session; keeps a low-frequency destructive
+   action out of the §8 swipe-gesture-bug class).
+*/
+function WeightTrackerCard({ weightLog, weightGoalTarget, weightGoalDirection, unitsPref, onLogWeight, onDeleteEntry, onSetGoal }) {
+  const isKg = unitsPref === "kg";
+  const LB_PER_KG = 0.453592;
+  const toDisplay = (lb) => (isKg ? lb / LB_PER_KG * LB_PER_KG : lb); // identity for lb; kept explicit for symmetry
+  const lbToDisp = (lb) => (isKg ? lb / LB_PER_KG : lb);
+  const dispToLb = (v) => (isKg ? v * LB_PER_KG : v);
+  const unit = isKg ? "kg" : "lb";
+  const fmt = (lb) => {
+    const v = lbToDisp(lb);
+    return isKg ? v.toFixed(1) : String(Math.round(v * 10) / 10);
+  };
+
+  const TYPE = {
+    body: { fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 15, color: "#e8e8e8", lineHeight: 1.5 },
+    smallLabel: { fontFamily: "-apple-system, system-ui, sans-serif", fontSize: 10, color: "#666", letterSpacing: 1.2, textTransform: "uppercase", fontWeight: 500 },
+    micro: { fontFamily: "-apple-system, system-ui, sans-serif", fontSize: 9, letterSpacing: 1, color: "#555" },
+  };
+  const inputStyle = {
+    background: "#1a1a1a", border: "1px solid #2a2a2a", borderRadius: 8,
+    padding: "10px 12px", color: COLORS.text, fontSize: 16,
+    fontFamily: "-apple-system, system-ui, sans-serif", width: "100%",
+    boxSizing: "border-box", outline: "none",
+  };
+
+  const sorted = useMemo(
+    () => (Array.isArray(weightLog) ? [...weightLog] : []).sort((a, b) => a.loggedAt - b.loggedAt),
+    [weightLog]
+  );
+
+  // ── Log-entry form state. Local string so half-typed values don't
+  // commit. Always blank on open (logging "today" is the common case;
+  // pre-filling last weight invites accidental dup-logs).
+  const [entryStr, setEntryStr] = useState("");
+  const commitEntry = () => {
+    const n = parseFloat(entryStr);
+    if (!Number.isFinite(n)) return;
+    // Validate in the displayed unit, same bounds as the old editor.
+    if (isKg) { if (n < 23 || n > 318) return; }
+    else { if (n < 50 || n > 700) return; }
+    const lb = dispToLb(n);
+    onLogWeight(Math.round(lb * 10) / 10);
+    setEntryStr("");
+  };
+
+  // ── Time-window pills. 1M default.
+  const WINDOWS = [
+    { key: "1M", label: "1M", days: 30 },
+    { key: "3M", label: "3M", days: 91 },
+    { key: "6M", label: "6M", days: 182 },
+    { key: "1Y", label: "1Y", days: 365 },
+    { key: "ALL", label: "All", days: null },
+  ];
+  const [windowKey, setWindowKey] = useState("1M");
+  const win = WINDOWS.find((w) => w.key === windowKey) || WINDOWS[0];
+
+  const windowed = useMemo(() => {
+    if (win.days == null || sorted.length === 0) return sorted;
+    const newest = sorted[sorted.length - 1].loggedAt;
+    const cutoff = newest - win.days * 24 * 60 * 60 * 1000;
+    return sorted.filter((e) => e.loggedAt >= cutoff);
+  }, [sorted, win]);
+
+  // ── Centered moving-average smoother (window 5, clamped at ends).
+  const smoothed = useMemo(() => {
+    const n = windowed.length;
+    if (n < 3) return [];
+    const half = 2; // window of 5
+    const out = [];
+    for (let i = 0; i < n; i++) {
+      let sum = 0, cnt = 0;
+      for (let j = i - half; j <= i + half; j++) {
+        if (j >= 0 && j < n) { sum += windowed[j].lb; cnt++; }
+      }
+      out.push({ loggedAt: windowed[i].loggedAt, lb: sum / cnt });
+    }
+    return out;
+  }, [windowed]);
+
+  // ── Chart geometry. Hybrid auto-fit Y with a 10 lb minimum window.
+  const CW = 320, CH = 150, PAD_L = 4, PAD_R = 4, PAD_T = 12, PAD_B = 12;
+  const plotW = CW - PAD_L - PAD_R;
+  const plotH = CH - PAD_T - PAD_B;
+
+  const chart = useMemo(() => {
+    if (windowed.length === 0) return null;
+    const lbs = windowed.map((e) => e.lb);
+    let lo = Math.min(...lbs);
+    let hi = Math.max(...lbs);
+    // Fold the goal line into the range so it's always visible if set.
+    if (typeof weightGoalTarget === "number") {
+      lo = Math.min(lo, weightGoalTarget);
+      hi = Math.max(hi, weightGoalTarget);
+    }
+    const span = hi - lo;
+    const MIN_WINDOW = 10; // lb — Session 42 lock
+    if (span < MIN_WINDOW) {
+      const mid = (hi + lo) / 2;
+      lo = mid - MIN_WINDOW / 2;
+      hi = mid + MIN_WINDOW / 2;
+    } else {
+      // Small breathing room so dots aren't flush to the edges.
+      lo -= span * 0.08;
+      hi += span * 0.08;
+    }
+    const tMin = windowed[0].loggedAt;
+    const tMax = windowed[windowed.length - 1].loggedAt;
+    const tSpan = Math.max(1, tMax - tMin);
+    const x = (t) => PAD_L + (windowed.length === 1 ? plotW / 2 : ((t - tMin) / tSpan) * plotW);
+    const y = (lb) => PAD_T + (1 - (lb - lo) / (hi - lo)) * plotH;
+    return { lo, hi, x, y, tMin, tMax };
+  }, [windowed, weightGoalTarget]);
+
+  // ── Goal editor state.
+  const [goalOpen, setGoalOpen] = useState(false);
+  const [goalStr, setGoalStr] = useState(
+    typeof weightGoalTarget === "number" ? fmt(weightGoalTarget) : ""
+  );
+  const [goalDir, setGoalDir] = useState(weightGoalDirection || "lose");
+  useEffect(() => {
+    setGoalStr(typeof weightGoalTarget === "number" ? fmt(weightGoalTarget) : "");
+    setGoalDir(weightGoalDirection || "lose");
+  }, [weightGoalTarget, weightGoalDirection, unitsPref]);
+  const commitGoal = () => {
+    if (goalStr.trim() === "") { onSetGoal(null, null); setGoalOpen(false); return; }
+    const n = parseFloat(goalStr);
+    if (!Number.isFinite(n)) return;
+    if (isKg) { if (n < 23 || n > 318) return; }
+    else { if (n < 50 || n > 700) return; }
+    onSetGoal(Math.round(dispToLb(n) * 10) / 10, goalDir);
+    setGoalOpen(false);
+  };
+
+  const currentLb = sorted.length ? sorted[sorted.length - 1].lb : null;
+  const toGo = (currentLb != null && typeof weightGoalTarget === "number")
+    ? Math.abs(lbToDisp(currentLb) - lbToDisp(weightGoalTarget))
+    : null;
+
+  const Pill = ({ wk }) => (
+    <button
+      onClick={() => setWindowKey(wk.key)}
+      style={{
+        padding: "5px 11px", borderRadius: 14,
+        background: windowKey === wk.key ? COLORS.goldHighlight : "transparent",
+        border: `1px solid ${windowKey === wk.key ? COLORS.gold : "#2a2a2a"}`,
+        color: windowKey === wk.key ? COLORS.gold : "#888",
+        fontSize: 11, cursor: "pointer",
+        fontFamily: "-apple-system, system-ui, sans-serif",
+        fontWeight: windowKey === wk.key ? 600 : 500,
+      }}
+    >{wk.label}</button>
+  );
+
+  // Recent entries — newest first, capped.
+  const recent = [...sorted].reverse().slice(0, 8);
+  const dateLabel = (ms) => {
+    const d = new Date(ms);
+    return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  };
+
+  return (
+    <div>
+      {/* ── 1. LOG-ENTRY FORM ── */}
+      <div style={{ ...TYPE.smallLabel, marginBottom: 6 }}>Log a weigh-in</div>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
+        <input
+          type="number" inputMode="decimal"
+          step={isKg ? 0.1 : 1}
+          min={isKg ? 23 : 50}
+          max={isKg ? 318 : 700}
+          value={entryStr}
+          placeholder={currentLb != null ? fmt(currentLb) : "—"}
+          onChange={(e) => setEntryStr(e.target.value)}
+          onBlur={commitEntry}
+          onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }}
+          style={{ ...inputStyle, flex: 1 }}
+          autoFocus
+        />
+        <span style={{
+          fontFamily: "-apple-system, system-ui, sans-serif",
+          fontSize: 14, color: COLORS.gold, fontWeight: 600,
+          minWidth: 22, textAlign: "left",
+        }}>{unit}</span>
+      </div>
+      <div style={{ ...TYPE.micro, marginBottom: 18, textTransform: "none" }}>
+        Saves to today. Logging again today replaces it.
+      </div>
+
+      {/* ── 2. CHART ── */}
+      {sorted.length === 0 ? (
+        <div style={{
+          border: "1px dashed #2a2a2a", borderRadius: 10,
+          padding: "28px 16px", textAlign: "center",
+          ...TYPE.body, color: "#666", fontSize: 13, marginBottom: 18,
+        }}>
+          No weigh-ins yet. Log one above to start your chart.
+        </div>
+      ) : (
+        <>
+          <div style={{ display: "flex", gap: 7, marginBottom: 10, flexWrap: "wrap" }}>
+            {WINDOWS.map((w) => <Pill key={w.key} wk={w} />)}
+          </div>
+          <svg viewBox={`0 0 ${CW} ${CH}`} width="100%" style={{ display: "block", marginBottom: 4 }}>
+            {/* Goal target line */}
+            {chart && typeof weightGoalTarget === "number" && (
+              <g>
+                <line
+                  x1={PAD_L} x2={CW - PAD_R}
+                  y1={chart.y(weightGoalTarget)} y2={chart.y(weightGoalTarget)}
+                  stroke={COLORS.gold} strokeWidth="1" strokeDasharray="4 4" opacity="0.55"
+                />
+                <text
+                  x={CW - PAD_R} y={chart.y(weightGoalTarget) - 4}
+                  textAnchor="end" fill={COLORS.gold} opacity="0.8"
+                  style={{ fontFamily: "-apple-system, system-ui, sans-serif", fontSize: 9 }}
+                >goal {fmt(weightGoalTarget)} {unit}</text>
+              </g>
+            )}
+            {/* Raw entries: faint mid-gray dots */}
+            {chart && windowed.map((e, i) => (
+              <circle
+                key={e.id || i}
+                cx={chart.x(e.loggedAt)} cy={chart.y(e.lb)}
+                r="2.4" fill="#666" opacity="0.65"
+              />
+            ))}
+            {/* 2-entry bare connection (no smoothing possible) */}
+            {chart && windowed.length === 2 && (
+              <line
+                x1={chart.x(windowed[0].loggedAt)} y1={chart.y(windowed[0].lb)}
+                x2={chart.x(windowed[1].loggedAt)} y2={chart.y(windowed[1].lb)}
+                stroke={COLORS.gold} strokeWidth="2" opacity="0.85"
+              />
+            )}
+            {/* 1-entry flat baseline through the single dot */}
+            {chart && windowed.length === 1 && (
+              <line
+                x1={PAD_L} x2={CW - PAD_R}
+                y1={chart.y(windowed[0].lb)} y2={chart.y(windowed[0].lb)}
+                stroke={COLORS.gold} strokeWidth="1.5" opacity="0.4" strokeDasharray="2 3"
+              />
+            )}
+            {/* 3+ : bold gold smoothed trend line */}
+            {chart && smoothed.length >= 3 && (
+              <path
+                d={smoothed.map((p, i) =>
+                  `${i === 0 ? "M" : "L"} ${chart.x(p.loggedAt).toFixed(1)} ${chart.y(p.lb).toFixed(1)}`
+                ).join(" ")}
+                fill="none" stroke={COLORS.gold} strokeWidth="2.5"
+                strokeLinejoin="round" strokeLinecap="round"
+              />
+            )}
+          </svg>
+          <div style={{ display: "flex", justifyContent: "space-between", ...TYPE.micro, textTransform: "none", marginBottom: 18 }}>
+            <span>{chart ? dateLabel(chart.tMin) : ""}</span>
+            <span>{windowed.length} {windowed.length === 1 ? "entry" : "entries"} · {fmt(chart ? chart.hi : 0)}–{fmt(chart ? chart.lo : 0)} {unit} range</span>
+            <span>{chart ? dateLabel(chart.tMax) : ""}</span>
+          </div>
+        </>
+      )}
+
+      {/* ── 3. GOAL EDITOR ── */}
+      <div style={{
+        border: "1px solid #1f1f1f", borderRadius: 10,
+        padding: "12px 14px", marginBottom: 18, background: "#0d0d0d",
+      }}>
+        {!goalOpen ? (
+          <button
+            onClick={() => setGoalOpen(true)}
+            style={{
+              width: "100%", background: "transparent", border: "none",
+              padding: 0, cursor: "pointer", textAlign: "left",
+              display: "flex", justifyContent: "space-between", alignItems: "center",
+            }}
+          >
+            <span style={{ ...TYPE.body, fontSize: 14 }}>
+              {typeof weightGoalTarget === "number"
+                ? `Goal: ${weightGoalDirection || "reach"} → ${fmt(weightGoalTarget)} ${unit}`
+                : "Set a weight goal"}
+            </span>
+            {toGo != null && (
+              <span style={{
+                fontFamily: "-apple-system, system-ui, sans-serif",
+                fontSize: 11, color: COLORS.gold, fontWeight: 600,
+                background: COLORS.goldHighlight, padding: "3px 9px", borderRadius: 12,
+              }}>{toGo.toFixed(1)} {unit} to go</span>
+            )}
+            {toGo == null && <span style={{ color: "#555", fontSize: 13 }}>✎</span>}
+          </button>
+        ) : (
+          <div>
+            <div style={{ ...TYPE.smallLabel, marginBottom: 8 }}>Direction</div>
+            <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+              {["lose", "maintain", "gain"].map((d) => (
+                <button
+                  key={d}
+                  onClick={() => setGoalDir(d)}
+                  style={{
+                    flex: 1, padding: "9px 0", borderRadius: 14,
+                    background: goalDir === d ? COLORS.goldHighlight : "transparent",
+                    border: `1px solid ${goalDir === d ? COLORS.gold : "#2a2a2a"}`,
+                    color: goalDir === d ? COLORS.gold : "#999",
+                    fontSize: 12, cursor: "pointer", textTransform: "capitalize",
+                    fontFamily: "-apple-system, system-ui, sans-serif",
+                    fontWeight: goalDir === d ? 600 : 500,
+                  }}
+                >{d}</button>
+              ))}
+            </div>
+            <div style={{ ...TYPE.smallLabel, marginBottom: 6 }}>Target ({unit})</div>
+            <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+              <input
+                type="number" inputMode="decimal"
+                step={isKg ? 0.1 : 1}
+                value={goalStr}
+                placeholder="—"
+                onChange={(e) => setGoalStr(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") commitGoal(); }}
+                style={{ ...inputStyle, flex: 1 }}
+              />
+              <button
+                onClick={commitGoal}
+                style={{
+                  padding: "10px 16px", borderRadius: 8,
+                  background: COLORS.gold, border: "none", color: "#000",
+                  fontSize: 13, fontWeight: 700, cursor: "pointer",
+                  fontFamily: "-apple-system, system-ui, sans-serif",
+                }}
+              >Save</button>
+            </div>
+            <button
+              onClick={() => { setGoalStr(""); onSetGoal(null, null); setGoalOpen(false); }}
+              style={{
+                marginTop: 10, background: "transparent", border: "none",
+                color: "#666", fontSize: 11, cursor: "pointer", padding: 0,
+                fontFamily: "-apple-system, system-ui, sans-serif",
+              }}
+            >Clear goal</button>
+          </div>
+        )}
+      </div>
+
+      {/* ── 4. RECENT ENTRIES ── */}
+      {recent.length > 0 && (
+        <div>
+          <div style={{ ...TYPE.smallLabel, marginBottom: 8 }}>Recent</div>
+          {recent.map((e) => (
+            <div
+              key={e.id}
+              style={{
+                display: "flex", justifyContent: "space-between", alignItems: "center",
+                padding: "8px 0", borderBottom: "1px solid #1a1a1a",
+              }}
+            >
+              <span style={{ ...TYPE.body, fontSize: 13, color: "#bbb" }}>{dateLabel(e.loggedAt)}</span>
+              <span style={{ display: "flex", alignItems: "center", gap: 14 }}>
+                <span style={{ ...TYPE.body, fontSize: 14 }}>{fmt(e.lb)} {unit}</span>
+                <button
+                  onClick={() => onDeleteEntry(e.id)}
+                  aria-label="Delete entry"
+                  style={{
+                    background: "transparent", border: "none", cursor: "pointer",
+                    color: "#555", fontSize: 14, padding: "2px 4px", lineHeight: 1,
+                  }}
+                >✕</button>
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ── BodyStatsSubscreen (Bible §6.5) ─────────────────────────────────
    The Body Stats editor. Same P1 tap-to-expand pattern as PlanSubscreen
    (read-only rows by default, tap to expand inline editor, only one
@@ -11183,10 +11957,10 @@ function ObservationsSubscreen({ coachObservations, onDeleteObservation, onReset
    2. Height    — two number inputs side by side (feet + inches). Stored
                   as total inches in bodyStats.heightIn. 48–95 in valid
                   range (4'0" – 7'11"). Empty inputs = null = "—" display.
-   3. Weight    — single number input. Displays with unit suffix from
-                  unitsPref ("lb" / "kg"). Stored as weightLb always;
-                  kg display is computed from lb at render time and the
-                  reverse on commit. 50–700 lb valid (or kg equivalent).
+   3. Weight    — full WeightTrackerCard (Sessions 42 + 43): log-entry
+                  form, chart, goal editor, recent-entries list. Backed
+                  by bodyStats.weightLog (array) via the weight helpers;
+                  the collapsed row shows the most recent entry.
    4. Age       — chip picker for ageRange (matches onboarding) + an
                   always-visible optional EXACT AGE number input below it.
                   Both persist independently. Header display prefers
@@ -11303,13 +12077,14 @@ function BodyStatsSubscreen({
   const heightDisplay = typeof bs.heightIn === "number"
     ? `${Math.floor(bs.heightIn / 12)}'${bs.heightIn % 12}"`
     : "—";
-  // Unit-aware weight display. Stored value is always lb; kg is
-  // converted at the display layer with one decimal. Round-trip on
-  // commit uses the same conversion factor.
+  // Unit-aware weight display for the collapsed row. Reads the most
+  // recent weigh-in from weightLog (the canonical store post-Session-42);
+  // kg is a display-layer conversion with one decimal.
   const weightDisplay = (() => {
-    if (typeof bs.weightLb !== "number") return "—";
-    if (unitsPref === "kg") return `${(bs.weightLb * 0.453592).toFixed(1)} kg`;
-    return `${bs.weightLb} lb`;
+    const currentLb = getCurrentWeightLb(bs.weightLog);
+    if (typeof currentLb !== "number") return "—";
+    if (unitsPref === "kg") return `${(currentLb * 0.453592).toFixed(1)} kg`;
+    return `${currentLb} lb`;
   })();
   const ageDisplay = (() => {
     if (typeof bs.ageYears === "number") return String(bs.ageYears);
@@ -11355,36 +12130,10 @@ function BodyStatsSubscreen({
     if (total !== bs.heightIn) patch({ heightIn: total });
   };
 
-  // ── Field 3 (Weight) editor state. Stored as lb; display unit follows
-  // unitsPref. Local state holds the *displayed* (unit-correct) value
-  // as a string. On commit, convert to lb and store.
-  const initWeightStr = typeof bs.weightLb === "number"
-    ? (unitsPref === "kg" ? (bs.weightLb * 0.453592).toFixed(1) : String(bs.weightLb))
-    : "";
-  const [weightStr, setWeightStr] = useState(initWeightStr);
-  useEffect(() => {
-    setWeightStr(typeof bs.weightLb === "number"
-      ? (unitsPref === "kg" ? (bs.weightLb * 0.453592).toFixed(1) : String(bs.weightLb))
-      : "");
-  }, [bs.weightLb, unitsPref]);
-  const commitWeight = () => {
-    if (weightStr.trim() === "") {
-      if (bs.weightLb != null) patch({ weightLb: null });
-      return;
-    }
-    const n = parseFloat(weightStr);
-    if (!Number.isFinite(n)) return;
-    // Validate in user's chosen unit. lb: 50–700. kg: 23–318.
-    if (unitsPref === "kg") {
-      if (n < 23 || n > 318) return;
-      const lb = Math.round(n / 0.453592);
-      if (lb !== bs.weightLb) patch({ weightLb: lb });
-    } else {
-      if (n < 50 || n > 700) return;
-      const lb = Math.round(n);
-      if (lb !== bs.weightLb) patch({ weightLb: lb });
-    }
-  };
+  // ── Field 3 (Weight) is now the WeightTrackerCard — no local string
+  // state here. Logging/goal/delete are handled inside the card and
+  // committed through onChangeBodyStats via the weight helpers (see the
+  // renderField("weight", …) block below).
 
   // ── Field 4 (Exact age) editor state. Optional sub-field below the
   // ageRange chips. Empty = null = no exact age, fall back to range.
@@ -11499,35 +12248,20 @@ function BodyStatsSubscreen({
         </div>
       )}
 
-      {/* ── Field 3: WEIGHT ── single input, unit follows unitsPref. */}
+      {/* ── Field 3: WEIGHT ── full WeightTrackerCard (Sessions 42+43). */}
       {renderField(
         "weight",
         "Weight",
         weightDisplay,
-        <div>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <input
-              type="number" inputMode="decimal"
-              step={unitsPref === "kg" ? 0.1 : 1}
-              min={unitsPref === "kg" ? 23 : 50}
-              max={unitsPref === "kg" ? 318 : 700}
-              value={weightStr}
-              placeholder="—"
-              onChange={(e) => setWeightStr(e.target.value)}
-              onBlur={commitWeight}
-              onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }}
-              style={{ ...inputStyle, flex: 1 }}
-            />
-            <span style={{
-              fontFamily: "-apple-system, system-ui, sans-serif",
-              fontSize: 14, color: COLORS.gold, fontWeight: 600,
-              minWidth: 22, textAlign: "left",
-            }}>{unitsPref === "kg" ? "kg" : "lb"}</span>
-          </div>
-          <div style={{ ...TYPE.smallLabel, marginTop: 8, fontSize: 9, letterSpacing: 1, color: "#555", textTransform: "none" }}>
-            Unit follows your Settings preference.
-          </div>
-        </div>
+        <WeightTrackerCard
+          weightLog={bs.weightLog}
+          weightGoalTarget={bs.weightGoalTarget}
+          weightGoalDirection={bs.weightGoalDirection}
+          unitsPref={unitsPref}
+          onLogWeight={(lb) => patch({ weightLog: upsertWeightEntry(bs.weightLog, lb) })}
+          onDeleteEntry={(id) => patch({ weightLog: deleteWeightEntry(bs.weightLog, id) })}
+          onSetGoal={(target, direction) => patch({ weightGoalTarget: target, weightGoalDirection: direction })}
+        />
       )}
 
       {/* ── Field 4: AGE ── chip picker for ageRange + optional exact age below. */}
@@ -11594,9 +12328,89 @@ function TabBar({ active, onTab }) {
     { id: "exercises", label: "Exercises", icon: (c) => <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="1.8"><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /></svg> },
     { id: "profile", label: "Profile", icon: (c) => <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="1.8"><circle cx="12" cy="8" r="4" /><path d="M4 20c0-4 4-6 8-6s8 2 8 6" /></svg> },
   ];
+  // ── Sliding underline indicator ──────────────────────────────────
+  // The 2px gold bar measures the active tab button's center from the
+  // DOM and slides there on the 180ms state-change token (Bible motion
+  // spec, Session 47). useLayoutEffect so the first paint after a tab
+  // change already has the correct position (no flash from 0). Falls
+  // back to a width-fraction estimate before the refs are measured so
+  // the very first render isn't blank.
+  const barRef = useRef(null);
+  const btnRefs = useRef({});
+  const [ind, setInd] = useState(null); // { left, width } in px, or null pre-measure
+
+  useLayoutEffect(() => {
+    const el = btnRefs.current[active];
+    const bar = barRef.current;
+    if (!el || !bar) return;
+    const eRect = el.getBoundingClientRect();
+    const bRect = bar.getBoundingClientRect();
+    const UNDER_W = 28;
+    setInd({
+      left: eRect.left - bRect.left + eRect.width / 2 - UNDER_W / 2,
+      width: UNDER_W,
+    });
+  }, [active]);
+
+  // Pre-measure fallback: even slices, indicator under the active slice.
+  const activeIdx = Math.max(0, tabs.findIndex((t) => t.id === active));
+  const fallbackInd = ind || {
+    left: `calc(${activeIdx} * (100% / ${tabs.length}) + (100% / ${tabs.length} - 28px) / 2)`,
+    width: 28,
+  };
+
   return (
-    <div style={{ display: "flex", justifyContent: "space-around", padding: "10px 0 2px", paddingBottom: "calc(2px + env(safe-area-inset-bottom))", borderTop: `1px solid ${COLORS.border}`, background: COLORS.bg, flexShrink: 0 }}>
-      {tabs.map((t) => { const a = active === t.id; const c = a ? COLORS.gold : COLORS.inactive; return <button key={t.id} onClick={() => onTab(t.id)} style={{ background: "none", border: "none", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 4, padding: "4px 8px" }}>{t.icon(c)}<span style={{ fontSize: 10, color: c, fontWeight: a ? 600 : 400 }}>{t.label}</span></button>; })}
+    <div
+      ref={barRef}
+      style={{
+        display: "flex", justifyContent: "space-around",
+        borderTop: `1px solid ${COLORS.border}`, background: COLORS.bg,
+        flexShrink: 0, position: "relative", padding: "8px 0 6px",
+        paddingBottom: "calc(6px + env(safe-area-inset-bottom))",
+      }}
+    >
+      {/* Sliding gold underline. Single-sided accent → no border-radius. */}
+      <div
+        aria-hidden="true"
+        style={{
+          position: "absolute", top: 0, height: 2, borderRadius: 0,
+          background: COLORS.gold,
+          left: typeof fallbackInd.left === "number" ? `${fallbackInd.left}px` : fallbackInd.left,
+          width: fallbackInd.width,
+          transition: "left 180ms cubic-bezier(0.22,1,0.36,1)",
+        }}
+      />
+      {tabs.map((t) => {
+        const a = active === t.id;
+        const c = a ? COLORS.gold : COLORS.inactive;
+        return (
+          <button
+            key={t.id}
+            ref={(el) => { btnRefs.current[t.id] = el; }}
+            onClick={() => onTab(t.id)}
+            aria-label={t.label}
+            aria-current={a ? "page" : undefined}
+            className="myg-tab-btn"
+            style={{
+              background: "none", border: "none", cursor: "pointer",
+              display: "flex", flexDirection: "column", alignItems: "center",
+              justifyContent: "center", gap: 5,
+              minWidth: 56, minHeight: 48, padding: "6px 4px",
+              WebkitTapHighlightColor: "transparent",
+            }}
+          >
+            <span style={{ display: "flex", transition: "opacity 180ms cubic-bezier(0.22,1,0.36,1)" }}>
+              {t.icon(c)}
+            </span>
+            <span style={{
+              fontSize: 10, color: c, fontWeight: a ? 600 : 400,
+              transition: "color 180ms cubic-bezier(0.22,1,0.36,1)",
+            }}>
+              {t.label}
+            </span>
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -11818,6 +12632,44 @@ export default function MYGFitness() {
     const newId = `c${Date.now()}`;
     setCoachChats((prev) => [{ id: newId, createdAt: Date.now(), messages: [] }, ...prev]);
     setCurrentCoachChatId(newId);
+  };
+
+  // ── "Ask Coach about this observation" deep-link ───────────────────
+  // Set when the user picks "Ask Coach about this" from an observation's
+  // ⋯ menu. Shape: { question, context } where `question` is the
+  // user-visible turn and `context` is the engine-attached ground truth
+  // (the observation text + its provenance sessions + signal + D-045
+  // tier) that Coach explains FROM. CoachTab consumes this on mount/
+  // prop-change and plays it through the SAME streaming path as a typed
+  // message — so when the real Coach API is wired, the context packet
+  // simply rides along on that turn with zero UI change here.
+  //
+  // Why context is separate from question: the question is what the user
+  // "said"; the context is what Coach is given to ground the answer (per
+  // Bible line 775, always-on context excludes the session/set detail
+  // this provenance carries — so it must be injected explicitly, not
+  // reconstructed by the model).
+  const [pendingCoachSeed, setPendingCoachSeed] = useState(null);
+
+  const askCoachAboutObservation = (obs) => {
+    const tierPhrase = obs.tier >= 3
+      ? "Coach is treating this as a standing pattern (seen 3+ times)."
+      : "Coach has noticed this a couple of times and may ask about it (not yet a standing pattern).";
+    const prov = obs.provenance;
+    const contextLines = [
+      `OBSERVATION: "${obs.text}"`,
+      `CONFIDENCE TIER (D-045): n=${obs.tier}. ${tierPhrase}`,
+      prov ? `TRIGGERING SIGNAL: ${prov.signal}` : null,
+      prov && prov.sessions && prov.sessions.length
+        ? `SOURCE SESSIONS: ${prov.sessions.join("; ")}`
+        : null,
+    ].filter(Boolean).join("\n");
+    setPendingCoachSeed({
+      question: `Can you explain this observation you made about my training — what it means, where it came from, and why it matters?\n\n“${obs.text}”`,
+      context: contextLines,
+    });
+    setAppSubScreen(null);
+    setActiveTab("coach");
   };
 
   const switchCoachChat = (id) => {
@@ -12306,6 +13158,8 @@ export default function MYGFitness() {
           onSwitchChat={switchCoachChat}
           onDeleteChat={deleteCoachChat}
           onRenameChat={renameCoachChat}
+          pendingSeed={pendingCoachSeed}
+          onSeedConsumed={() => setPendingCoachSeed(null)}
         />
       );
       case "exercises": return (
@@ -12493,6 +13347,7 @@ export default function MYGFitness() {
         <ObservationsSubscreen
           onBack={() => setAppSubScreen(null)}
           coachObservations={coachObservations}
+          onAskCoach={askCoachAboutObservation}
           onDeleteObservation={(id) => {
             setCoachObservations((prev) => prev.filter((o) => o.id !== id));
             setCoachFileLastUpdatedAt(Date.now());
@@ -12533,15 +13388,32 @@ export default function MYGFitness() {
     //   - the user is not on the workout tab, OR
     //   - the workout is minimized
     // It sits between the tab content and the TabBar.
-    const showSessionBar = activeWorkout && (activeTab !== "workout" || workoutMinimized);
     // Hide the TabBar while the Coach input is focused, so the composing
     // surface feels full-height instead of getting sandwiched between the
     // keyboard and the tab bar. Matches Claude / iMessage / every major
     // chat app. Only triggers on the Coach tab.
     const hideTabBar = activeTab === "coach" && coachInputFocused;
+    // Same reasoning for the SessionBar (Session 47): while composing a
+    // Coach message it isn't serving its purpose (jump-back-to-workout)
+    // and it's the worst space thief — it stacks directly above the
+    // keyboard with the OS accessory bar. Hide it in that exact moment;
+    // it returns the instant the input blurs. The workout is unaffected,
+    // only its bar is suppressed during compose.
+    const composingCoach = activeTab === "coach" && coachInputFocused;
+    const showSessionBar = activeWorkout
+      && (activeTab !== "workout" || workoutMinimized)
+      && !composingCoach;
     return (
       <>
-        {renderTab()}
+        <div
+          key={activeTab}
+          style={{
+            flex: 1, minHeight: 0, display: "flex", flexDirection: "column",
+            animation: "mygTabFade 180ms cubic-bezier(0.22,1,0.36,1)",
+          }}
+        >
+          {renderTab()}
+        </div>
         {showSessionBar && <SessionBar workout={activeWorkout} restTimerMode={restTimerModePref} restCountdownTarget={restCountdownTargetPref} onTap={expandWorkoutFromBar} />}
         {!hideTabBar && <TabBar active={activeTab} onTab={setActiveTab} />}
 
@@ -12751,6 +13623,16 @@ export default function MYGFitness() {
           75% { transform: translateX(-2px); }
           90% { transform: translateX(2px); }
         }
+        /* ── Motion tokens (Bible §2, Session 47 — locked) ──
+           Instant feedback: 90ms ease-out (press/tap ack)
+           State change:     180ms cubic-bezier(0.22,1,0.36,1) (tab switch, indicator, crossfade)
+           Spatial move:     220ms cubic-bezier(0.22,1,0.36,1) (enter/leave, SessionBar)
+           Expressive:       400ms (reserved — set logged / PR; not used this pass)
+           Principle: motion explains, never performs. No value outside this set. */
+        .myg-tab-btn { transition: transform 90ms ease-out; }
+        .myg-tab-btn:active { transform: scale(0.94); }
+        .myg-press:active { transform: scale(0.98); background: #e6c200 !important; }
+        @keyframes mygTabFade { from { opacity: 0; } to { opacity: 1; } }
         input::placeholder { color: #555; }
         * { box-sizing: border-box; }
         ::-webkit-scrollbar { width: 0; }
