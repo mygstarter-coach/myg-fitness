@@ -70,8 +70,39 @@ function serializeActiveWorkout(w) {
 
 function hydrateActiveWorkout(w) {
   if (!w) return null;
+  // Migration (autofill rewrite, Session 48): older snapshots have no
+  // weightUserEdited/repsUserEdited. Derive defensively so an upgraded
+  // in-progress workout doesn't lose its protected/typed state:
+  //   - a field with a real value that was NOT a placeholder → the user
+  //     typed it → userEdited true
+  //   - a done set's values are committed/locked; userEdited stays false
+  //     (done is the wall regardless), matching Edge 1
+  //   - placeholders → userEdited false
+  const migrateSet = (s) => {
+    if (s == null) return s;
+    if ("weightUserEdited" in s && "repsUserEdited" in s) return s;
+    const wReal = s.weight !== "" && s.weight != null;
+    const rReal = s.reps !== "" && s.reps != null;
+    return {
+      ...s,
+      weightUserEdited: "weightUserEdited" in s
+        ? s.weightUserEdited
+        : (wReal && !s.weightIsPlaceholder && !s.done),
+      repsUserEdited: "repsUserEdited" in s
+        ? s.repsUserEdited
+        : (rReal && !s.repsIsPlaceholder && !s.done),
+    };
+  };
+  const exercises = Array.isArray(w.exercises)
+    ? w.exercises.map((ex) => (
+        ex && Array.isArray(ex.sets)
+          ? { ...ex, sets: ex.sets.map(migrateSet) }
+          : ex
+      ))
+    : w.exercises;
   return {
     ...w,
+    exercises,
     startTime: typeof w.startTime === "string" ? new Date(w.startTime) : w.startTime,
   };
 }
@@ -604,6 +635,7 @@ const EXERCISE_LIBRARY = [
   ]},
   { id: "preacher_curl", name: "Preacher Curl", primary: "Arms", pattern: "isolation_biceps", secondary: [], type: "Isolation", variants: [
     { label: "EZ Curl Bar", equipment: ["ez_curl_bar", "preacher_bench"] },
+    { label: "Barbell", equipment: ["barbell", "preacher_bench"] },
     { label: "Dumbbells", equipment: ["dumbbells", "preacher_bench"] },
   ]},
   { id: "concentration_curl", name: "Concentration Curl", primary: "Arms", pattern: "isolation_biceps", secondary: [], type: "Isolation", variants: [
@@ -620,11 +652,13 @@ const EXERCISE_LIBRARY = [
   { id: "overhead_tricep_extension", name: "Overhead Tricep Extension", primary: "Arms", pattern: "isolation_triceps", secondary: [], type: "Isolation", variants: [
     { label: "Dumbbells", equipment: ["dumbbells"] },
     { label: "EZ Curl Bar", equipment: ["ez_curl_bar"] },
+    { label: "Barbell", equipment: ["barbell"] },
     { label: "Cable (High Pulley)", equipment: ["cable_high"] },
     { label: "Tricep Extension Machine", equipment: ["tricep_extension_machine"] },
   ]},
   { id: "skull_crusher", name: "Skull Crusher", primary: "Arms", pattern: "isolation_triceps", secondary: [], type: "Isolation", variants: [
     { label: "EZ Curl Bar", equipment: ["ez_curl_bar", "flat_bench"] },
+    { label: "Barbell", equipment: ["barbell", "flat_bench"] },
     { label: "Dumbbells", equipment: ["dumbbells", "flat_bench"] },
   ]},
   { id: "close_grip_bench", name: "Close-Grip Bench Press", primary: "Arms", pattern: "horizontal_press", secondary: ["Chest"], type: "Compound", variants: [
@@ -1285,10 +1319,13 @@ function ScrollHint({ scrollRef }) {
   const hintRef = useRef(null);
   const hideTimer = useRef(null);
 
+  const wrapRef = useRef(null);
+
   useEffect(() => {
     const el = scrollRef.current;
     const pill = hintRef.current;
-    if (!el || !pill) return;
+    const wrap = wrapRef.current;
+    if (!el || !pill || !wrap) return;
 
     const reposition = () => {
       const max = el.scrollHeight - el.clientHeight;
@@ -1297,10 +1334,17 @@ function ScrollHint({ scrollRef }) {
         pill.style.opacity = "0";
         return;
       }
+      // The wrapper is position:sticky inside the scroll box, so it stays
+      // pinned to the visible viewport and does NOT ride with the scrolled
+      // content. That means the pill's top is computed purely from the
+      // scroll fraction — there is no scrollTop term. The previous
+      // implementation added scrollTop to an in-flow absolute child, which
+      // the browser ALSO translates by -scrollTop, double-compensating and
+      // visibly rendering the pill in two places mid-scroll on momentum
+      // (the "two scrollbars" bug from device screenshots).
       const track = el.clientHeight - PILL - PAD * 2;
-      const frac = el.scrollTop / max;            // 0..1, correctly tracks position
-      const top = el.scrollTop + PAD + frac * track; // +scrollTop: pill is inside the
-                                                     // scrolled box, must ride along
+      const frac = el.scrollTop / max;            // 0..1
+      const top = PAD + frac * track;             // viewport-relative, no scrollTop
       pill.style.height = PILL + "px";
       pill.style.top = top + "px";
       pill.style.opacity = "1";
@@ -1323,18 +1367,31 @@ function ScrollHint({ scrollRef }) {
     };
   }, [scrollRef]);
 
+  // The wrapper is a zero-height sticky layer pinned to the top of the
+  // scroll viewport. Sticky (not absolute) is what keeps it from scrolling
+  // away with the content while still living inside the scroll container
+  // (call sites give us position:relative there, not a separate overlay
+  // host). overflow:visible so the pill, positioned by JS within the
+  // clientHeight track, can paint down the full visible track.
   return (
     <div
-      ref={hintRef}
+      ref={wrapRef}
       aria-hidden="true"
       style={{
-        position: "absolute", right: 3, width: 3, height: 36,
-        borderRadius: 3, background: "rgba(170,170,170,0.45)",
-        opacity: 0, pointerEvents: "none",
-        transition: "opacity 220ms cubic-bezier(0.22,1,0.36,1)",
-        zIndex: 5,
+        position: "sticky", top: 0, height: 0, zIndex: 5,
+        pointerEvents: "none", overflow: "visible",
       }}
-    />
+    >
+      <div
+        ref={hintRef}
+        style={{
+          position: "absolute", right: 3, width: 3, height: 36,
+          borderRadius: 3, background: "rgba(170,170,170,0.45)",
+          opacity: 0, pointerEvents: "none",
+          transition: "opacity 220ms cubic-bezier(0.22,1,0.36,1)",
+        }}
+      />
+    </div>
   );
 }
 
@@ -1406,9 +1463,9 @@ function WelcomeScreen({ onGetStarted, onSignIn }) {
   useEffect(() => { setTimeout(() => setLogoV(true), 200); setTimeout(() => setContentV(true), 900); }, []);
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "0 32px", position: "relative" }}>
-      {/* V.11 marker — temporary build indicator. Bump with each push to
+      {/* V.12 marker — temporary build indicator. Bump with each push to
           verify cache isn't serving stale code. Remove before shipping. */}
-      <div style={{ position: "absolute", top: 16, right: 20, color: COLORS.textSecondary, fontSize: 11, fontWeight: 500, letterSpacing: 1, opacity: 0.7 }}>V.11</div>
+      <div style={{ position: "absolute", top: 16, right: 20, color: COLORS.textSecondary, fontSize: 11, fontWeight: 500, letterSpacing: 1, opacity: 0.7 }}>V.12</div>
       <div style={{ position: "absolute", top: "40%", textAlign: "center", opacity: logoV ? 1 : 0, transform: logoV ? "translateY(-50%) scale(1)" : "translateY(-50%) scale(1.08)", transition: "all 0.9s cubic-bezier(0.22,1,0.36,1)" }}>
         <h1 style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 92, fontWeight: 700, color: COLORS.gold, margin: 0, letterSpacing: 8 }}>MYG</h1>
       </div>
@@ -3680,6 +3737,15 @@ function ActiveLogger({
   // Exercises" CTA, we're in swap mode — picking an exercise replaces the
   // target, doesn't append. uid of the swap target, or null for normal add.
   const [pickerSwapTargetUid, setPickerSwapTargetUid] = useState(null);
+  // AddExerciseSheet filter state lifted here so it survives the sheet
+  // unmounting between adds within the same workout. Previously these
+  // lived inside AddExerciseSheet and reset to defaults on every reopen,
+  // forcing the user to re-pick a body-part filter after each exercise
+  // they added (real friction, owner-reported). Search intentionally
+  // does NOT persist — a stale search query on reopen is more confusing
+  // than a sticky body-part filter, which is a deliberate browse mode.
+  const [pickerFilter, setPickerFilter] = useState("All");
+  const [pickerOnlyMine, setPickerOnlyMine] = useState(false);
   const [confirmCancel, setConfirmCancel] = useState(false);
   const [rirHelpOpen, setRirHelpOpen] = useState(false);
 
@@ -3961,6 +4027,8 @@ function ActiveLogger({
           weight: "", reps: "", done: false, type: "working", rir: null,
           weightIsPlaceholder: hasPrev,
           repsIsPlaceholder: hasPrev,
+          weightUserEdited: false,
+          repsUserEdited: false,
           placeholderWeight: hasPrev ? prevFirstSet.weight : "",
           placeholderReps: hasPrev ? prevFirstSet.reps : "",
         },
@@ -4025,69 +4093,110 @@ function ActiveLogger({
     )));
   };
 
+  // ── Autofill model (Bible: rewritten Session 48) ────────────────────
+  // Per field (weight/reps independent) a field is in one of:
+  //   placeholder    never typed, showing gray suggestion
+  //   typed-present  user typed, value still there, not done   → WALL + source
+  //   typed-cleared  user typed then emptied, not done          → eligible
+  //   done           checkboxed (any origin)                    → WALL
+  // Cascades run on COMMIT (Next/blur/checkbox), never per keystroke.
+  //   Fill:   typing in set N rewrites the suggestion of every eligible
+  //           set below, walking down, stopping at the first wall.
+  //   Delete: clearing set N blanks every eligible set below, walking
+  //           down, stopping at the first wall.
+  // A field is a WALL if it is done, OR it holds a user-typed value.
+  // A set is a SOURCE for sets below only if it holds a user-typed value
+  // (a checkbox-confirmed gray placeholder is a wall but NOT a source).
+  // Warmups are fully transparent: never receive, source, or wall.
+  const fieldHasRealValue = (s, field) =>
+    s[field] !== "" && s[field] != null;
+
+  const isWall = (s, field) =>
+    s.type !== "warmup" &&
+    (s.done || (s[`${field}UserEdited`] && fieldHasRealValue(s, field)));
+
+  const isSource = (s, field) =>
+    s.type !== "warmup" &&
+    s[`${field}UserEdited`] && fieldHasRealValue(s, field);
+
+  const isEligible = (s, field) =>
+    s.type !== "warmup" && !s.done &&
+    !(s[`${field}UserEdited`] && fieldHasRealValue(s, field));
+
+  // Resolve the suggestion a given eligible set should show for `field`:
+  // the nearest user-typed value strictly above it, skipping warmups,
+  // stopping at a done set (a done set is a wall — nothing above it
+  // reaches past it). Returns "" if no source found.
+  const resolveSuggestion = (sets, idx, field) => {
+    for (let i = idx - 1; i >= 0; i--) {
+      const s = sets[i];
+      if (s.type === "warmup") continue;
+      if (isSource(s, field)) return s[field];
+      if (s.done) return ""; // done wall blocks the chain
+    }
+    return "";
+  };
+
   const updateSet = (uid, setIdx, patch) => {
     setExercises((prev) => prev.map((ex) => {
       if (ex.uid !== uid) return ex;
       const sets = ex.sets.map((s, i) => {
         if (i !== setIdx) return s;
         const next = { ...s, ...patch };
-        // When a value is typed into a field, that field's placeholder
-        // flag clears. The OTHER field's flag stays — placeholders are
-        // independent per field now.
-        //
-        // Exception: if the patch CLEARS the field (sets it to "") AND
-        // we have a stored placeholder value to restore, flip the flag
-        // back on. This means "delete everything" reverts the field to
-        // its suggested-value state rather than going truly blank, which
-        // matches user expectation and also prevents empty-string content
-        // from collapsing the input's height.
-        //
-        // Callers can force a specific flag value by including it in
-        // the patch explicitly (the focus handler uses this to clear
-        // the placeholder on tap regardless of what's there).
-        if ("weight" in patch && !("weightIsPlaceholder" in patch)) {
+        // Track userEdited per field. A value-bearing patch on a field
+        // marks it userEdited=true; clearing it to "" marks it
+        // userEdited=false (typed-cleared → eligible again). Callers can
+        // force the flag by passing it explicitly in the patch.
+        if ("weight" in patch && !("weightUserEdited" in patch)) {
           const cleared = patch.weight === "" || patch.weight == null;
-          if (cleared && next.placeholderWeight !== "" && next.placeholderWeight != null) {
-            next.weightIsPlaceholder = true;
-          } else {
-            next.weightIsPlaceholder = false;
-          }
+          next.weightUserEdited = !cleared;
+          // Keep the legacy placeholder flag coherent for the renderer:
+          // a real typed value is never a placeholder; a cleared field
+          // falls back to showing its stored suggestion (gray) again.
+          next.weightIsPlaceholder = cleared
+            ? (next.placeholderWeight !== "" && next.placeholderWeight != null)
+            : false;
         }
-        if ("reps" in patch && !("repsIsPlaceholder" in patch)) {
+        if ("reps" in patch && !("repsUserEdited" in patch)) {
           const cleared = patch.reps === "" || patch.reps == null;
-          if (cleared && next.placeholderReps !== "" && next.placeholderReps != null) {
-            next.repsIsPlaceholder = true;
-          } else {
-            next.repsIsPlaceholder = false;
-          }
+          next.repsUserEdited = !cleared;
+          next.repsIsPlaceholder = cleared
+            ? (next.placeholderReps !== "" && next.placeholderReps != null)
+            : false;
         }
         return next;
       });
+      // NOTE: no propagation here. The cascade runs only on commit, via
+      // runCascade() called from handleKeypadNext and toggleSetDone.
+      return { ...ex, sets };
+    }));
+  };
 
-      // Propagation: when set N's weight or reps is changed, walk
-      // forward through sets below N. For any set whose corresponding
-      // field is still a placeholder, update that field's placeholder
-      // value to the new value from set N. Per-field, so weight and
-      // reps propagate independently. Touched cells are skipped.
-      if ("weight" in patch || "reps" in patch) {
-        const newWeight = patch.weight;
-        const newReps = patch.reps;
-        for (let i = setIdx + 1; i < sets.length; i++) {
-          const s = sets[i];
-          const updated = { ...s };
-          let changed = false;
-          if ("weight" in patch && newWeight !== "" && newWeight != null && s.weightIsPlaceholder) {
-            updated.placeholderWeight = newWeight;
-            changed = true;
-          }
-          if ("reps" in patch && newReps !== "" && newReps != null && s.repsIsPlaceholder) {
-            updated.placeholderReps = newReps;
-            changed = true;
-          }
-          if (changed) sets[i] = updated;
-        }
+  // Commit-time cascade for one field. Called after the user finishes
+  // editing a set (Next/blur) or checks it off. Walks sets below setIdx:
+  //   - if the just-edited field now holds a real value → FILL: set each
+  //     eligible set's suggestion to that value
+  //   - if it was cleared → DELETE: blank each eligible set's suggestion
+  //   - either way, stop at the first wall (done OR typed-present)
+  const runCascade = (uid, setIdx, field) => {
+    setExercises((prev) => prev.map((ex) => {
+      if (ex.uid !== uid) return ex;
+      const src = ex.sets[setIdx];
+      if (!src || src.type === "warmup") return ex;
+      const filling = isSource(src, field);          // has real typed value
+      const value = filling ? src[field] : "";
+      const phKey = field === "weight" ? "placeholderWeight" : "placeholderReps";
+      const flagKey = field === "weight" ? "weightIsPlaceholder" : "repsIsPlaceholder";
+      const sets = ex.sets.slice();
+      for (let i = setIdx + 1; i < sets.length; i++) {
+        const s = sets[i];
+        if (s.type === "warmup") continue;          // transparent
+        if (isWall(s, field)) break;                // done or typed-present
+        if (!isEligible(s, field)) continue;
+        sets[i] = filling
+          ? { ...s, [phKey]: value, [flagKey]: true }
+          : { ...s, [phKey]: "", [flagKey]: false };
       }
-
       return { ...ex, sets };
     }));
   };
@@ -4126,9 +4235,14 @@ function ActiveLogger({
     if (nextDone) {
       if (set.weightIsPlaceholder && set.placeholderWeight !== "" && set.placeholderWeight != null) {
         patch.weight = set.placeholderWeight;
+        // Edge 1: a checkbox-confirmed gray placeholder becomes a WALL
+        // but is NOT a source for sets below. Keep userEdited false so
+        // isSource() stays false while isWall() is true (via done).
+        patch.weightUserEdited = false;
       }
       if (set.repsIsPlaceholder && set.placeholderReps !== "" && set.placeholderReps != null) {
         patch.reps = set.placeholderReps;
+        patch.repsUserEdited = false;
       }
       // After commit, no field is a placeholder anymore
       patch.weightIsPlaceholder = false;
@@ -4167,63 +4281,55 @@ function ActiveLogger({
   const addSet = (uid) => {
     setExercises((prev) => prev.map((ex) => {
       if (ex.uid !== uid) return ex;
-      // Pre-fill new set as a placeholder. Priority order:
-      //   1. Most recent set in this session that has a real weight/reps
-      //      value (touched or completed) — that's what the user is
-      //      currently working at
-      //   2. Previous workout's set at this index (if available)
-      //   3. Previous workout's last set
-      //   4. No placeholder
+      // Pre-fill the new set's suggestion per field, matching the
+      // autofill model: each field independently takes the nearest
+      // user-typed value above it (skipping warmups, stopping at a done
+      // wall). If a field has no in-session source, fall back to the
+      // previous workout's set at this index. Per-field independent.
       const newIdx = ex.sets.length;
-      let phWeight = "";
-      let phReps = "";
-      let hasPlaceholder = false;
+      const seedField = (field) => {
+        for (let i = ex.sets.length - 1; i >= 0; i--) {
+          const s = ex.sets[i];
+          if (s.type === "warmup") continue;
+          if (s[`${field}UserEdited`] && s[field] !== "" && s[field] != null) {
+            return s[field]; // nearest typed source
+          }
+          if (s.done) {
+            // Done wall: a checkbox-confirmed value still anchors the
+            // new set's suggestion (it has a real logged value), but
+            // blocks the chain from reaching further up.
+            if (s[field] !== "" && s[field] != null) return s[field];
+            return "";
+          }
+        }
+        return "";
+      };
+      let phWeight = seedField("weight");
+      let phReps = seedField("reps");
 
-      // Walk backwards through current session looking for last real values
-      for (let i = ex.sets.length - 1; i >= 0; i--) {
-        const s = ex.sets[i];
-        if (s.type === "warmup") continue;
-        if (s.weight !== "" && s.weight != null) {
-          phWeight = s.weight;
-          hasPlaceholder = true;
-        }
-        if (s.reps !== "" && s.reps != null) {
-          phReps = s.reps;
-          hasPlaceholder = true;
-        }
-        if (hasPlaceholder) break;
-        // Also check existing placeholder values from sets above
-        if (s.weightIsPlaceholder && s.placeholderWeight !== "" && s.placeholderWeight != null) {
-          phWeight = s.placeholderWeight;
-          hasPlaceholder = true;
-        }
-        if (s.repsIsPlaceholder && s.placeholderReps !== "" && s.placeholderReps != null) {
-          phReps = s.placeholderReps;
-          hasPlaceholder = true;
-        }
-        if (hasPlaceholder) break;
-      }
-
-      // Fall back to prev workout if no current-session values exist
-      if (!hasPlaceholder) {
+      // History fallback — only for fields with no in-session source.
+      if (phWeight === "" || phReps === "") {
         const hist = getVariantHistory(ex.exerciseId, variantKey(ex.variant), workoutHistory, customExercises);
         const lastSession = hist[hist.length - 1];
         if (lastSession) {
           const prevSet = lastSession.sets[Math.min(newIdx, lastSession.sets.length - 1)];
           if (prevSet) {
-            phWeight = prevSet.weight;
-            phReps = prevSet.reps;
-            hasPlaceholder = true;
+            if (phWeight === "") phWeight = prevSet.weight;
+            if (phReps === "") phReps = prevSet.reps;
           }
         }
       }
 
+      const wHas = phWeight !== "" && phWeight != null;
+      const rHas = phReps !== "" && phReps != null;
       return {
         ...ex,
         sets: [...ex.sets, {
           weight: "", reps: "", done: false, type: "working", rir: null,
-          weightIsPlaceholder: hasPlaceholder,
-          repsIsPlaceholder: hasPlaceholder,
+          weightIsPlaceholder: wHas,
+          repsIsPlaceholder: rHas,
+          weightUserEdited: false,
+          repsUserEdited: false,
           placeholderWeight: phWeight, placeholderReps: phReps,
         }],
         collapsed: false,
@@ -4285,7 +4391,22 @@ function ActiveLogger({
       }
     }
     const next = nextField(activeField);
+    // Commit-time cascade: the user is leaving this field, so propagate
+    // its value (fill) or its emptiness (delete) downward now. Capture
+    // the field/coords before we move focus.
+    const leaving = activeField;
+    runCascade(leaving.exerciseUid, leaving.setIdx, leaving.field);
     setActiveField(next); // null closes the keypad
+  };
+
+  // Tap-away / programmatic close: same commit semantics as Next, but
+  // doesn't advance to the next field. Used by the empty-space catcher
+  // so blurring by tapping off the keypad still fires the cascade.
+  const commitAndCloseKeypad = () => {
+    if (activeField) {
+      runCascade(activeField.exerciseUid, activeField.setIdx, activeField.field);
+    }
+    setActiveField(null);
   };
 
   const handleKeypadDigit = (digit) => {
@@ -4555,11 +4676,15 @@ function ActiveLogger({
         // (~40 incl padding).
         const nameRight    = lerp(100, 40, d);
 
-        // Shared duration — in active: inline after the dot at top=32 fontSize 12.
-        // In bar (matches SessionBar): below the name at left=38 top=28 fontSize 11.
+        // Shared duration — in active: inline after the dot at top=32.
+        // Active font 12→14 (Moderate logger pass) so the live session
+        // timer is more legible mid-set without dominating the workout
+        // name. The Bar end-state stays 11 — that matches the standalone
+        // SessionBar component exactly (Bible §6.2); only the
+        // active-header value changed.
         const durLeft     = lerp(30, 38, d);
         const durTop      = lerp(32, 28, d);
-        const durFontSize = lerp(12, 11, d);
+        const durFontSize = lerp(14, 11, d);
 
         const exCountSuffix = ` · ${exercises.length} ${exercises.length === 1 ? "exercise" : "exercises"}`;
 
@@ -4923,7 +5048,7 @@ function ActiveLogger({
           popover, and variant menu. */}
       <div
         ref={scrollRef}
-        onClick={activeField ? () => setActiveField(null) : undefined}
+        onClick={activeField ? () => commitAndCloseKeypad() : undefined}
         style={{
           flex: 1,
           padding: "8px 20px 20px",
@@ -5185,6 +5310,10 @@ function ActiveLogger({
           userEquipment={userEquipment}
           customExercises={customExercises}
           workoutHistory={workoutHistory}
+          filter={pickerFilter}
+          onFilterChange={setPickerFilter}
+          onlyMine={pickerOnlyMine}
+          onOnlyMineChange={setPickerOnlyMine}
           onClose={() => { setPickerOpen(false); setPickerSwapTargetUid(null); }}
           onAdd={addExercise}
         />
@@ -5626,10 +5755,10 @@ function ExerciseCard({
             {/* Column headers */}
             <div style={{
               display: "flex", alignItems: "center", padding: "0 4px 6px",
-              color: COLORS.textSecondary, fontSize: 10,
+              color: COLORS.textSecondary, fontSize: 11,
               textTransform: "uppercase", letterSpacing: 0.8, fontWeight: 500,
             }}>
-              <span style={{ width: 30, textAlign: "center" }}>Set</span>
+              <span style={{ width: 32, textAlign: "center" }}>Set</span>
               <span style={{ flex: 1, textAlign: "center" }}>Prev</span>
               <span style={{ flex: 1, textAlign: "center" }}>lbs</span>
               <span style={{ flex: 1, textAlign: "center" }}>Reps</span>
@@ -5723,6 +5852,12 @@ function ExerciseCard({
                           transform: `translateX(${setDragOffset}px)`,
                           transition: setDragRefs.current[idx]?.dragging ? "none" : "transform 0.22s ease",
                           borderLeft: `2.5px solid ${set.done ? COLORS.gold : "transparent"}`,
+                          // pan-y: browser owns vertical scroll (so the list
+                          // scrolls even when the drag starts on this row),
+                          // JS pointer handlers own the horizontal
+                          // swipe-left-to-delete. Without this the row could
+                          // contend with the scroller on diagonal drags.
+                          touchAction: "pan-y",
                         }}
                       >
                       {/* Set number / type indicator */}
@@ -5730,10 +5865,10 @@ function ExerciseCard({
                         onClick={(e) => { e.stopPropagation(); onOpenSetTypePopover(idx); }}
                         onPointerDown={(e) => e.stopPropagation()}
                         style={{
-                          width: 30, height: 30, background: "none", border: "none",
+                          width: 32, height: 30, background: "none", border: "none",
                           cursor: "pointer",
                           color: set.type === "warmup" ? COLORS.textSecondary : COLORS.text,
-                          fontSize: 14, fontWeight: 600, padding: 0,
+                          fontSize: 16, fontWeight: 600, padding: 0,
                         }}
                       >
                         {setLabel}
@@ -5746,7 +5881,7 @@ function ExerciseCard({
                           weighted format so the signal isn't lost. */}
                       <span style={{
                         flex: 1, color: COLORS.textSecondary,
-                        fontSize: 12, textAlign: "center",
+                        fontSize: 13, textAlign: "center",
                         fontVariantNumeric: "tabular-nums",
                       }}>
                         {(() => {
@@ -5779,10 +5914,25 @@ function ExerciseCard({
                             }
                             onFocusField(idx, "weight");
                           }}
-                          onPointerDown={(e) => e.stopPropagation()}
+                          onPointerDown={(e) => {
+                            // Only claim the gesture when this field is
+                            // ALREADY focused — that's caret-drag mode and
+                            // we don't want the row swipe stealing it. When
+                            // the field is NOT focused, let pointerdown
+                            // propagate to the set-row swipe handler and the
+                            // list scroller. A clean tap still fires onClick
+                            // (the row swipe only commits on horizontal
+                            // movement, so a tap never moves the row), so
+                            // tap-to-open-keypad is unaffected — but a
+                            // vertical scroll or swipe-left that happens to
+                            // start on this box now works instead of being
+                            // swallowed. (Bug: lbs/reps boxes ate all touch,
+                            // leaving no room to scroll/swipe — §8.3/§8.4.)
+                            if (fieldIsActive(idx, "weight")) e.stopPropagation();
+                          }}
                           onPointerMove={onFieldPointerMove(idx, "weight", String(set.weight ?? ""))}
                           style={{
-                            width: 56, minHeight: 28, padding: "6px 0", textAlign: "center",
+                            width: 68, minHeight: 28, padding: "6px 0", textAlign: "center",
                             background: weightActive
                               ? (caretPos === -1 ? COLORS.gold : "#1A1A1A")
                               : (set.done ? "transparent" : "#1A1A1A"),
@@ -5797,22 +5947,21 @@ function ExerciseCard({
                             color: weightActive && caretPos === -1
                               ? COLORS.bg
                               : (set.weightIsPlaceholder || !weightIsRealValue ? COLORS.inactive : COLORS.text),
-                            fontSize: 14, fontWeight: 500,
+                            fontSize: 17, fontWeight: 500,
                             fontVariantNumeric: "tabular-nums",
-                            position: "relative", touchAction: "none",
+                            position: "relative", touchAction: "pan-y",
                             animation: shakeFields[`${idx}:weight`] ? "shakeField 0.5s" : "none",
                           }}
                         >
                           {displayWeight}
                           {weightActive && caretPos !== -1 && (() => {
-                            // Pixel-based caret positioning. The button is
-                            // 56px wide. Text uses tabular-nums at 14px,
-                            // so each digit is ~9px wide. Text is centered.
-                            // Caret at position p sits at:
-                            //   leftPad + p * charWidth
-                            // where leftPad = (buttonWidth - textWidth) / 2.
-                            const charWidth = 9;
-                            const buttonWidth = 56;
+                            // Pixel-based caret positioning. Box is 68px
+                            // wide (Moderate logger pass). Tabular-nums at
+                            // 17px ≈ 11px per digit. Text is centered.
+                            //   caretX = leftPad + p * charWidth
+                            //   leftPad = (buttonWidth - textWidth) / 2
+                            const charWidth = 11;
+                            const buttonWidth = 68;
                             const textWidth = displayWeight.length * charWidth;
                             const leftPad = (buttonWidth - textWidth) / 2;
                             const caretX = leftPad + caretPos * charWidth;
@@ -5821,7 +5970,7 @@ function ExerciseCard({
                                 position: "absolute", top: "50%",
                                 left: `${caretX}px`,
                                 transform: "translateY(-50%)",
-                                width: 1.5, height: 16, background: COLORS.gold,
+                                width: 1.5, height: 18, background: COLORS.gold,
                                 animation: "blink 1s step-end infinite",
                               }} />
                             );
@@ -5830,7 +5979,7 @@ function ExerciseCard({
                             <span style={{
                               position: "absolute", top: "50%", left: "50%",
                               transform: "translate(-50%,-50%)",
-                              width: 1.5, height: 16, background: COLORS.bg,
+                              width: 1.5, height: 18, background: COLORS.bg,
                               animation: "blink 1s step-end infinite",
                             }} />
                           )}
@@ -5855,10 +6004,16 @@ function ExerciseCard({
                             }
                             onFocusField(idx, "reps");
                           }}
-                          onPointerDown={(e) => e.stopPropagation()}
+                          onPointerDown={(e) => {
+                            // See the weight field above for the full
+                            // rationale. Only claim the pointer for
+                            // caret-drag when this field is already focused;
+                            // otherwise let scroll / swipe-left through.
+                            if (fieldIsActive(idx, "reps")) e.stopPropagation();
+                          }}
                           onPointerMove={onFieldPointerMove(idx, "reps", String(set.reps ?? ""))}
                           style={{
-                            width: 56, minHeight: 28, padding: "6px 0", textAlign: "center",
+                            width: 68, minHeight: 28, padding: "6px 0", textAlign: "center",
                             background: repsActive
                               ? (caretPos === -1 ? COLORS.gold : "#1A1A1A")
                               : (set.done ? "transparent" : "#1A1A1A"),
@@ -5873,16 +6028,16 @@ function ExerciseCard({
                             color: repsActive && caretPos === -1
                               ? COLORS.bg
                               : (set.repsIsPlaceholder || !repsIsRealValue ? COLORS.inactive : COLORS.text),
-                            fontSize: 14, fontWeight: 500,
+                            fontSize: 17, fontWeight: 500,
                             fontVariantNumeric: "tabular-nums",
-                            position: "relative", touchAction: "none",
+                            position: "relative", touchAction: "pan-y",
                             animation: shakeFields[`${idx}:reps`] ? "shakeField 0.5s" : "none",
                           }}
                         >
                           {displayReps}
                           {repsActive && caretPos !== -1 && (() => {
-                            const charWidth = 9;
-                            const buttonWidth = 56;
+                            const charWidth = 11;
+                            const buttonWidth = 68;
                             const textWidth = displayReps.length * charWidth;
                             const leftPad = (buttonWidth - textWidth) / 2;
                             const caretX = leftPad + caretPos * charWidth;
@@ -5891,7 +6046,7 @@ function ExerciseCard({
                                 position: "absolute", top: "50%",
                                 left: `${caretX}px`,
                                 transform: "translateY(-50%)",
-                                width: 1.5, height: 16, background: COLORS.gold,
+                                width: 1.5, height: 18, background: COLORS.gold,
                                 animation: "blink 1s step-end infinite",
                               }} />
                             );
@@ -5900,7 +6055,7 @@ function ExerciseCard({
                             <span style={{
                               position: "absolute", top: "50%", left: "50%",
                               transform: "translate(-50%,-50%)",
-                              width: 1.5, height: 16, background: COLORS.bg,
+                              width: 1.5, height: 18, background: COLORS.bg,
                               animation: "blink 1s step-end infinite",
                             }} />
                           )}
@@ -6684,11 +6839,14 @@ function SessionBar({ workout, restTimerMode, restCountdownTarget, onTap }) {
    "+ Add Exercise" button. Two stages: list (search + filter + my-equipment)
    and variant confirm. Mirrors the patterns from ExercisesTab and
    ExerciseDetailSheet so it feels familiar, but ends in addExercise(). */
-function AddExerciseSheet({ userEquipment, customExercises = [], workoutHistory = [], onClose, onAdd }) {
+function AddExerciseSheet({ userEquipment, customExercises = [], workoutHistory = [], filter, onFilterChange, onlyMine, onOnlyMineChange, onClose, onAdd }) {
   const pickerScrollRef = useRef(null);
   const [search, setSearch] = useState("");
-  const [filter, setFilter] = useState("All");
-  const [onlyMine, setOnlyMine] = useState(false);
+  // filter + onlyMine are controlled by the parent (ActiveLogger) so they
+  // survive the sheet unmounting between adds. setFilter / setOnlyMine
+  // shims keep the rest of this component's call sites unchanged.
+  const setFilter = onFilterChange;
+  const setOnlyMine = onOnlyMineChange;
   const [menuOpen, setMenuOpen] = useState(false);
 
   // Stage 2: variant confirm
