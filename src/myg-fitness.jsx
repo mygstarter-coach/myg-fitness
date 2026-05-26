@@ -371,6 +371,27 @@ const PRESETS = {
   ],
 };
 
+/* Derive a human-friendly label for the Coach's File EQUIPMENT row.
+   If the user's selection exactly matches a named preset (Full Gym / Home
+   Gym / Bodyweight Only), show that name. Otherwise show "N items selected"
+   matching the vocabulary already used on the preset picker screen. Empty
+   selection reads "No equipment selected" rather than "0 items …" so the
+   first-launch state doesn't look broken. */
+function deriveEquipmentLabel(selectedSet) {
+  const size = selectedSet ? selectedSet.size : 0;
+  if (size === 0) return "No equipment selected";
+  // Preset match — set-equal compare (same size + every preset id present).
+  for (const [presetId, ids] of Object.entries(PRESETS)) {
+    if (ids.length !== size) continue;
+    if (ids.every((id) => selectedSet.has(id))) {
+      if (presetId === "full") return "Full gym";
+      if (presetId === "home") return "Home gym";
+      if (presetId === "bodyweight") return "Bodyweight only";
+    }
+  }
+  return `${size} ${size === 1 ? "item" : "items"} selected`;
+}
+
 /* ── Exercise Library (117 exercises, source of truth: Project Bible §8) ──
    Each exercise: id, name, primary, secondary[], type, variants[].
    A variant is { label, equipment: [equipment_ids] } — user needs ALL ids in
@@ -1463,9 +1484,9 @@ function WelcomeScreen({ onGetStarted, onSignIn }) {
   useEffect(() => { setTimeout(() => setLogoV(true), 200); setTimeout(() => setContentV(true), 900); }, []);
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "0 32px", position: "relative" }}>
-      {/* V.12 marker — temporary build indicator. Bump with each push to
+      {/* V.13 marker — temporary build indicator. Bump with each push to
           verify cache isn't serving stale code. Remove before shipping. */}
-      <div style={{ position: "absolute", top: 16, right: 20, color: COLORS.textSecondary, fontSize: 11, fontWeight: 500, letterSpacing: 1, opacity: 0.7 }}>V.12</div>
+      <div style={{ position: "absolute", top: 16, right: 20, color: COLORS.textSecondary, fontSize: 11, fontWeight: 500, letterSpacing: 1, opacity: 0.7 }}>V.13</div>
       <div style={{ position: "absolute", top: "40%", textAlign: "center", opacity: logoV ? 1 : 0, transform: logoV ? "translateY(-50%) scale(1)" : "translateY(-50%) scale(1.08)", transition: "all 0.9s cubic-bezier(0.22,1,0.36,1)" }}>
         <h1 style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 92, fontWeight: 700, color: COLORS.gold, margin: 0, letterSpacing: 8 }}>MYG</h1>
       </div>
@@ -2516,825 +2537,365 @@ const SET_TYPES = [
    happened (per Bible: data model captures executed, not prescribed).
    Sets carry the type so the recap sheet can render warmups correctly. */
 const MOCK_WORKOUT_HISTORY = [
+  // ── Session 9 — Pull/Arms/Legs Mixed (user-built, Mode C) ──
+  // Mixed-day workout: biceps + legs + back accessory. Five cold-start lifts;
+  // only Bulgarian Split Squat had prior data. Bulgarian BEAT 155 → 205 (+32%).
+  // Two new variants (Bicep Curl Machine, Back Extension Hyperextension Bench),
+  // two new lifts (Preacher Curl, Leg Extension). Auto-named "Full Body" —
+  // genuinely correct read here per D-006 notes (no clean primary).
+  // True working duration not captured (timer ran overnight-paused); estimate.
   {
-    id: "h1",
+    id: "h_s9",
     name: "Full Body",
-    date: "2026-04-18",
-    durationSec: 3480,
+    date: "2026-05-25",
+    durationSec: 3300, // ~55 min estimate — true duration not captured
     exercises: [
-      { name: "Squat", variantLabel: "Barbell + Squat Rack", sets: [
-        { weight: 130, reps: 10, type: "warmup" },
-        { weight: 235, reps: 7, type: "working" },
-        { weight: 245, reps: 6, type: "working" },
-        { weight: 255, reps: 5, type: "working" },
-      ]},
-      { name: "Bench Press", variantLabel: "Barbell", sets: [
-        { weight: 95, reps: 10, type: "warmup" },
-        { weight: 170, reps: 7, type: "working" },
-        { weight: 180, reps: 6, type: "working" },
-        { weight: 190, reps: 5, type: "working" },
-      ]},
-      { name: "Bent-Over Row", variantLabel: "Barbell", sets: [
-        { weight: 85, reps: 10, type: "warmup" },
-        { weight: 150, reps: 9, type: "working" },
-        { weight: 160, reps: 8, type: "working" },
-        { weight: 170, reps: 7, type: "working" },
-      ]},
-      { name: "Bulgarian Split Squat", variantLabel: "Dumbbells", sets: [
-        { weight: 35, reps: 10, type: "working" },
-        { weight: 35, reps: 10, type: "working" },
-        { weight: 35, reps: 8, type: "working" },
-      ]},
-      { name: "Bicep Curl", variantLabel: "Dumbbells", sets: [
-        { weight: 30, reps: 10, type: "working" },
-        { weight: 30, reps: 10, type: "working" },
-        { weight: 30, reps: 8, type: "working" },
-      ]},
-      { name: "Tricep Pushdown", variantLabel: "Cable (High Pulley)", sets: [
-        { weight: 75, reps: 12, type: "working" },
-        { weight: 75, reps: 11, type: "working" },
-        { weight: 75, reps: 10, type: "working" },
-      ]},
-      { name: "Standing Calf Raise", variantLabel: "Standing Calf Raise Machine", sets: [
-        { weight: 205, reps: 12, type: "working" },
-        { weight: 205, reps: 11, type: "working" },
-        { weight: 205, reps: 10, type: "working" },
-      ]},
-    ],
-  },
-  {
-    id: "h2",
-    name: "Full Body",
-    date: "2026-04-15",
-    durationSec: 3420,
-    exercises: [
-      { name: "Deadlift", variantLabel: "Barbell", sets: [
-        { weight: 165, reps: 10, type: "warmup" },
-        { weight: 305, reps: 6, type: "working" },
-        { weight: 325, reps: 5, type: "working" },
-      ]},
-      { name: "Incline Bench Press", variantLabel: "Dumbbells", sets: [
-        { weight: 60, reps: 8, type: "working" },
-        { weight: 60, reps: 7, type: "working" },
-        { weight: 60, reps: 6, type: "working" },
-      ]},
-      { name: "Incline Row", variantLabel: "Dumbbells", sets: [
-        { weight: 60, reps: 10, type: "working" },
-        { weight: 60, reps: 9, type: "working" },
-        { weight: 60, reps: 8, type: "working" },
-      ]},
-      { name: "Front Squat", variantLabel: "Barbell + Squat Rack", sets: [
-        { weight: 90, reps: 10, type: "warmup" },
-        { weight: 160, reps: 6, type: "working" },
-        { weight: 170, reps: 5, type: "working" },
-        { weight: 180, reps: 4, type: "working" },
-      ]},
-      { name: "Seated Row", variantLabel: "Seated Cable Row", sets: [
-        { weight: 135, reps: 10, type: "working" },
-        { weight: 135, reps: 9, type: "working" },
-        { weight: 135, reps: 8, type: "working" },
-      ]},
-      { name: "Lateral Raise", variantLabel: "Dumbbells", sets: [
-        { weight: 15, reps: 12, type: "working" },
-        { weight: 15, reps: 12, type: "working" },
-        { weight: 15, reps: 10, type: "working" },
-      ]},
-      { name: "Hanging Leg Raise", variantLabel: "Pull-Up Bar", sets: [
-        { weight: 0, reps: 12, type: "working" },
-        { weight: 0, reps: 11, type: "working" },
-        { weight: 0, reps: 9, type: "working" },
-      ]},
-    ],
-  },
-  {
-    id: "h3",
-    name: "Full Body",
-    date: "2026-04-13",
-    durationSec: 3360,
-    exercises: [
-      { name: "Squat", variantLabel: "Barbell + Squat Rack", sets: [
-        { weight: 130, reps: 10, type: "warmup" },
-        { weight: 235, reps: 7, type: "working" },
-        { weight: 245, reps: 6, type: "working" },
-        { weight: 255, reps: 5, type: "working" },
-      ]},
-      { name: "Bench Press", variantLabel: "Barbell", sets: [
-        { weight: 95, reps: 10, type: "warmup" },
-        { weight: 170, reps: 7, type: "working" },
-        { weight: 180, reps: 6, type: "working" },
-        { weight: 190, reps: 5, type: "working" },
-      ]},
-      { name: "Bent-Over Row", variantLabel: "Barbell", sets: [
-        { weight: 85, reps: 10, type: "warmup" },
-        { weight: 150, reps: 9, type: "working" },
-        { weight: 160, reps: 8, type: "working" },
-        { weight: 170, reps: 7, type: "working" },
-      ]},
-      { name: "Romanian Deadlift", variantLabel: "Barbell", sets: [
-        { weight: 210, reps: 8, type: "working" },
-        { weight: 210, reps: 7, type: "working" },
-        { weight: 210, reps: 6, type: "working" },
-      ]},
-      { name: "Overhead Press", variantLabel: "Barbell", sets: [
-        { weight: 60, reps: 10, type: "warmup" },
-        { weight: 100, reps: 6, type: "working" },
-        { weight: 110, reps: 5, type: "working" },
-        { weight: 120, reps: 4, type: "working" },
-      ]},
-      { name: "Lat Pulldown", variantLabel: "Cable Lat Pulldown", sets: [
-        { weight: 145, reps: 10, type: "working" },
-        { weight: 145, reps: 9, type: "working" },
-        { weight: 145, reps: 8, type: "working" },
-      ]},
-      { name: "Standing Calf Raise", variantLabel: "Standing Calf Raise Machine", sets: [
-        { weight: 205, reps: 12, type: "working" },
-        { weight: 205, reps: 11, type: "working" },
-        { weight: 205, reps: 10, type: "working" },
-      ]},
-    ],
-  },
-  {
-    id: "h4",
-    name: "Full Body",
-    date: "2026-04-11",
-    durationSec: 3480,
-    exercises: [
-      { name: "Squat", variantLabel: "Barbell + Squat Rack", sets: [
-        { weight: 125, reps: 10, type: "warmup" },
-        { weight: 230, reps: 8, type: "working" },
-        { weight: 240, reps: 7, type: "working" },
-        { weight: 250, reps: 6, type: "working" },
-      ]},
-      { name: "Bench Press", variantLabel: "Barbell", sets: [
-        { weight: 95, reps: 10, type: "warmup" },
-        { weight: 170, reps: 8, type: "working" },
-        { weight: 180, reps: 7, type: "working" },
-        { weight: 190, reps: 6, type: "working" },
-      ]},
-      { name: "Bent-Over Row", variantLabel: "Barbell", sets: [
-        { weight: 85, reps: 10, type: "warmup" },
-        { weight: 145, reps: 10, type: "working" },
-        { weight: 155, reps: 9, type: "working" },
-        { weight: 165, reps: 8, type: "working" },
-      ]},
-      { name: "Bulgarian Split Squat", variantLabel: "Dumbbells", sets: [
-        { weight: 35, reps: 10, type: "working" },
-        { weight: 35, reps: 10, type: "working" },
-        { weight: 35, reps: 8, type: "working" },
-      ]},
-      { name: "Bicep Curl", variantLabel: "Dumbbells", sets: [
-        { weight: 30, reps: 10, type: "working" },
-        { weight: 30, reps: 10, type: "working" },
-        { weight: 30, reps: 8, type: "working" },
-      ]},
-      { name: "Tricep Pushdown", variantLabel: "Cable (High Pulley)", sets: [
-        { weight: 70, reps: 12, type: "working" },
-        { weight: 70, reps: 11, type: "working" },
-        { weight: 70, reps: 10, type: "working" },
-      ]},
-      { name: "Standing Calf Raise", variantLabel: "Standing Calf Raise Machine", sets: [
-        { weight: 200, reps: 12, type: "working" },
-        { weight: 200, reps: 11, type: "working" },
-        { weight: 200, reps: 10, type: "working" },
-      ]},
-    ],
-  },
-  {
-    id: "h5",
-    name: "Full Body",
-    date: "2026-04-08",
-    durationSec: 3420,
-    exercises: [
-      { name: "Deadlift", variantLabel: "Barbell", sets: [
-        { weight: 160, reps: 10, type: "warmup" },
-        { weight: 295, reps: 6, type: "working" },
-        { weight: 315, reps: 5, type: "working" },
-      ]},
-      { name: "Incline Bench Press", variantLabel: "Dumbbells", sets: [
-        { weight: 60, reps: 8, type: "working" },
-        { weight: 60, reps: 7, type: "working" },
-        { weight: 60, reps: 6, type: "working" },
-      ]},
-      { name: "Incline Row", variantLabel: "Dumbbells", sets: [
-        { weight: 60, reps: 10, type: "working" },
-        { weight: 60, reps: 9, type: "working" },
-        { weight: 60, reps: 8, type: "working" },
-      ]},
-      { name: "Front Squat", variantLabel: "Barbell + Squat Rack", sets: [
-        { weight: 90, reps: 10, type: "warmup" },
-        { weight: 155, reps: 7, type: "working" },
-        { weight: 165, reps: 6, type: "working" },
-        { weight: 175, reps: 5, type: "working" },
-      ]},
-      { name: "Seated Row", variantLabel: "Seated Cable Row", sets: [
-        { weight: 130, reps: 10, type: "working" },
-        { weight: 130, reps: 9, type: "working" },
-        { weight: 130, reps: 8, type: "working" },
-      ]},
-      { name: "Lateral Raise", variantLabel: "Dumbbells", sets: [
-        { weight: 15, reps: 12, type: "working" },
-        { weight: 15, reps: 12, type: "working" },
-        { weight: 15, reps: 10, type: "working" },
-      ]},
-      { name: "Hanging Leg Raise", variantLabel: "Pull-Up Bar", sets: [
-        { weight: 0, reps: 12, type: "working" },
-        { weight: 0, reps: 11, type: "working" },
-        { weight: 0, reps: 9, type: "working" },
-      ]},
-    ],
-  },
-  {
-    id: "h6",
-    name: "Full Body",
-    date: "2026-04-06",
-    durationSec: 3360,
-    exercises: [
-      { name: "Squat", variantLabel: "Barbell + Squat Rack", sets: [
-        { weight: 125, reps: 10, type: "warmup" },
-        { weight: 225, reps: 8, type: "working" },
-        { weight: 235, reps: 7, type: "working" },
-        { weight: 245, reps: 6, type: "working" },
-      ]},
-      { name: "Bench Press", variantLabel: "Barbell", sets: [
-        { weight: 95, reps: 10, type: "warmup" },
-        { weight: 165, reps: 8, type: "working" },
-        { weight: 175, reps: 7, type: "working" },
-        { weight: 185, reps: 6, type: "working" },
-      ]},
-      { name: "Bent-Over Row", variantLabel: "Barbell", sets: [
-        { weight: 85, reps: 10, type: "warmup" },
-        { weight: 145, reps: 10, type: "working" },
-        { weight: 155, reps: 9, type: "working" },
-        { weight: 165, reps: 8, type: "working" },
-      ]},
-      { name: "Romanian Deadlift", variantLabel: "Barbell", sets: [
-        { weight: 205, reps: 8, type: "working" },
-        { weight: 205, reps: 7, type: "working" },
-        { weight: 205, reps: 6, type: "working" },
-      ]},
-      { name: "Overhead Press", variantLabel: "Barbell", sets: [
-        { weight: 60, reps: 10, type: "warmup" },
-        { weight: 95, reps: 7, type: "working" },
-        { weight: 105, reps: 6, type: "working" },
-        { weight: 115, reps: 5, type: "working" },
-      ]},
-      { name: "Lat Pulldown", variantLabel: "Cable Lat Pulldown", sets: [
-        { weight: 140, reps: 10, type: "working" },
-        { weight: 140, reps: 9, type: "working" },
-        { weight: 140, reps: 8, type: "working" },
-      ]},
-      { name: "Standing Calf Raise", variantLabel: "Standing Calf Raise Machine", sets: [
-        { weight: 200, reps: 12, type: "working" },
-        { weight: 200, reps: 11, type: "working" },
-        { weight: 200, reps: 10, type: "working" },
-      ]},
-    ],
-  },
-  {
-    id: "h7",
-    name: "Full Body",
-    date: "2026-04-04",
-    durationSec: 2880,
-    exercises: [
-      { name: "Squat", variantLabel: "Barbell + Squat Rack", sets: [
-        { weight: 100, reps: 10, type: "warmup" },
-        { weight: 180, reps: 10, type: "working" },
-        { weight: 190, reps: 9, type: "working" },
-        { weight: 200, reps: 8, type: "working" },
-      ]},
-      { name: "Bench Press", variantLabel: "Barbell", sets: [
-        { weight: 80, reps: 10, type: "warmup" },
-        { weight: 135, reps: 10, type: "working" },
-        { weight: 145, reps: 9, type: "working" },
-        { weight: 155, reps: 8, type: "working" },
-      ]},
-      { name: "Bent-Over Row", variantLabel: "Barbell", sets: [
-        { weight: 70, reps: 10, type: "warmup" },
+      { name: "Bicep Curl", variantLabel: "Bicep Curl Machine", sets: [
+        { weight: 100, reps: 12, type: "working" },
+        { weight: 100, reps: 12, type: "working" },
         { weight: 115, reps: 12, type: "working" },
-        { weight: 125, reps: 11, type: "working" },
-        { weight: 135, reps: 10, type: "working" },
       ]},
-      { name: "Bulgarian Split Squat", variantLabel: "Dumbbells", sets: [
-        { weight: 30, reps: 12, type: "working" },
-        { weight: 30, reps: 12, type: "working" },
-        { weight: 30, reps: 10, type: "working" },
+      { name: "Preacher Curl", variantLabel: "EZ Curl Bar", sets: [
+        { weight: 70, reps: 10, type: "working" },
+        { weight: 70, reps: 10, type: "working" },
+        { weight: 80, reps: 8,  type: "working" },
       ]},
-      { name: "Bicep Curl", variantLabel: "Dumbbells", sets: [
-        { weight: 25, reps: 12, type: "working" },
-        { weight: 25, reps: 12, type: "working" },
-        { weight: 25, reps: 10, type: "working" },
+      { name: "Bulgarian Split Squat", variantLabel: "Barbell", sets: [
+        { weight: 135, reps: 8, type: "working" },
+        { weight: 185, reps: 8, type: "working" },
+        { weight: 205, reps: 8, type: "working" },
       ]},
-      { name: "Tricep Pushdown", variantLabel: "Cable (High Pulley)", sets: [
-        { weight: 55, reps: 14, type: "working" },
-        { weight: 55, reps: 13, type: "working" },
-        { weight: 55, reps: 12, type: "working" },
+      { name: "Leg Extension", variantLabel: "Leg Extension Machine", sets: [
+        { weight: 90,  reps: 10, type: "working" },
+        { weight: 120, reps: 10, type: "working" },
+        { weight: 140, reps: 10, type: "working" },
+        { weight: 160, reps: 15, type: "working" },
       ]},
-      { name: "Standing Calf Raise", variantLabel: "Standing Calf Raise Machine", sets: [
-        { weight: 165, reps: 14, type: "working" },
-        { weight: 165, reps: 13, type: "working" },
-        { weight: 165, reps: 12, type: "working" },
-      ]},
-    ],
-  },
-  {
-    id: "h8",
-    name: "Full Body",
-    date: "2026-04-01",
-    durationSec: 2820,
-    exercises: [
-      { name: "Deadlift", variantLabel: "Barbell", sets: [
-        { weight: 130, reps: 10, type: "warmup" },
-        { weight: 240, reps: 8, type: "working" },
-        { weight: 260, reps: 7, type: "working" },
-      ]},
-      { name: "Incline Bench Press", variantLabel: "Dumbbells", sets: [
-        { weight: 45, reps: 10, type: "working" },
-        { weight: 45, reps: 9, type: "working" },
+      { name: "Back Extension", variantLabel: "Hyperextension Bench", sets: [
+        { weight: 45, reps: 6, type: "working" },
+        { weight: 45, reps: 8, type: "working" },
         { weight: 45, reps: 8, type: "working" },
       ]},
-      { name: "Incline Row", variantLabel: "Dumbbells", sets: [
-        { weight: 45, reps: 12, type: "working" },
-        { weight: 45, reps: 11, type: "working" },
-        { weight: 45, reps: 10, type: "working" },
-      ]},
-      { name: "Front Squat", variantLabel: "Barbell + Squat Rack", sets: [
-        { weight: 75, reps: 10, type: "warmup" },
-        { weight: 125, reps: 9, type: "working" },
-        { weight: 135, reps: 8, type: "working" },
-        { weight: 145, reps: 7, type: "working" },
-      ]},
-      { name: "Seated Row", variantLabel: "Seated Cable Row", sets: [
-        { weight: 110, reps: 12, type: "working" },
-        { weight: 110, reps: 11, type: "working" },
-        { weight: 110, reps: 10, type: "working" },
-      ]},
-      { name: "Lateral Raise", variantLabel: "Dumbbells", sets: [
-        { weight: 15, reps: 14, type: "working" },
-        { weight: 15, reps: 14, type: "working" },
-        { weight: 15, reps: 12, type: "working" },
-      ]},
-      { name: "Hanging Leg Raise", variantLabel: "Pull-Up Bar", sets: [
-        { weight: 0, reps: 11, type: "working" },
-        { weight: 0, reps: 10, type: "working" },
-        { weight: 0, reps: 8, type: "working" },
-      ]},
     ],
   },
+
+  // ── Session 8 — Push Day (Coach prescribed, user built different — Mode C) ──
+  // Coach prescribed 7; Tyler kept 3 (Bench, Incline DB, OHP DB) and built
+  // different shape. Bench HIT at 205 (anchor confirmed). Incline DB MISS
+  // → counter 2. OHP re-anchored 55→50 provisional. Lateral Raise Machine
+  // new variant cold-start. Pec Deck anchor migrated 155×15 → 165×12 HIT.
+  // Dip BEAT BW×8 → BW×10. Skull Crusher new lift cold-start.
   {
-    id: "h9",
-    name: "Full Body",
-    date: "2026-03-30",
-    durationSec: 2760,
+    id: "h_s8",
+    name: "Push Day",
+    date: "2026-05-24",
+    durationSec: 3684, // 1:01:24
     exercises: [
-      { name: "Squat", variantLabel: "Barbell + Squat Rack", sets: [
-        { weight: 100, reps: 10, type: "warmup" },
-        { weight: 180, reps: 10, type: "working" },
-        { weight: 190, reps: 9, type: "working" },
-        { weight: 200, reps: 8, type: "working" },
-      ]},
       { name: "Bench Press", variantLabel: "Barbell", sets: [
-        { weight: 80, reps: 10, type: "warmup" },
-        { weight: 135, reps: 10, type: "working" },
-        { weight: 145, reps: 9, type: "working" },
-        { weight: 155, reps: 8, type: "working" },
+        { weight: 135, reps: 10, type: "warmup" },
+        { weight: 205, reps: 8,  type: "working" },
+        { weight: 205, reps: 8,  type: "working" },
+        { weight: 205, reps: 8,  type: "working" },
+        { weight: 225, reps: 4,  type: "working" },
       ]},
-      { name: "Bent-Over Row", variantLabel: "Barbell", sets: [
-        { weight: 70, reps: 10, type: "warmup" },
+      { name: "Incline Bench Press", variantLabel: "Dumbbells", sets: [
+        { weight: 60, reps: 10, type: "working" },
+        { weight: 70, reps: 8,  type: "working" },
+        { weight: 70, reps: 8,  type: "working" },
+      ]},
+      { name: "Overhead Press", variantLabel: "Dumbbells", sets: [
+        { weight: 45, reps: 8, type: "working" },
+        { weight: 45, reps: 8, type: "working" },
+        { weight: 50, reps: 9, type: "working" },
+      ]},
+      { name: "Lateral Raise", variantLabel: "Lateral Raise Machine", sets: [
+        { weight: 70, reps: 10, type: "working" },
+        { weight: 75, reps: 12, type: "working" },
+        { weight: 85, reps: 12, type: "working" },
+      ]},
+      { name: "Chest Fly", variantLabel: "Pec Deck", sets: [
         { weight: 115, reps: 12, type: "working" },
-        { weight: 125, reps: 11, type: "working" },
-        { weight: 135, reps: 10, type: "working" },
-      ]},
-      { name: "Romanian Deadlift", variantLabel: "Barbell", sets: [
-        { weight: 170, reps: 10, type: "working" },
-        { weight: 170, reps: 9, type: "working" },
-        { weight: 170, reps: 8, type: "working" },
-      ]},
-      { name: "Overhead Press", variantLabel: "Barbell", sets: [
-        { weight: 50, reps: 10, type: "warmup" },
-        { weight: 75, reps: 9, type: "working" },
-        { weight: 85, reps: 8, type: "working" },
-        { weight: 95, reps: 7, type: "working" },
-      ]},
-      { name: "Lat Pulldown", variantLabel: "Cable Lat Pulldown", sets: [
-        { weight: 120, reps: 12, type: "working" },
-        { weight: 120, reps: 11, type: "working" },
-        { weight: 120, reps: 10, type: "working" },
-      ]},
-      { name: "Standing Calf Raise", variantLabel: "Standing Calf Raise Machine", sets: [
-        { weight: 165, reps: 14, type: "working" },
-        { weight: 165, reps: 13, type: "working" },
+        { weight: 145, reps: 15, type: "working" },
         { weight: 165, reps: 12, type: "working" },
       ]},
+      { name: "Dip", variantLabel: "Dip Station", sets: [
+        { weight: 0, reps: 9,  type: "working" },
+        { weight: 0, reps: 10, type: "working" },
+        { weight: 0, reps: 9,  type: "working" },
+      ]},
+      { name: "Skull Crusher", variantLabel: "Dumbbells", sets: [
+        { weight: 25, reps: 12, type: "working" },
+        { weight: 25, reps: 12, type: "working" },
+        { weight: 25, reps: 12, type: "working" },
+      ]},
     ],
   },
+
+  // ── Session 6 — Push Day (user-built, Mode C) ──
+  // Bench 225×6 confirms the Session 4 grindy 225×5 — anchor moves 205 → 225.
+  // Pec Deck volume scheme retired heavy scheme. Five off-card additions:
+  // Dip, Machine Press (n=2), DB Lateral, DB Front, DB Chest Fly.
   {
-    id: "h10",
-    name: "Full Body",
-    date: "2026-03-28",
-    durationSec: 3480,
+    id: "h1",
+    name: "Push Day",
+    date: "2026-05-17",
+    durationSec: 4130, // 1:08:50
     exercises: [
-      { name: "Squat", variantLabel: "Barbell + Squat Rack", sets: [
-        { weight: 115, reps: 10, type: "warmup" },
-        { weight: 205, reps: 8, type: "working" },
-        { weight: 215, reps: 7, type: "working" },
-        { weight: 225, reps: 6, type: "working" },
-      ]},
       { name: "Bench Press", variantLabel: "Barbell", sets: [
-        { weight: 90, reps: 10, type: "warmup" },
-        { weight: 155, reps: 8, type: "working" },
-        { weight: 165, reps: 7, type: "working" },
-        { weight: 175, reps: 6, type: "working" },
-      ]},
-      { name: "Bent-Over Row", variantLabel: "Barbell", sets: [
-        { weight: 80, reps: 10, type: "warmup" },
-        { weight: 135, reps: 10, type: "working" },
-        { weight: 145, reps: 9, type: "working" },
-        { weight: 155, reps: 8, type: "working" },
-      ]},
-      { name: "Bulgarian Split Squat", variantLabel: "Dumbbells", sets: [
-        { weight: 30, reps: 10, type: "working" },
-        { weight: 30, reps: 10, type: "working" },
-        { weight: 30, reps: 8, type: "working" },
-      ]},
-      { name: "Bicep Curl", variantLabel: "Dumbbells", sets: [
-        { weight: 25, reps: 10, type: "working" },
-        { weight: 25, reps: 10, type: "working" },
-        { weight: 25, reps: 8, type: "working" },
-      ]},
-      { name: "Tricep Pushdown", variantLabel: "Cable (High Pulley)", sets: [
-        { weight: 60, reps: 12, type: "working" },
-        { weight: 60, reps: 11, type: "working" },
-        { weight: 60, reps: 10, type: "working" },
-      ]},
-      { name: "Standing Calf Raise", variantLabel: "Standing Calf Raise Machine", sets: [
-        { weight: 190, reps: 12, type: "working" },
-        { weight: 190, reps: 11, type: "working" },
-        { weight: 190, reps: 10, type: "working" },
-      ]},
-    ],
-  },
-  {
-    id: "h11",
-    name: "Full Body",
-    date: "2026-03-25",
-    durationSec: 3420,
-    exercises: [
-      { name: "Deadlift", variantLabel: "Barbell", sets: [
-        { weight: 150, reps: 10, type: "warmup" },
-        { weight: 275, reps: 6, type: "working" },
-        { weight: 285, reps: 4, type: "working" },
+        { weight: 135, reps: 10, type: "warmup" },
+        { weight: 205, reps: 8,  type: "working" },
+        { weight: 225, reps: 6,  type: "working" },
+        { weight: 225, reps: 5,  type: "working" },
+        { weight: 155, reps: 12, type: "drop" },
       ]},
       { name: "Incline Bench Press", variantLabel: "Dumbbells", sets: [
-        { weight: 55, reps: 8, type: "working" },
-        { weight: 55, reps: 7, type: "working" },
-        { weight: 55, reps: 6, type: "working" },
+        { weight: 70, reps: 6,  type: "working" },
+        { weight: 60, reps: 10, type: "working" },
+        { weight: 65, reps: 10, type: "working" },
       ]},
-      { name: "Incline Row", variantLabel: "Dumbbells", sets: [
-        { weight: 55, reps: 10, type: "working" },
-        { weight: 55, reps: 9, type: "working" },
-        { weight: 55, reps: 8, type: "working" },
+      { name: "Chest Fly", variantLabel: "Pec Deck", sets: [
+        { weight: 130, reps: 12, type: "working" },
+        { weight: 145, reps: 12, type: "working" },
+        { weight: 145, reps: 12, type: "working" },
+        { weight: 155, reps: 15, type: "working" },
       ]},
-      { name: "Front Squat", variantLabel: "Barbell + Squat Rack", sets: [
-        { weight: 85, reps: 10, type: "warmup" },
-        { weight: 145, reps: 7, type: "working" },
-        { weight: 155, reps: 6, type: "working" },
-        { weight: 160, reps: 4, type: "working" },
-      ]},
-      { name: "Seated Row", variantLabel: "Seated Cable Row", sets: [
-        { weight: 125, reps: 10, type: "working" },
-        { weight: 125, reps: 9, type: "working" },
-        { weight: 125, reps: 8, type: "working" },
-      ]},
-      { name: "Lateral Raise", variantLabel: "Dumbbells", sets: [
-        { weight: 15, reps: 12, type: "working" },
-        { weight: 15, reps: 12, type: "working" },
-        { weight: 15, reps: 10, type: "working" },
-      ]},
-      { name: "Hanging Leg Raise", variantLabel: "Pull-Up Bar", sets: [
-        { weight: 0, reps: 11, type: "working" },
-        { weight: 0, reps: 10, type: "working" },
+      { name: "Dip", variantLabel: "Dip Station", sets: [
+        { weight: 0, reps: 8, type: "working" },
+        { weight: 0, reps: 8, type: "working" },
         { weight: 0, reps: 8, type: "working" },
       ]},
+      { name: "Machine Press", variantLabel: "Hammer Strength Decline Press", sets: [
+        { weight: 225, reps: 8, type: "working" },
+        { weight: 225, reps: 8, type: "working" },
+        { weight: 225, reps: 8, type: "working" },
+      ]},
+      { name: "Tricep Pushdown", variantLabel: "Cable (High Pulley)", sets: [
+        { weight: 110, reps: 15, type: "working" },
+        { weight: 135, reps: 10, type: "working" },
+        { weight: 135, reps: 8,  type: "working" },
+      ]},
+      { name: "Lateral Raise", variantLabel: "Dumbbells", sets: [
+        { weight: 15, reps: 15, type: "working" },
+        { weight: 15, reps: 15, type: "working" },
+        { weight: 20, reps: 15, type: "working" },
+      ]},
+      { name: "Front Raise", variantLabel: "Dumbbells", sets: [
+        { weight: 15, reps: 10, type: "working" },
+        { weight: 15, reps: 10, type: "working" },
+        { weight: 20, reps: 10, type: "working" },
+      ]},
+      { name: "Chest Fly", variantLabel: "Dumbbells", sets: [
+        { weight: 15, reps: 15, type: "working" },
+        { weight: 15, reps: 15, type: "working" },
+        { weight: 20, reps: 15, type: "working" },
+      ]},
     ],
   },
+
+  // ── Session 5 — Back Day (user-built, Mode C) ──
+  // Bent Row 185 was a missed ramp — anchor remains 205. Seated Row 200×10 PR.
+  // Back Extension cold-start, 140–150 provisional.
   {
-    id: "h12",
-    name: "Full Body",
-    date: "2026-03-23",
-    durationSec: 3360,
+    id: "h2",
+    name: "Back Day",
+    date: "2026-05-12",
+    durationSec: 5677, // 1:34:37
     exercises: [
-      { name: "Squat", variantLabel: "Barbell + Squat Rack", sets: [
-        { weight: 115, reps: 10, type: "warmup" },
+      { name: "Bent-Over Row", variantLabel: "Barbell", sets: [
+        { weight: 95,  reps: 10, type: "working" },
+        { weight: 155, reps: 8,  type: "working" },
+        { weight: 185, reps: 8,  type: "working" },
+      ]},
+      { name: "Lat Pulldown", variantLabel: "Cable Lat Pulldown", sets: [
+        { weight: 160, reps: 10, type: "working" },
+        { weight: 180, reps: 10, type: "working" },
+        { weight: 180, reps: 10, type: "working" },
+      ]},
+      { name: "Seated Row", variantLabel: "Seated Cable Row", sets: [
+        { weight: 160, reps: 10, type: "working" },
+        { weight: 180, reps: 10, type: "working" },
+        { weight: 200, reps: 10, type: "working" },
+      ]},
+      { name: "Back Extension", variantLabel: "Back Extension Machine", sets: [
+        { weight: 140, reps: 10, type: "working" },
+        { weight: 140, reps: 10, type: "working" },
+        { weight: 150, reps: 10, type: "working" },
+      ]},
+    ],
+  },
+
+  // ── Session 4 — Push Day (Coach-prescribed Mode A, mid-prescription
+  // negotiation: Tyler added Cable Crossover from Coach's rec AND
+  // Machine Press as his own add; dropped Overhead Tricep Extension.)
+  // Bench 225×5 grindy PR; Incline DB 75×8 new anchor.
+  {
+    id: "h3",
+    name: "Push Day",
+    date: "2026-05-10",
+    durationSec: 4276, // 1:11:16
+    exercises: [
+      { name: "Incline Bench Press", variantLabel: "Dumbbells", sets: [
+        { weight: 65, reps: 8, type: "working" },
+        { weight: 70, reps: 8, type: "working" },
+        { weight: 75, reps: 8, type: "working" },
+        { weight: 75, reps: 8, type: "working" },
+      ]},
+      { name: "Bench Press", variantLabel: "Barbell", sets: [
+        { weight: 135, reps: 10, type: "warmup" },
+        { weight: 185, reps: 7,  type: "working" },
+        { weight: 205, reps: 7,  type: "working" },
+        { weight: 225, reps: 5,  type: "working" },
+      ]},
+      { name: "Cable Crossover", variantLabel: "Cable Crossover", sets: [
+        { weight: 27, reps: 15, type: "working" },
+        { weight: 33, reps: 12, type: "working" },
+      ]},
+      { name: "Overhead Press", variantLabel: "Dumbbells", sets: [
+        { weight: 45, reps: 8, type: "working" },
+        { weight: 55, reps: 8, type: "working" },
+        { weight: 60, reps: 8, type: "working" },
+      ]},
+      { name: "Lateral Raise", variantLabel: "Cable (Low Pulley)", sets: [
+        { weight: 20, reps: 12, type: "working" },
+        { weight: 20, reps: 12, type: "working" },
+        { weight: 25, reps: 10, type: "working" },
+      ]},
+      { name: "Tricep Pushdown", variantLabel: "Cable (High Pulley)", sets: [
+        { weight: 120, reps: 12, type: "working" },
+        { weight: 135, reps: 12, type: "working" },
+        { weight: 135, reps: 8,  type: "working" },
+      ]},
+      { name: "Machine Press", variantLabel: "Hammer Strength Decline Press", sets: [
+        { weight: 90,  reps: 10, type: "working" },
+        { weight: 180, reps: 10, type: "working" },
+        { weight: 180, reps: 10, type: "working" },
+      ]},
+    ],
+  },
+
+  // ── Session 3 — Leg Day (Mode B, 3 swaps + 2 missing vs prescription;
+  // Tyler ran his own session, Coach had no signal for why) ──
+  // Pyramid-up pattern across all four lifts. Top sets: Hip Thrust 450×8,
+  // Bulgarian 155×8, RDL 225×8, Leg Press 630×8.
+  {
+    id: "h4",
+    name: "Leg Day",
+    date: "2026-05-08",
+    durationSec: 3600, // duration partially captured; ~60min estimate
+    exercises: [
+      { name: "Hip Thrust", variantLabel: "Hip Thrust Machine", sets: [
+        { weight: 90,  reps: 8, type: "working" },
+        { weight: 180, reps: 8, type: "working" },
+        { weight: 270, reps: 8, type: "working" },
+        { weight: 360, reps: 8, type: "working" },
+        { weight: 450, reps: 8, type: "working" },
+      ]},
+      { name: "Bulgarian Split Squat", variantLabel: "Barbell", sets: [
+        { weight: 95,  reps: 10, type: "working" },
+        { weight: 135, reps: 8,  type: "working" },
+        { weight: 155, reps: 8,  type: "working" },
+      ]},
+      { name: "Romanian Deadlift", variantLabel: "Barbell", sets: [
+        { weight: 135, reps: 8, type: "working" },
+        { weight: 185, reps: 8, type: "working" },
+        { weight: 222, reps: 8, type: "working" },
+        { weight: 225, reps: 8, type: "working" },
+      ]},
+      { name: "Leg Press", variantLabel: "Leg Press (45°)", sets: [
+        { weight: 225, reps: 10, type: "working" },
+        { weight: 360, reps: 10, type: "working" },
+        { weight: 495, reps: 10, type: "working" },
+        { weight: 585, reps: 8,  type: "working" },
+        { weight: 630, reps: 8,  type: "working" },
+      ]},
+    ],
+  },
+
+  // ── Session 2 — Pull Day (Coach-prescribed Mode A) ──
+  // Bent Row 205×8 new anchor. Pull-Ups submax. Lat Pulldown 180 + Seated
+  // Row 180 same working weight (worth cycling one heavier).
+  {
+    id: "h5",
+    name: "Pull Day",
+    date: "2026-05-05",
+    durationSec: 4457, // 1:14:17
+    exercises: [
+      { name: "Bent-Over Row", variantLabel: "Barbell", sets: [
+        { weight: 135, reps: 8, type: "working" },
+        { weight: 185, reps: 8, type: "working" },
+        { weight: 195, reps: 8, type: "working" },
         { weight: 205, reps: 8, type: "working" },
-        { weight: 215, reps: 7, type: "working" },
-        { weight: 225, reps: 6, type: "working" },
       ]},
-      { name: "Bench Press", variantLabel: "Barbell", sets: [
-        { weight: 90, reps: 10, type: "warmup" },
-        { weight: 155, reps: 8, type: "working" },
-        { weight: 165, reps: 7, type: "working" },
-        { weight: 175, reps: 6, type: "working" },
-      ]},
-      { name: "Bent-Over Row", variantLabel: "Barbell", sets: [
-        { weight: 80, reps: 10, type: "warmup" },
-        { weight: 135, reps: 10, type: "working" },
-        { weight: 145, reps: 9, type: "working" },
-        { weight: 155, reps: 8, type: "working" },
-      ]},
-      { name: "Romanian Deadlift", variantLabel: "Barbell", sets: [
-        { weight: 195, reps: 8, type: "working" },
-        { weight: 195, reps: 7, type: "working" },
-        { weight: 195, reps: 6, type: "working" },
-      ]},
-      { name: "Overhead Press", variantLabel: "Barbell", sets: [
-        { weight: 55, reps: 10, type: "warmup" },
-        { weight: 85, reps: 7, type: "working" },
-        { weight: 95, reps: 6, type: "working" },
-        { weight: 105, reps: 5, type: "working" },
-      ]},
-      { name: "Lat Pulldown", variantLabel: "Cable Lat Pulldown", sets: [
-        { weight: 135, reps: 10, type: "working" },
-        { weight: 135, reps: 9, type: "working" },
-        { weight: 135, reps: 8, type: "working" },
-      ]},
-      { name: "Standing Calf Raise", variantLabel: "Standing Calf Raise Machine", sets: [
-        { weight: 190, reps: 12, type: "working" },
-        { weight: 190, reps: 11, type: "working" },
-        { weight: 190, reps: 10, type: "working" },
-      ]},
-    ],
-  },
-  {
-    id: "h13",
-    name: "Full Body",
-    date: "2026-03-21",
-    durationSec: 3480,
-    exercises: [
-      { name: "Squat", variantLabel: "Barbell + Squat Rack", sets: [
-        { weight: 110, reps: 10, type: "warmup" },
-        { weight: 195, reps: 8, type: "working" },
-        { weight: 205, reps: 7, type: "working" },
-        { weight: 215, reps: 6, type: "working" },
-      ]},
-      { name: "Bench Press", variantLabel: "Barbell", sets: [
-        { weight: 85, reps: 10, type: "warmup" },
-        { weight: 150, reps: 8, type: "working" },
-        { weight: 160, reps: 7, type: "working" },
-        { weight: 170, reps: 6, type: "working" },
-      ]},
-      { name: "Bent-Over Row", variantLabel: "Barbell", sets: [
-        { weight: 75, reps: 10, type: "warmup" },
-        { weight: 130, reps: 10, type: "working" },
-        { weight: 140, reps: 9, type: "working" },
-        { weight: 150, reps: 8, type: "working" },
-      ]},
-      { name: "Bulgarian Split Squat", variantLabel: "Dumbbells", sets: [
-        { weight: 30, reps: 10, type: "working" },
-        { weight: 30, reps: 10, type: "working" },
-        { weight: 30, reps: 8, type: "working" },
-      ]},
-      { name: "Bicep Curl", variantLabel: "Dumbbells", sets: [
-        { weight: 25, reps: 10, type: "working" },
-        { weight: 25, reps: 10, type: "working" },
-        { weight: 25, reps: 8, type: "working" },
-      ]},
-      { name: "Tricep Pushdown", variantLabel: "Cable (High Pulley)", sets: [
-        { weight: 55, reps: 12, type: "working" },
-        { weight: 55, reps: 11, type: "working" },
-        { weight: 55, reps: 10, type: "working" },
-      ]},
-      { name: "Standing Calf Raise", variantLabel: "Standing Calf Raise Machine", sets: [
-        { weight: 185, reps: 12, type: "working" },
-        { weight: 185, reps: 11, type: "working" },
-        { weight: 185, reps: 10, type: "working" },
-      ]},
-    ],
-  },
-  {
-    id: "h14",
-    name: "Full Body",
-    date: "2026-03-18",
-    durationSec: 3420,
-    exercises: [
-      { name: "Deadlift", variantLabel: "Barbell", sets: [
-        { weight: 145, reps: 10, type: "warmup" },
-        { weight: 265, reps: 6, type: "working" },
-        { weight: 285, reps: 5, type: "working" },
-      ]},
-      { name: "Incline Bench Press", variantLabel: "Dumbbells", sets: [
-        { weight: 50, reps: 8, type: "working" },
-        { weight: 50, reps: 7, type: "working" },
-        { weight: 50, reps: 6, type: "working" },
-      ]},
-      { name: "Incline Row", variantLabel: "Dumbbells", sets: [
-        { weight: 50, reps: 10, type: "working" },
-        { weight: 50, reps: 9, type: "working" },
-        { weight: 50, reps: 8, type: "working" },
-      ]},
-      { name: "Front Squat", variantLabel: "Barbell + Squat Rack", sets: [
-        { weight: 80, reps: 10, type: "warmup" },
-        { weight: 140, reps: 7, type: "working" },
-        { weight: 150, reps: 6, type: "working" },
-        { weight: 160, reps: 5, type: "working" },
-      ]},
-      { name: "Seated Row", variantLabel: "Seated Cable Row", sets: [
-        { weight: 125, reps: 10, type: "working" },
-        { weight: 125, reps: 9, type: "working" },
-        { weight: 125, reps: 8, type: "working" },
-      ]},
-      { name: "Lateral Raise", variantLabel: "Dumbbells", sets: [
-        { weight: 15, reps: 12, type: "working" },
-        { weight: 15, reps: 12, type: "working" },
-        { weight: 15, reps: 10, type: "working" },
-      ]},
-      { name: "Hanging Leg Raise", variantLabel: "Pull-Up Bar", sets: [
-        { weight: 0, reps: 10, type: "working" },
-        { weight: 0, reps: 9, type: "working" },
+      { name: "Pull-Up", variantLabel: "Pull-Up Bar", sets: [
+        { weight: 0, reps: 8, type: "working" },
+        { weight: 0, reps: 8, type: "working" },
+        { weight: 0, reps: 8, type: "working" },
         { weight: 0, reps: 7, type: "working" },
       ]},
-    ],
-  },
-  {
-    id: "h15",
-    name: "Full Body",
-    date: "2026-03-16",
-    durationSec: 3360,
-    exercises: [
-      { name: "Squat", variantLabel: "Barbell + Squat Rack", sets: [
-        { weight: 110, reps: 10, type: "warmup" },
-        { weight: 195, reps: 8, type: "working" },
-        { weight: 205, reps: 7, type: "working" },
-        { weight: 215, reps: 6, type: "working" },
-      ]},
-      { name: "Bench Press", variantLabel: "Barbell", sets: [
-        { weight: 85, reps: 10, type: "warmup" },
-        { weight: 150, reps: 8, type: "working" },
-        { weight: 160, reps: 7, type: "working" },
-        { weight: 170, reps: 6, type: "working" },
-      ]},
-      { name: "Bent-Over Row", variantLabel: "Barbell", sets: [
-        { weight: 75, reps: 10, type: "warmup" },
-        { weight: 130, reps: 10, type: "working" },
-        { weight: 140, reps: 9, type: "working" },
-        { weight: 150, reps: 8, type: "working" },
-      ]},
-      { name: "Romanian Deadlift", variantLabel: "Barbell", sets: [
-        { weight: 190, reps: 8, type: "working" },
-        { weight: 190, reps: 7, type: "working" },
-        { weight: 190, reps: 6, type: "working" },
-      ]},
-      { name: "Overhead Press", variantLabel: "Barbell", sets: [
-        { weight: 50, reps: 10, type: "warmup" },
-        { weight: 80, reps: 7, type: "working" },
-        { weight: 90, reps: 6, type: "working" },
-        { weight: 100, reps: 5, type: "working" },
-      ]},
       { name: "Lat Pulldown", variantLabel: "Cable Lat Pulldown", sets: [
-        { weight: 135, reps: 10, type: "working" },
-        { weight: 135, reps: 9, type: "working" },
-        { weight: 135, reps: 8, type: "working" },
-      ]},
-      { name: "Standing Calf Raise", variantLabel: "Standing Calf Raise Machine", sets: [
-        { weight: 185, reps: 12, type: "working" },
-        { weight: 185, reps: 11, type: "working" },
-        { weight: 185, reps: 10, type: "working" },
-      ]},
-    ],
-  },
-  {
-    id: "h16",
-    name: "Full Body",
-    date: "2026-03-14",
-    durationSec: 3360,
-    exercises: [
-      { name: "Squat", variantLabel: "Barbell + Squat Rack", sets: [
-        { weight: 105, reps: 10, type: "warmup" },
-        { weight: 185, reps: 8, type: "working" },
-        { weight: 195, reps: 7, type: "working" },
-        { weight: 205, reps: 6, type: "working" },
-      ]},
-      { name: "Bench Press", variantLabel: "Barbell", sets: [
-        { weight: 85, reps: 10, type: "warmup" },
-        { weight: 145, reps: 8, type: "working" },
-        { weight: 155, reps: 7, type: "working" },
-        { weight: 165, reps: 6, type: "working" },
-      ]},
-      { name: "Bent-Over Row", variantLabel: "Barbell", sets: [
-        { weight: 75, reps: 10, type: "warmup" },
-        { weight: 125, reps: 10, type: "working" },
-        { weight: 135, reps: 9, type: "working" },
-        { weight: 145, reps: 8, type: "working" },
-      ]},
-      { name: "Bulgarian Split Squat", variantLabel: "Dumbbells", sets: [
-        { weight: 30, reps: 10, type: "working" },
-        { weight: 30, reps: 10, type: "working" },
-        { weight: 30, reps: 8, type: "working" },
-      ]},
-      { name: "Bicep Curl", variantLabel: "Dumbbells", sets: [
-        { weight: 25, reps: 10, type: "working" },
-        { weight: 25, reps: 10, type: "working" },
-        { weight: 25, reps: 8, type: "working" },
-      ]},
-      { name: "Tricep Pushdown", variantLabel: "Cable (High Pulley)", sets: [
-        { weight: 50, reps: 12, type: "working" },
-        { weight: 50, reps: 11, type: "working" },
-        { weight: 50, reps: 10, type: "working" },
-      ]},
-      { name: "Standing Calf Raise", variantLabel: "Standing Calf Raise Machine", sets: [
-        { weight: 180, reps: 12, type: "working" },
-        { weight: 180, reps: 11, type: "working" },
+        { weight: 160, reps: 10, type: "working" },
+        { weight: 160, reps: 10, type: "working" },
         { weight: 180, reps: 10, type: "working" },
-      ]},
-    ],
-  },
-  {
-    id: "h17",
-    name: "Full Body",
-    date: "2026-03-11",
-    durationSec: 3300,
-    exercises: [
-      { name: "Deadlift", variantLabel: "Barbell", sets: [
-        { weight: 140, reps: 10, type: "warmup" },
-        { weight: 255, reps: 6, type: "working" },
-        { weight: 275, reps: 5, type: "working" },
-      ]},
-      { name: "Incline Bench Press", variantLabel: "Dumbbells", sets: [
-        { weight: 50, reps: 8, type: "working" },
-        { weight: 50, reps: 7, type: "working" },
-        { weight: 50, reps: 6, type: "working" },
-      ]},
-      { name: "Incline Row", variantLabel: "Dumbbells", sets: [
-        { weight: 50, reps: 10, type: "working" },
-        { weight: 50, reps: 9, type: "working" },
-        { weight: 50, reps: 8, type: "working" },
-      ]},
-      { name: "Front Squat", variantLabel: "Barbell + Squat Rack", sets: [
-        { weight: 80, reps: 10, type: "warmup" },
-        { weight: 135, reps: 7, type: "working" },
-        { weight: 145, reps: 6, type: "working" },
-        { weight: 155, reps: 5, type: "working" },
       ]},
       { name: "Seated Row", variantLabel: "Seated Cable Row", sets: [
-        { weight: 120, reps: 10, type: "working" },
-        { weight: 120, reps: 9, type: "working" },
-        { weight: 120, reps: 8, type: "working" },
+        { weight: 160, reps: 10, type: "working" },
+        { weight: 160, reps: 10, type: "working" },
+        { weight: 180, reps: 10, type: "working" },
       ]},
-      { name: "Lateral Raise", variantLabel: "Dumbbells", sets: [
-        { weight: 15, reps: 12, type: "working" },
-        { weight: 15, reps: 12, type: "working" },
-        { weight: 15, reps: 10, type: "working" },
+      { name: "Face Pull", variantLabel: "Cable (High Pulley)", sets: [
+        { weight: 50, reps: 10, type: "working" },
+        { weight: 50, reps: 10, type: "working" },
+        { weight: 60, reps: 10, type: "working" },
       ]},
-      { name: "Hanging Leg Raise", variantLabel: "Pull-Up Bar", sets: [
-        { weight: 0, reps: 10, type: "working" },
-        { weight: 0, reps: 9, type: "working" },
-        { weight: 0, reps: 7, type: "working" },
+      { name: "Bicep Curl", variantLabel: "Cable (Low Pulley)", sets: [
+        { weight: 80, reps: 9, type: "working" },
+        { weight: 70, reps: 8, type: "working" },
+        { weight: 70, reps: 8, type: "working" },
       ]},
     ],
   },
+
+  // ── Session 1 — Push Day (Coach-prescribed Mode A) ──
+  // First logged session. Bench 205×8 anchor. OHTE skipped on time
+  // constraint — first of two consecutive Push skips that confirm the
+  // rotate-out preference.
   {
-    id: "h18",
-    name: "Full Body",
-    date: "2026-03-09",
-    durationSec: 3240,
+    id: "h6",
+    name: "Push Day",
+    date: "2026-05-03",
+    durationSec: 4040, // 1:07:20
     exercises: [
-      { name: "Squat", variantLabel: "Barbell + Squat Rack", sets: [
-        { weight: 105, reps: 10, type: "warmup" },
-        { weight: 185, reps: 8, type: "working" },
-        { weight: 195, reps: 7, type: "working" },
-        { weight: 205, reps: 6, type: "working" },
-      ]},
       { name: "Bench Press", variantLabel: "Barbell", sets: [
-        { weight: 85, reps: 10, type: "warmup" },
-        { weight: 145, reps: 8, type: "working" },
-        { weight: 155, reps: 7, type: "working" },
-        { weight: 165, reps: 6, type: "working" },
+        { weight: 135, reps: 10, type: "warmup" },
+        { weight: 185, reps: 8,  type: "working" },
+        { weight: 205, reps: 8,  type: "working" },
+        { weight: 205, reps: 8,  type: "working" },
+        { weight: 205, reps: 6,  type: "working" },
+        { weight: 135, reps: 8,  type: "drop" },
       ]},
-      { name: "Bent-Over Row", variantLabel: "Barbell", sets: [
-        { weight: 75, reps: 10, type: "warmup" },
-        { weight: 125, reps: 10, type: "working" },
-        { weight: 135, reps: 9, type: "working" },
-        { weight: 145, reps: 8, type: "working" },
+      { name: "Incline Bench Press", variantLabel: "Dumbbells", sets: [
+        { weight: 70, reps: 6, type: "working" },
       ]},
-      { name: "Romanian Deadlift", variantLabel: "Barbell", sets: [
-        { weight: 185, reps: 8, type: "working" },
-        { weight: 185, reps: 7, type: "working" },
-        { weight: 185, reps: 6, type: "working" },
+      { name: "Overhead Press", variantLabel: "Dumbbells", sets: [
+        { weight: 40, reps: 8,  type: "working" },
+        { weight: 40, reps: 8,  type: "working" },
+        { weight: 40, reps: 10, type: "working" },
       ]},
-      { name: "Overhead Press", variantLabel: "Barbell", sets: [
-        { weight: 50, reps: 10, type: "warmup" },
-        { weight: 75, reps: 7, type: "working" },
-        { weight: 85, reps: 6, type: "working" },
-        { weight: 95, reps: 5, type: "working" },
+      { name: "Lateral Raise", variantLabel: "Cable (Low Pulley)", sets: [
+        { weight: 20, reps: 12, type: "working" },
+        { weight: 20, reps: 12, type: "working" },
+        { weight: 30, reps: 8,  type: "working" },
       ]},
-      { name: "Lat Pulldown", variantLabel: "Cable Lat Pulldown", sets: [
-        { weight: 130, reps: 10, type: "working" },
-        { weight: 130, reps: 9, type: "working" },
-        { weight: 130, reps: 8, type: "working" },
+      { name: "Chest Fly", variantLabel: "Pec Deck", sets: [
+        { weight: 145, reps: 14, type: "working" },
+        { weight: 175, reps: 8,  type: "working" },
+        { weight: 160, reps: 9,  type: "working" },
+        { weight: 160, reps: 9,  type: "working" },
       ]},
-      { name: "Standing Calf Raise", variantLabel: "Standing Calf Raise Machine", sets: [
-        { weight: 180, reps: 12, type: "working" },
-        { weight: 180, reps: 11, type: "working" },
-        { weight: 180, reps: 10, type: "working" },
+      { name: "Tricep Pushdown", variantLabel: "Cable (High Pulley)", sets: [
+        { weight: 90,  reps: 15, type: "working" },
+        { weight: 120, reps: 12, type: "working" },
+        { weight: 120, reps: 12, type: "working" },
       ]},
     ],
   },
@@ -3400,48 +2961,62 @@ const NOW_FOR_SEED = Date.now();
 const DAY = 24 * 60 * 60 * 1000;
 
 const MOCK_COACH_RULES = [
-  { id: "r1", text: "No deadlifts on Mondays", createdAt: NOW_FOR_SEED - 12 * DAY },
-  { id: "r2", text: "Keep sessions under 60 minutes", createdAt: NOW_FOR_SEED - 22 * DAY },
-  { id: "r3", text: "Always start with a compound lift", createdAt: NOW_FOR_SEED - 30 * DAY },
-  { id: "r4", text: "Prefer dumbbells over barbells for chest", createdAt: NOW_FOR_SEED - 35 * DAY },
+  { id: "r1", text: "Finish every Pull/Back day with Back Extension", createdAt: NOW_FOR_SEED - 0 * DAY },
+  { id: "r2", text: "Don't program deadlifts", createdAt: NOW_FOR_SEED - 14 * DAY },
 ];
 
 const MOCK_COACH_OBSERVATIONS = [
-  { id: "o1", text: "Tests heavy on isolation sets, settles 10-15% lower", createdAt: NOW_FOR_SEED - 3 * DAY, tier: 3,
-    provenance: { sessions: ["Push Day · Mar 2", "Pull Day · Mar 6", "Push Day · Mar 9", "Arms · Mar 13"],
-      signal: "First isolation set logged 10–15% above the weight of the remaining working sets, across 4 sessions" } },
-  { id: "o2", text: "Pyramid pattern on plate-loaded compounds", createdAt: NOW_FOR_SEED - 5 * DAY, tier: 3,
-    provenance: { sessions: ["Leg Day · Mar 1", "Push Day · Mar 4", "Leg Day · Mar 8"],
-      signal: "Ascending weight across working sets on barbell/plate-loaded compounds (Squat, Bench, Leg Press)" } },
-  { id: "o3", text: "Often 5+ min between sets on heavy compounds", createdAt: NOW_FOR_SEED - 7 * DAY, tier: 2,
-    provenance: { sessions: ["Leg Day · Mar 1", "Push Day · Mar 4"],
-      signal: "Rest-timer gaps exceeding 5:00 on sets above ~85% of the session's top set" } },
-  { id: "o4", text: "Prefers free weights over machines for upper body", createdAt: NOW_FOR_SEED - 9 * DAY, tier: 3,
-    provenance: { sessions: ["Push Day · Feb 23", "Pull Day · Feb 27", "Push Day · Mar 4"],
-      signal: "Machine alternatives swapped to barbell/dumbbell via the alternatives picker on upper-body lifts" } },
-  { id: "o5", text: "Skips warm-up sets on Leg Day primaries", createdAt: NOW_FOR_SEED - 12 * DAY, tier: 2,
-    provenance: { sessions: ["Leg Day · Feb 22", "Leg Day · Mar 1"],
-      signal: "First logged Squat set within 5% of the session's top set — no ramp sets recorded" } },
-  { id: "o6", text: "Tends to schedule Push days for Mondays", createdAt: NOW_FOR_SEED - 15 * DAY, tier: 2,
-    provenance: { sessions: ["Push Day · Feb 19 (Mon)", "Push Day · Feb 26 (Mon)"],
-      signal: "Workouts auto-named 'Push' started on consecutive Mondays" } },
-  { id: "o7", text: "Cuts sessions short when over 50 minutes", createdAt: NOW_FOR_SEED - 18 * DAY, tier: 3,
-    provenance: { sessions: ["Leg Day · Feb 15", "Push Day · Feb 20", "Pull Day · Feb 24"],
-      signal: "Final 1–2 prescribed exercises left unlogged once elapsed session time passed ~50 min" } },
+  { id: "o1", text: "Pyramid-up ramping on leg compounds", createdAt: NOW_FOR_SEED - 9 * DAY, tier: 3,
+    provenance: { sessions: ["Leg Day · May 8"],
+      signal: "Deliberate ramp-to-max on Hip Thrust (90→180→270→360→450), Leg Press (225→360→495→585→630), RDL (135→185→222→225), and Bulgarian Split Squat (95→135→155) — confirmed verbally as preferred training style on leg compounds" } },
+  { id: "o2", text: "Cold-start calibration on unfamiliar lifts", createdAt: NOW_FOR_SEED - 5 * DAY, tier: 3,
+    provenance: { sessions: ["Push Day · May 3", "Pull Day · May 5", "Push Day · May 10", "Push Day · May 17"],
+      signal: "On lifts with no prior anchor data, first set is a sight-light (e.g. Pec Deck 145→175→160, Bicep Curl 80→70, Machine Press 90→180, Back Extension 140→150). Once anchor data exists, works from the anchor with no test-then-settle behavior" } },
+  { id: "o3", text: "Doesn't like Overhead Tricep Extension as a standing slot", createdAt: NOW_FOR_SEED - 7 * DAY, tier: 2,
+    provenance: { sessions: ["Push Day · May 3", "Push Day · May 10"],
+      signal: "Skipped on two consecutive Push days. Confirmed verbally as filler — happy to be suggested occasionally but not on the standing card" } },
+  { id: "o4", text: "Batch-logs weights after the exercise, not between sets", createdAt: NOW_FOR_SEED - 8 * DAY, tier: 3,
+    provenance: { sessions: ["Leg Day · May 8", "Back Day · May 12"],
+      signal: "Rest-timer values between sets frequently 0–10s, then a single large gap before the next exercise — consistent with logging the full exercise at once rather than after each set. Rest values must not be referenced by Coach" } },
+  { id: "o5", text: "Hammer Strength Decline Press is a recurring user-add", createdAt: NOW_FOR_SEED - 0 * DAY, tier: 2,
+    provenance: { sessions: ["Push Day · May 10", "Push Day · May 17"],
+      signal: "Logged on two consecutive Push sessions as an off-card addition (180×10, then 225×8). Crosses the n=2 inquiry threshold — Coach may ask whether to add to the standing Push card" } },
 ];
 
+// Benchmark rows render only if isPR or isNew. Each row's achievedAt is the
+// absolute date of the session that established the anchor, parsed from the
+// workout date so the timestamp doesn't drift as NOW_FOR_SEED moves.
+// Anchors are deduped to the most-recent occurrence per (exercise, variant).
+const _D = (iso) => new Date(iso + "T12:00:00").getTime();
 const MOCK_PROGRESS_PRS = [
-  // THIS WEEK
-  { id: "p1", exerciseName: "Squat", value: "225 × 5", isPR: true, isNew: false, achievedAt: NOW_FOR_SEED - 2 * DAY },
-  { id: "p2", exerciseName: "RDL", value: "225 × 8", isPR: false, isNew: true, achievedAt: NOW_FOR_SEED - 4 * DAY },
-  { id: "p3", exerciseName: "Bench Press", value: "205 × 8", isPR: false, isNew: false, achievedAt: NOW_FOR_SEED - 5 * DAY },
-  // EARLIER THIS MONTH
-  { id: "p4", exerciseName: "Bent Row", value: "205 × 8", isPR: false, isNew: false, achievedAt: NOW_FOR_SEED - 12 * DAY },
-  { id: "p5", exerciseName: "Hip Thrust", value: "450 × 8", isPR: true, isNew: false, achievedAt: NOW_FOR_SEED - 14 * DAY },
-  // LAST MONTH
-  { id: "p6", exerciseName: "Squat", value: "215 × 5", isPR: false, isNew: false, achievedAt: NOW_FOR_SEED - 40 * DAY },
-  { id: "p7", exerciseName: "Leg Press", value: "630 × 8", isPR: false, isNew: false, achievedAt: NOW_FOR_SEED - 42 * DAY },
-  { id: "p8", exerciseName: "Bulgarian Split Squat", value: "155 × 8", isPR: false, isNew: true, achievedAt: NOW_FOR_SEED - 45 * DAY },
+  // ── Session 6 · May 17 ──
+  { id: "p1",  exerciseName: "Bench Press (Barbell)",          value: "225 × 6",  isPR: true,  isNew: false, achievedAt: _D("2026-05-17") },
+  { id: "p2",  exerciseName: "Pec Deck Chest Fly",             value: "155 × 15", isPR: false, isNew: true,  achievedAt: _D("2026-05-17") },
+  { id: "p3",  exerciseName: "Machine Press (HS Decline)",     value: "225 × 8",  isPR: true,  isNew: false, achievedAt: _D("2026-05-17") },
+  { id: "p4",  exerciseName: "Dip (Bodyweight)",               value: "BW × 8",   isPR: false, isNew: true,  achievedAt: _D("2026-05-17") },
+  { id: "p5",  exerciseName: "DB Lateral Raise",               value: "20 × 15",  isPR: false, isNew: true,  achievedAt: _D("2026-05-17") },
+  { id: "p6",  exerciseName: "DB Front Raise",                 value: "20 × 10",  isPR: false, isNew: true,  achievedAt: _D("2026-05-17") },
+  { id: "p7",  exerciseName: "DB Chest Fly",                   value: "20 × 15",  isPR: false, isNew: true,  achievedAt: _D("2026-05-17") },
+  // ── Session 5 · May 12 ──
+  { id: "p8",  exerciseName: "Seated Cable Row",               value: "200 × 10", isPR: true,  isNew: false, achievedAt: _D("2026-05-12") },
+  { id: "p9",  exerciseName: "Back Extension Machine",         value: "150 × 10", isPR: false, isNew: true,  achievedAt: _D("2026-05-12") },
+  // ── Session 4 · May 10 ──
+  { id: "p10", exerciseName: "Incline DB Press",               value: "75 × 8",   isPR: false, isNew: true,  achievedAt: _D("2026-05-10") },
+  { id: "p11", exerciseName: "Cable Crossover",                value: "33 × 12",  isPR: false, isNew: true,  achievedAt: _D("2026-05-10") },
+  { id: "p12", exerciseName: "DB Overhead Press",              value: "55 × 8",   isPR: true,  isNew: false, achievedAt: _D("2026-05-10") },
+  { id: "p13", exerciseName: "Cable Lateral Raise",            value: "25 × 10",  isPR: true,  isNew: false, achievedAt: _D("2026-05-10") },
+  { id: "p14", exerciseName: "Tricep Pushdown",                value: "135 × 12", isPR: true,  isNew: false, achievedAt: _D("2026-05-10") },
+  // ── Session 3 · May 8 ──
+  { id: "p15", exerciseName: "Hip Thrust (Machine)",           value: "450 × 8",  isPR: false, isNew: true,  achievedAt: _D("2026-05-08") },
+  { id: "p16", exerciseName: "Bulgarian Split Squat (Barbell)", value: "155 × 8",  isPR: false, isNew: true,  achievedAt: _D("2026-05-08") },
+  { id: "p17", exerciseName: "Romanian Deadlift (Barbell)",    value: "225 × 8",  isPR: false, isNew: true,  achievedAt: _D("2026-05-08") },
+  { id: "p18", exerciseName: "Leg Press (45°)",                value: "630 × 8",  isPR: false, isNew: true,  achievedAt: _D("2026-05-08") },
+  // ── Session 2 · May 5 ──
+  { id: "p19", exerciseName: "Bent-Over Row (Barbell)",        value: "205 × 8",  isPR: false, isNew: true,  achievedAt: _D("2026-05-05") },
+  { id: "p20", exerciseName: "Lat Pulldown (Cable)",           value: "180 × 10", isPR: false, isNew: true,  achievedAt: _D("2026-05-05") },
+  { id: "p21", exerciseName: "Pull-Up (Bodyweight)",           value: "BW × 8",   isPR: false, isNew: true,  achievedAt: _D("2026-05-05") },
+  { id: "p22", exerciseName: "Face Pull",                      value: "60 × 10",  isPR: false, isNew: true,  achievedAt: _D("2026-05-05") },
+  { id: "p23", exerciseName: "Cable Bicep Curl (Low Pulley)",  value: "70 × 8",   isPR: false, isNew: true,  achievedAt: _D("2026-05-05") },
 ];
 
 // Mock weight log generator. Produces ~30 days of weigh-ins trending
@@ -3468,12 +3043,12 @@ const generateMockWeightLog = (baselineLb, days = 30, trendDelta = -3) => {
 };
 
 const MOCK_BODY_STATS = {
-  heightIn: 70,
-  weightLog: generateMockWeightLog(181, 30, -3),
-  weightGoalTarget: 170,
-  weightGoalDirection: "lose",
-  ageRange: "25–34",
-  ageYears: null,
+  heightIn: 78,                                                     // 6'6"
+  weightLog: [{ id: "w0", lb: 235, loggedAt: NOW_FOR_SEED }],       // single entry today
+  weightGoalTarget: null,
+  weightGoalDirection: null,
+  ageRange: "18–24",
+  ageYears: 23,
   gender: "Male",
 };
 
@@ -10153,6 +9728,7 @@ function ProfileTab({
   planGoal, fitnessLevel, timeAway, planDaysPerWeek,
   // Equipment
   equipmentCount,
+  equipmentLabel,
   // Other section data
   coachRules, progressPRs, coachObservations,
   // Body stats — surfaced in the header intake form (Step 2 this session).
@@ -10473,7 +10049,7 @@ function ProfileTab({
             onClick={onOpenEquipment}
             style={{ ...rowLineStyle(), background: "transparent", border: "none", padding: "10px 0", width: "100%", cursor: "pointer", fontFamily: "inherit", color: "inherit", textAlign: "left" }}
           >
-            <span style={{ ...TYPE.body, flex: 1 }}>{equipmentCount || 0} items configured</span>
+            <span style={{ ...TYPE.body, flex: 1 }}>{equipmentLabel || `${equipmentCount || 0} items selected`}</span>
           </button>
         </div>
 
@@ -12597,7 +12173,7 @@ export default function MYGFitness() {
   const [onboardingComplete, setOnboardingComplete] = useState(hasCompletedOnboarding);
   const [activeTab, setActiveTab] = useState(h.activeTab || "home");
   const [equipPreset, setEquipPreset] = useState(null);
-  const [selectedEquipment, setSelectedEquipment] = useState(() => h.selectedEquipment || new Set());
+  const [selectedEquipment, setSelectedEquipment] = useState(() => h.selectedEquipment || new Set(PRESETS.full));
 
   // ── User name — single source of truth ──
   // Collected on the Name screen (Screen 8). Defaults to Tyler if the
@@ -12612,8 +12188,8 @@ export default function MYGFitness() {
   // future Coach AI context packet (Bible §10 returning-lifter awareness)
   // and surface in the Plan section of Coach's File (Bible §6.5 v26).
   // Persisted as of Session 36 — see note in saveSnapshot above.
-  const [fitnessLevel, setFitnessLevel] = useState(h.fitnessLevel || null);
-  const [timeAway, setTimeAway] = useState(h.timeAway || null);
+  const [fitnessLevel, setFitnessLevel] = useState(h.fitnessLevel || "advanced");
+  const [timeAway, setTimeAway] = useState(h.timeAway || "current");
 
   const goTo = (s) => setScreen(s);
 
@@ -12901,7 +12477,7 @@ export default function MYGFitness() {
   // a single source of truth. Truncation counts on the landing
   // ("+ 1 more →", "View all 7 →") are derived from .length.
   const [planGoal, setPlanGoal] = useState(h.planGoal || "build_muscle");
-  const [planDaysPerWeek, setPlanDaysPerWeek] = useState(typeof h.planDaysPerWeek === "number" ? h.planDaysPerWeek : 3);
+  const [planDaysPerWeek, setPlanDaysPerWeek] = useState(typeof h.planDaysPerWeek === "number" ? h.planDaysPerWeek : 6);
   const [coachRules, setCoachRules] = useState(h.coachRules !== null && h.coachRules !== undefined ? h.coachRules : MOCK_COACH_RULES);
   const [coachObservations, setCoachObservations] = useState(h.coachObservations !== null && h.coachObservations !== undefined ? h.coachObservations : MOCK_COACH_OBSERVATIONS);
   const [progressPRs, setProgressPRs] = useState(h.progressPRs !== null && h.progressPRs !== undefined ? h.progressPRs : MOCK_PROGRESS_PRS);
@@ -13229,9 +12805,9 @@ export default function MYGFitness() {
     setActiveTab("home");
     setAppSubScreen(null);
     setUserName("Tyler");
-    setSelectedEquipment(new Set());
-    setFitnessLevel(null);
-    setTimeAway(null);
+    setSelectedEquipment(new Set(PRESETS.full));
+    setFitnessLevel("advanced");
+    setTimeAway("current");
     setRestTimerModePref("countup");
     setRestCountdownTargetPref(90);
     setWorkoutHistory(MOCK_WORKOUT_HISTORY);
@@ -13241,7 +12817,7 @@ export default function MYGFitness() {
     // Coach's File state. Mirror the workoutHistory pattern: bring back
     // the mock seeds so the demo flows correctly on next sign-in.
     setPlanGoal("build_muscle");
-    setPlanDaysPerWeek(3);
+    setPlanDaysPerWeek(6);
     setCoachRules(MOCK_COACH_RULES);
     setCoachObservations(MOCK_COACH_OBSERVATIONS);
     setProgressPRs(MOCK_PROGRESS_PRS);
@@ -13365,6 +12941,7 @@ export default function MYGFitness() {
             timeAway={timeAway}
             planDaysPerWeek={planDaysPerWeek}
             equipmentCount={selectedEquipment.size}
+            equipmentLabel={deriveEquipmentLabel(selectedEquipment)}
             coachRules={coachRules}
             progressPRs={progressPRs}
             coachObservations={coachObservations}
