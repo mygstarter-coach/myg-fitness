@@ -445,6 +445,7 @@ const EXERCISE_LIBRARY = [
   { id: "bulgarian_split_squat", name: "Bulgarian Split Squat", primary: "Legs", pattern: "squat_unilateral", secondary: ["Core"], type: "Compound", variants: [
     { label: "Barbell", equipment: ["barbell"] },
     { label: "Dumbbells", equipment: ["dumbbells"] },
+    { label: "Smith Machine", equipment: ["smith_machine"] },
   ]},
   { id: "lunge", name: "Lunge", primary: "Legs", pattern: "squat_unilateral", secondary: ["Core"], type: "Compound", variants: [
     { label: "Barbell", equipment: ["barbell"] },
@@ -1226,34 +1227,34 @@ function formatShortDate(isoDate) {
 /* ── Shared Components ───────────────────────────────────────── */
 
 function PhoneFrame({ children }) {
-  // Stripped-down passthrough wrapper for real-device rendering.
-  // Previously this rendered a fake 375×812 phone bezel with a fake "9:41"
-  // status bar and home indicator — fine for the artifact preview, but on
-  // a real iPhone it produced a phone-in-a-phone effect. Now it just
-  // provides a flex column container; the surrounding outer wrapper sets
-  // the height, and the existing screen flex layout fills it correctly.
-  //
-  // paddingTop: env(safe-area-inset-top) — in PWA mode (saved to home
-  // screen), iOS draws the app under the status bar. Without this, the
-  // first row of every screen collides with the iOS clock and battery
-  // icons. The bottom safe-area is handled inside TabBar instead, so
-  // the TabBar's background can extend to the true bottom edge.
   return (
     <div
       style={{
-        width: "100%",
-        height: "100%",
-        background: COLORS.bg,
-        position: "relative",
-        overflow: "hidden",
+        width: 375, height: 812, borderRadius: 44, background: COLORS.bg,
+        position: "relative", overflow: "hidden",
+        boxShadow: "0 25px 80px rgba(0,0,0,0.6), 0 0 0 2px #333",
         fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-        display: "flex",
-        flexDirection: "column",
-        paddingTop: "env(safe-area-inset-top)",
+        display: "flex", flexDirection: "column",
       }}
     >
+      <div
+        style={{
+          height: 50, display: "flex", alignItems: "center", justifyContent: "space-between",
+          padding: "0 28px", fontSize: 14, fontWeight: 600, color: COLORS.text, flexShrink: 0,
+        }}
+      >
+        <span>9:41</span>
+        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          <svg width="17" height="12" viewBox="0 0 17 12" fill="white"><rect x="0" y="3" width="3" height="9" rx="1" /><rect x="4.5" y="2" width="3" height="10" rx="1" /><rect x="9" y="0" width="3" height="12" rx="1" /><rect x="13.5" y="1" width="3" height="11" rx="1" fillOpacity="0.3" /></svg>
+          <svg width="16" height="12" viewBox="0 0 16 12" fill="white"><path d="M8 2.4C10.6 2.4 13 3.5 14.7 5.3L16 4C14 1.9 11.1 .5 8 .5S2 1.9 0 4L1.3 5.3C3 3.5 5.4 2.4 8 2.4z" fillOpacity="0.3" /><path d="M8 5.4C9.8 5.4 11.4 6.1 12.6 7.3L13.9 6C12.4 4.5 10.3 3.5 8 3.5S3.6 4.5 2.1 6L3.4 7.3C4.6 6.1 6.2 5.4 8 5.4z" fillOpacity="0.6" /><path d="M8 8.4C9 8.4 9.9 8.8 10.5 9.5L8 12 5.5 9.5C6.1 8.8 7 8.4 8 8.4z" /></svg>
+          <svg width="27" height="13" viewBox="0 0 27 13" fill="white"><rect x="0" y="0.5" width="23" height="12" rx="3.5" stroke="white" strokeWidth="1" fill="none" /><rect x="24.5" y="4" width="2" height="5" rx="1" fillOpacity="0.4" /><rect x="1.5" y="2" width="18" height="9" rx="2" fill="white" /></svg>
+        </div>
+      </div>
       <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
         {children}
+      </div>
+      <div style={{ height: 34, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+        <div style={{ width: 134, height: 5, borderRadius: 3, background: "rgba(255,255,255,0.2)" }} />
       </div>
     </div>
   );
@@ -1484,9 +1485,6 @@ function WelcomeScreen({ onGetStarted, onSignIn }) {
   useEffect(() => { setTimeout(() => setLogoV(true), 200); setTimeout(() => setContentV(true), 900); }, []);
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "0 32px", position: "relative" }}>
-      {/* V.13 marker — temporary build indicator. Bump with each push to
-          verify cache isn't serving stale code. Remove before shipping. */}
-      <div style={{ position: "absolute", top: 16, right: 20, color: COLORS.textSecondary, fontSize: 11, fontWeight: 500, letterSpacing: 1, opacity: 0.7 }}>V.13</div>
       <div style={{ position: "absolute", top: "40%", textAlign: "center", opacity: logoV ? 1 : 0, transform: logoV ? "translateY(-50%) scale(1)" : "translateY(-50%) scale(1.08)", transition: "all 0.9s cubic-bezier(0.22,1,0.36,1)" }}>
         <h1 style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 92, fontWeight: 700, color: COLORS.gold, margin: 0, letterSpacing: 8 }}>MYG</h1>
       </div>
@@ -2537,100 +2535,6 @@ const SET_TYPES = [
    happened (per Bible: data model captures executed, not prescribed).
    Sets carry the type so the recap sheet can render warmups correctly. */
 const MOCK_WORKOUT_HISTORY = [
-  // ── Session 9 — Pull/Arms/Legs Mixed (user-built, Mode C) ──
-  // Mixed-day workout: biceps + legs + back accessory. Five cold-start lifts;
-  // only Bulgarian Split Squat had prior data. Bulgarian BEAT 155 → 205 (+32%).
-  // Two new variants (Bicep Curl Machine, Back Extension Hyperextension Bench),
-  // two new lifts (Preacher Curl, Leg Extension). Auto-named "Full Body" —
-  // genuinely correct read here per D-006 notes (no clean primary).
-  // True working duration not captured (timer ran overnight-paused); estimate.
-  {
-    id: "h_s9",
-    name: "Full Body",
-    date: "2026-05-25",
-    durationSec: 3300, // ~55 min estimate — true duration not captured
-    exercises: [
-      { name: "Bicep Curl", variantLabel: "Bicep Curl Machine", sets: [
-        { weight: 100, reps: 12, type: "working" },
-        { weight: 100, reps: 12, type: "working" },
-        { weight: 115, reps: 12, type: "working" },
-      ]},
-      { name: "Preacher Curl", variantLabel: "EZ Curl Bar", sets: [
-        { weight: 70, reps: 10, type: "working" },
-        { weight: 70, reps: 10, type: "working" },
-        { weight: 80, reps: 8,  type: "working" },
-      ]},
-      { name: "Bulgarian Split Squat", variantLabel: "Barbell", sets: [
-        { weight: 135, reps: 8, type: "working" },
-        { weight: 185, reps: 8, type: "working" },
-        { weight: 205, reps: 8, type: "working" },
-      ]},
-      { name: "Leg Extension", variantLabel: "Leg Extension Machine", sets: [
-        { weight: 90,  reps: 10, type: "working" },
-        { weight: 120, reps: 10, type: "working" },
-        { weight: 140, reps: 10, type: "working" },
-        { weight: 160, reps: 15, type: "working" },
-      ]},
-      { name: "Back Extension", variantLabel: "Hyperextension Bench", sets: [
-        { weight: 45, reps: 6, type: "working" },
-        { weight: 45, reps: 8, type: "working" },
-        { weight: 45, reps: 8, type: "working" },
-      ]},
-    ],
-  },
-
-  // ── Session 8 — Push Day (Coach prescribed, user built different — Mode C) ──
-  // Coach prescribed 7; Tyler kept 3 (Bench, Incline DB, OHP DB) and built
-  // different shape. Bench HIT at 205 (anchor confirmed). Incline DB MISS
-  // → counter 2. OHP re-anchored 55→50 provisional. Lateral Raise Machine
-  // new variant cold-start. Pec Deck anchor migrated 155×15 → 165×12 HIT.
-  // Dip BEAT BW×8 → BW×10. Skull Crusher new lift cold-start.
-  {
-    id: "h_s8",
-    name: "Push Day",
-    date: "2026-05-24",
-    durationSec: 3684, // 1:01:24
-    exercises: [
-      { name: "Bench Press", variantLabel: "Barbell", sets: [
-        { weight: 135, reps: 10, type: "warmup" },
-        { weight: 205, reps: 8,  type: "working" },
-        { weight: 205, reps: 8,  type: "working" },
-        { weight: 205, reps: 8,  type: "working" },
-        { weight: 225, reps: 4,  type: "working" },
-      ]},
-      { name: "Incline Bench Press", variantLabel: "Dumbbells", sets: [
-        { weight: 60, reps: 10, type: "working" },
-        { weight: 70, reps: 8,  type: "working" },
-        { weight: 70, reps: 8,  type: "working" },
-      ]},
-      { name: "Overhead Press", variantLabel: "Dumbbells", sets: [
-        { weight: 45, reps: 8, type: "working" },
-        { weight: 45, reps: 8, type: "working" },
-        { weight: 50, reps: 9, type: "working" },
-      ]},
-      { name: "Lateral Raise", variantLabel: "Lateral Raise Machine", sets: [
-        { weight: 70, reps: 10, type: "working" },
-        { weight: 75, reps: 12, type: "working" },
-        { weight: 85, reps: 12, type: "working" },
-      ]},
-      { name: "Chest Fly", variantLabel: "Pec Deck", sets: [
-        { weight: 115, reps: 12, type: "working" },
-        { weight: 145, reps: 15, type: "working" },
-        { weight: 165, reps: 12, type: "working" },
-      ]},
-      { name: "Dip", variantLabel: "Dip Station", sets: [
-        { weight: 0, reps: 9,  type: "working" },
-        { weight: 0, reps: 10, type: "working" },
-        { weight: 0, reps: 9,  type: "working" },
-      ]},
-      { name: "Skull Crusher", variantLabel: "Dumbbells", sets: [
-        { weight: 25, reps: 12, type: "working" },
-        { weight: 25, reps: 12, type: "working" },
-        { weight: 25, reps: 12, type: "working" },
-      ]},
-    ],
-  },
-
   // ── Session 6 — Push Day (user-built, Mode C) ──
   // Bench 225×6 confirms the Session 4 grindy 225×5 — anchor moves 205 → 225.
   // Pec Deck volume scheme retired heavy scheme. Five off-card additions:
@@ -3741,37 +3645,35 @@ function ActiveLogger({
         }
         return next;
       });
-      // NOTE: no propagation here. The cascade runs only on commit, via
-      // runCascade() called from handleKeypadNext and toggleSetDone.
-      return { ...ex, sets };
-    }));
-  };
 
-  // Commit-time cascade for one field. Called after the user finishes
-  // editing a set (Next/blur) or checks it off. Walks sets below setIdx:
-  //   - if the just-edited field now holds a real value → FILL: set each
-  //     eligible set's suggestion to that value
-  //   - if it was cleared → DELETE: blank each eligible set's suggestion
-  //   - either way, stop at the first wall (done OR typed-present)
-  const runCascade = (uid, setIdx, field) => {
-    setExercises((prev) => prev.map((ex) => {
-      if (ex.uid !== uid) return ex;
-      const src = ex.sets[setIdx];
-      if (!src || src.type === "warmup") return ex;
-      const filling = isSource(src, field);          // has real typed value
-      const value = filling ? src[field] : "";
-      const phKey = field === "weight" ? "placeholderWeight" : "placeholderReps";
-      const flagKey = field === "weight" ? "weightIsPlaceholder" : "repsIsPlaceholder";
-      const sets = ex.sets.slice();
-      for (let i = setIdx + 1; i < sets.length; i++) {
-        const s = sets[i];
-        if (s.type === "warmup") continue;          // transparent
-        if (isWall(s, field)) break;                // done or typed-present
-        if (!isEligible(s, field)) continue;
-        sets[i] = filling
-          ? { ...s, [phKey]: value, [flagKey]: true }
-          : { ...s, [phKey]: "", [flagKey]: false };
-      }
+      // Live cascade (Session 52 — supersedes the Session-48 commit-only
+      // model). On any value-bearing patch to weight or reps, propagate
+      // the new value (fill) or its emptiness (delete) downward inside
+      // the same state update. Pure-live: the column re-renders on every
+      // keystroke; the clear-and-retype empty-flicker is accepted as the
+      // cost of live feel. Walks below setIdx; warmups transparent; stops
+      // at the first wall (done OR another typed-present value).
+      const cascade = (field) => {
+        if (!(field in patch)) return;
+        const src = sets[setIdx];
+        if (!src || src.type === "warmup") return;
+        const filling = isSource(src, field);
+        const value = filling ? src[field] : "";
+        const phKey = field === "weight" ? "placeholderWeight" : "placeholderReps";
+        const flagKey = field === "weight" ? "weightIsPlaceholder" : "repsIsPlaceholder";
+        for (let i = setIdx + 1; i < sets.length; i++) {
+          const s = sets[i];
+          if (s.type === "warmup") continue;
+          if (isWall(s, field)) break;
+          if (!isEligible(s, field)) continue;
+          sets[i] = filling
+            ? { ...s, [phKey]: value, [flagKey]: true }
+            : { ...s, [phKey]: "", [flagKey]: false };
+        }
+      };
+      cascade("weight");
+      cascade("reps");
+
       return { ...ex, sets };
     }));
   };
@@ -3966,21 +3868,15 @@ function ActiveLogger({
       }
     }
     const next = nextField(activeField);
-    // Commit-time cascade: the user is leaving this field, so propagate
-    // its value (fill) or its emptiness (delete) downward now. Capture
-    // the field/coords before we move focus.
-    const leaving = activeField;
-    runCascade(leaving.exerciseUid, leaving.setIdx, leaving.field);
+    // Cascade ran live inside updateSet on each keystroke (Session 52),
+    // so no explicit cascade call needed on commit. Just advance focus.
     setActiveField(next); // null closes the keypad
   };
 
-  // Tap-away / programmatic close: same commit semantics as Next, but
-  // doesn't advance to the next field. Used by the empty-space catcher
-  // so blurring by tapping off the keypad still fires the cascade.
+  // Tap-away / programmatic close: same as Next but doesn't advance to
+  // the next field. Cascade already ran live inside updateSet — this
+  // handler only closes the keypad.
   const commitAndCloseKeypad = () => {
-    if (activeField) {
-      runCascade(activeField.exerciseUid, activeField.setIdx, activeField.field);
-    }
     setActiveField(null);
   };
 
@@ -4357,18 +4253,23 @@ function ActiveLogger({
 
             {/* ACTIVE-ONLY — gear icon, fades out as sheet docks.
                 Position matches where it sat in the original active layout
-                (after the duration text, vertically aligned with it). */}
+                (after the duration text, vertically aligned with it). The
+                left offset shifts right ~18px once elapsed crosses an hour
+                so the H:MM:SS string (~52px wide at 14px tabular-nums)
+                doesn't overlap the gear — the M:SS form (~37px) fits at 78
+                cleanly. The bar-end state is unaffected (gear opacity 0). */}
             <button
               onClick={() => setSettingsMenuOpen((o) => !o)}
               style={{
                 position: "absolute",
-                left: 78, top: 30,
+                left: elapsed >= 3600 ? 96 : 78, top: 30,
                 background: "none", border: "none", padding: "2px 4px",
                 cursor: "pointer", color: COLORS.textSecondary,
                 display: "flex", alignItems: "center",
                 opacity: activeChromeOpacity,
                 pointerEvents: d > 0.4 ? "none" : "auto",
-                transition: dragMinRef.current.dragging ? "none" : "opacity 0.25s ease",
+                transition: dragMinRef.current.dragging ? "none"
+                  : "opacity 0.25s ease, left 0.25s ease",
               }}
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -6207,15 +6108,21 @@ function NumericKeypad({
       boxShadow: "0 -8px 24px rgba(0,0,0,0.5)",
     }}>
       {/* 4×4 grid: digits left 3 cols, actions right col */}
+      {/* Digits and backspace emit on onPointerDown rather than onClick.
+          onClick fires ~300ms after touchend on mobile and adjacent-target
+          rapid clicks get silently collapsed by the browser. Pointer events
+          fire immediately and work uniformly for touch and mouse. The Next
+          button keeps onClick because press-and-cancel-by-sliding-off is a
+          desirable affordance for a committing action. */}
       <div style={{
         display: "grid",
         gridTemplateColumns: "1fr 1fr 1fr 1fr",
         gap: 6,
       }}>
-        <Btn onClick={() => onDigit("1")}>1</Btn>
-        <Btn onClick={() => onDigit("2")}>2</Btn>
-        <Btn onClick={() => onDigit("3")}>3</Btn>
-        <Btn onClick={onBackspace}>
+        <Btn onPointerDown={() => onDigit("1")}>1</Btn>
+        <Btn onPointerDown={() => onDigit("2")}>2</Btn>
+        <Btn onPointerDown={() => onDigit("3")}>3</Btn>
+        <Btn onPointerDown={onBackspace}>
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={COLORS.text} strokeWidth="2">
             <path d="M21 4H8l-7 8 7 8h13a2 2 0 002-2V6a2 2 0 00-2-2z" />
             <line x1="18" y1="9" x2="12" y2="15" />
@@ -6223,22 +6130,20 @@ function NumericKeypad({
           </svg>
         </Btn>
 
-        <Btn onClick={() => onDigit("4")}>4</Btn>
-        <Btn onClick={() => onDigit("5")}>5</Btn>
-        <Btn onClick={() => onDigit("6")}>6</Btn>
+        <Btn onPointerDown={() => onDigit("4")}>4</Btn>
+        <Btn onPointerDown={() => onDigit("5")}>5</Btn>
+        <Btn onPointerDown={() => onDigit("6")}>6</Btn>
         <Btn
           onPointerDown={() => startStep(stepSize)}
           onPointerUp={stopStep}
-          onClick={() => {}}
         >+</Btn>
 
-        <Btn onClick={() => onDigit("7")}>7</Btn>
-        <Btn onClick={() => onDigit("8")}>8</Btn>
-        <Btn onClick={() => onDigit("9")}>9</Btn>
+        <Btn onPointerDown={() => onDigit("7")}>7</Btn>
+        <Btn onPointerDown={() => onDigit("8")}>8</Btn>
+        <Btn onPointerDown={() => onDigit("9")}>9</Btn>
         <Btn
           onPointerDown={() => startStep(-stepSize)}
           onPointerUp={stopStep}
-          onClick={() => {}}
         >−</Btn>
 
         {/* Bottom row: RIR (small), 0, Next (gold) */}
@@ -6253,7 +6158,7 @@ function NumericKeypad({
         >
           RIR{rir != null ? ` ${rir}` : ""}
         </Btn>
-        <Btn onClick={() => onDigit("0")} style={{ gridColumn: "span 2" }}>0</Btn>
+        <Btn onPointerDown={() => onDigit("0")} style={{ gridColumn: "span 2" }}>0</Btn>
         <Btn
           onClick={onNext}
           style={{ background: COLORS.gold, color: COLORS.bg, fontWeight: 700, border: "none" }}
@@ -12100,7 +12005,6 @@ function TabBar({ active, onTab }) {
         display: "flex", justifyContent: "space-around",
         borderTop: `1px solid ${COLORS.border}`, background: COLORS.bg,
         flexShrink: 0, position: "relative", padding: "8px 0 6px",
-        paddingBottom: "calc(6px + env(safe-area-inset-bottom))",
       }}
     >
       {/* Sliding gold underline. Single-sided accent → no border-radius. */}
@@ -13343,7 +13247,7 @@ export default function MYGFitness() {
   };
 
   return (
-    <div style={{ width: "100vw", height: "100vh", background: COLORS.bg }}>
+    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#0a0a0a", padding: "40px 20px" }}>
       <style>{`
         input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 24px; height: 24px; border-radius: 50%; background: #FFD700; cursor: pointer; border: 3px solid #111111; box-shadow: 0 0 8px rgba(255,215,0,0.4); }
         input[type="range"]::-moz-range-thumb { width: 24px; height: 24px; border-radius: 50%; background: #FFD700; cursor: pointer; border: 3px solid #111111; box-shadow: 0 0 8px rgba(255,215,0,0.4); }
