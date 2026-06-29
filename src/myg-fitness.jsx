@@ -160,6 +160,11 @@ function saveSnapshot(state) {
       //   per the §15 trade-off; weigh-in log is a v2 feature.
       planGoal: state.planGoal || "build_muscle",
       planDaysPerWeek: typeof state.planDaysPerWeek === "number" ? state.planDaysPerWeek : 3,
+      // Coach split rotation (Session 56). Null until set/edited; resolver
+      // seeds a default from days/week at read-time. rotationCursor tracks
+      // position in the cycle for "build my next workout".
+      coachRotation: Array.isArray(state.coachRotation) ? state.coachRotation : null,
+      rotationCursor: Number.isInteger(state.rotationCursor) ? state.rotationCursor : 0,
       coachRules: Array.isArray(state.coachRules) ? state.coachRules : [],
       coachObservations: Array.isArray(state.coachObservations) ? state.coachObservations : [],
       progressPRs: Array.isArray(state.progressPRs) ? state.progressPRs : [],
@@ -215,6 +220,8 @@ function loadSnapshot() {
       // landing page.
       planGoal: ["build_muscle", "lose_weight", "gain_strength", "get_lean"].includes(parsed.planGoal) ? parsed.planGoal : "build_muscle",
       planDaysPerWeek: typeof parsed.planDaysPerWeek === "number" && parsed.planDaysPerWeek >= 1 && parsed.planDaysPerWeek <= 7 ? parsed.planDaysPerWeek : 3,
+      coachRotation: validateStoredRotation(parsed.coachRotation),
+      rotationCursor: Number.isInteger(parsed.rotationCursor) && parsed.rotationCursor >= 0 ? parsed.rotationCursor : 0,
       coachRules: Array.isArray(parsed.coachRules) ? parsed.coachRules : null,
       coachObservations: Array.isArray(parsed.coachObservations) ? parsed.coachObservations : null,
       progressPRs: Array.isArray(parsed.progressPRs) ? parsed.progressPRs : null,
@@ -800,6 +807,361 @@ const EXERCISE_LIBRARY = [
   { id: "ball_slam", name: "Ball Slam", primary: "Full Body", pattern: "conditioning", secondary: ["Core", "Shoulders"], type: "Compound", variants: [{ label: "Medicine Ball", equipment: ["medicine_ball"] }]},
 ];
 
+/* ════════════════════════════════════════════════════════════════════
+   COACH AI — Mode-1 generation engine (ported from coach-harness.jsx,
+   Sessions 55–56). Split rotation, focus inference, equipment-filtered
+   pools, the fail-loud validator, the real-state prompt builder, the
+   live Sonnet call, and the CoachWorkout -> active-workout converter.
+   Library-only (fallbacks rejected). Mode-2 conversation voice is gated.
+   ════════════════════════════════════════════════════════════════════ */
+
+// ── Split rotation ──────────────────────────────────────────────────
+function seedRotation(daysPerWeek) {
+  const D = (focusKey, label) => ({ focusKey, label });
+  const n = Number.isInteger(daysPerWeek) ? daysPerWeek : 3;
+  switch (n) {
+    case 1:
+    case 2: return Array.from({ length: n }, () => D("full", "Full Body"));
+    case 3: return [D("full", "Full Body"), D("full", "Full Body"), D("full", "Full Body")];
+    case 4: return [D("upper", "Upper Body"), D("lower", "Lower Body"), D("upper", "Upper Body"), D("lower", "Lower Body")];
+    case 5: return [D("push", "Push"), D("pull", "Pull"), D("legs", "Legs"), D("upper", "Upper Body"), D("lower", "Lower Body")];
+    case 6: return [D("push", "Push"), D("pull", "Pull"), D("legs", "Legs"), D("push", "Push"), D("pull", "Pull"), D("legs", "Legs")];
+    case 7: return [D("push", "Push"), D("pull", "Pull"), D("legs", "Legs"), D("push", "Push"), D("pull", "Pull"), D("legs", "Legs"), D("pick", "Coach's Pick")];
+    default: return [D("full", "Full Body"), D("full", "Full Body"), D("full", "Full Body")];
+  }
+}
+function resolveRotation(stored, daysPerWeek) {
+  if (Array.isArray(stored) && stored.length > 0) return stored;
+  return seedRotation(daysPerWeek);
+}
+function validateStoredRotation(raw) {
+  if (!Array.isArray(raw) || raw.length === 0) return null;
+  const ok = raw.every((d) => d && typeof d === "object" && typeof d.label === "string");
+  return ok ? raw : null;
+}
+
+// ── Equipment-filtered pool ─────────────────────────────────────────
+const COACH_BANNED_IDS = new Set(["svend_press"]);
+
+function variantUsable(variant, equipSet) {
+  if (variant.bodyweight) return true;
+  const req = variant.equipment || [];
+  if (req.length === 0) return true;
+  return req.every((e) => equipSet.has(e));
+}
+function compactLibrary(list) {
+  return list.map((e) => `${e.id} | ${e.name} | [${e.variants.join(" / ")}] | ${e.type}`).join("\n");
+}
+
+const COACH_LIB_INDEX = (() => {
+  const idx = {};
+  for (const ex of EXERCISE_LIBRARY) idx[ex.id] = { name: ex.name, variantLabels: (ex.variants || []).map((v) => v.label) };
+  return idx;
+})();
+
+// ── Rotation walk (which split day is due) ──────────────────────────
+function walkRotation(rotation, cursor) {
+  if (!Array.isArray(rotation) || rotation.length === 0) return null;
+  const i = ((cursor % rotation.length) + rotation.length) % rotation.length;
+  return rotation[i];
+}
+
+// ── Fail-loud validator (fallbacks rejected: v1 is library-only) ────
+function validateCoachWorkout(obj, libIndex) {
+  const errors = [];
+  const push = (path, msg) => errors.push({ path, msg });
+  if (obj == null || typeof obj !== "object") return { ok: false, errors: [{ path: "(root)", msg: "not an object" }] };
+  if (obj.kind !== "workout") push("kind", `expected "workout", got ${JSON.stringify(obj.kind)}`);
+  if (obj.schemaVersion !== 1) push("schemaVersion", `expected 1, got ${JSON.stringify(obj.schemaVersion)}`);
+  if (typeof obj.workoutName !== "string" || !obj.workoutName.trim()) push("workoutName", "missing or empty string");
+  if (typeof obj.programmingNotes !== "string" || !obj.programmingNotes.trim()) push("programmingNotes", "REQUIRED, must be a non-empty string");
+  if (!Array.isArray(obj.prescribedExercises) || obj.prescribedExercises.length === 0) {
+    push("prescribedExercises", "missing or empty array");
+    return { ok: errors.length === 0, errors };
+  }
+  obj.prescribedExercises.forEach((pe, i) => {
+    const p = `prescribedExercises[${i}]`;
+    if (!Number.isInteger(pe.slot)) push(`${p}.slot`, "not an integer");
+    const ref = pe.ref;
+    if (ref == null || typeof ref !== "object") push(`${p}.ref`, "missing");
+    else if (ref.kind === "library") {
+      const lib = libIndex[ref.exerciseId];
+      if (!lib) push(`${p}.ref.exerciseId`, `"${ref.exerciseId}" not in library — fail loud, no fuzzy match`);
+      else if (!lib.variantLabels.includes(ref.variant)) push(`${p}.ref.variant`, `"${ref.variant}" invalid for ${ref.exerciseId}`);
+    } else if (ref.kind === "fallback") {
+      push(`${p}.ref.kind`, "fallback exercises are not allowed (v1 is library-only)");
+    } else push(`${p}.ref.kind`, `expected "library", got ${JSON.stringify(ref.kind)}`);
+    if (!Array.isArray(pe.sets) || pe.sets.length === 0) push(`${p}.sets`, "missing or empty");
+    else pe.sets.forEach((s, j) => {
+      if (s.setType !== "working" && s.setType !== "warmup") push(`${p}.sets[${j}].setType`, `"${s.setType}" outside allowed subset`);
+      if (!Number.isInteger(s.targetReps) || s.targetReps <= 0) push(`${p}.sets[${j}].targetReps`, "not a positive integer");
+    });
+  });
+  return { ok: errors.length === 0, errors };
+}
+
+// ── Real-state prompt builder ───────────────────────────────────────
+const COACH_GOAL_LABELS = { build_muscle: "Build Muscle", lose_weight: "Lose Weight", gain_strength: "Gain Strength", get_lean: "Get Lean" };
+const coachTitleCase = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
+
+function recentSessionsBlock(workoutHistory) {
+  const sessions = (workoutHistory || []).slice(0, 8);
+  if (sessions.length === 0) return "(none — this is a cold start, no history)";
+  return sessions.map((s, i) => {
+    const exs = (s.exercises || []).map((e) => e.variantLabel ? `${e.name} — ${e.variantLabel}` : e.name).join(", ");
+    return `Session ${i + 1} — ${s.name || "Workout"}:\n  ${exs}`;
+  }).join("\n");
+}
+
+// ── Live Sonnet call — works in BOTH environments, no edits between them:
+//    1) tries the Vercel proxy (/api/coach), which adds the key server-side;
+//    2) in the Claude preview that route doesn't exist (it returns the app's
+//       HTML, not JSON), so it falls back to the direct call, which the
+//       preview sandbox makes work without a key.
+//    So the same file runs in the preview for fast iteration AND on Vercel
+//    for phone dogfooding. ───────────────────────────────────────────────
+async function callCoach(systemPrompt, userMessage) {
+  const body = {
+    model: "claude-sonnet-4-6", max_tokens: 2000,
+    system: systemPrompt, messages: [{ role: "user", content: userMessage }],
+  };
+
+  // Path 1: the Vercel proxy. Present only on the deployed site.
+  let data = null;
+  try {
+    const res = await fetch("/api/coach", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const isJson = (res.headers.get("content-type") || "").includes("application/json");
+    if (isJson) {
+      data = await res.json();
+      // Proxy is present and answered. If it errored, surface that — do NOT
+      // fall back to the direct call (which can't work on Vercel anyway).
+      if (!res.ok) throw new Error(`Coach proxy ${res.status}: ${JSON.stringify(data).slice(0, 200)}`);
+    }
+    // Non-JSON response => proxy route absent (Claude preview) => fall through.
+  } catch (e) {
+    if (data) throw e; // real proxy/Anthropic error on Vercel — let it surface
+    // otherwise couldn't reach/parse the proxy — try the direct path below
+  }
+
+  // Path 2 (Claude preview only): direct call; the sandbox injects the key.
+  if (!data) {
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const t = await res.text().catch(() => "");
+      throw new Error(`API ${res.status}: ${t.slice(0, 300)}`);
+    }
+    data = await res.json();
+  }
+
+  const text = (data.content || []).filter((b) => b.type === "text").map((b) => b.text).join("");
+  return { text, usage: data.usage || null };
+}
+
+const COACH_SYSTEM_PROMPT = `You are Coach, the AI strength & conditioning coach living inside MYG Fitness. You are a chat coach: you talk with the user AND build their workouts. Decide what they need each turn.
+
+== HOW TO RESPOND (decide every message) ==
+- If the user wants a workout — "build me a leg day", "push", "my next workout", "make me something", or otherwise clearly asking you to program — respond with ONLY the CoachWorkout JSON object specified below. No prose, no markdown, no code fences. Just the JSON.
+- Otherwise — questions, "why did you pick that?", "how many sets?", "thanks", normal chat — respond with a SHORT, plain conversational message as ordinary TEXT (not JSON). Talk like a knowledgeable coach: direct, brief, no fluff. When they ask about a workout you just built, explain it using your own programmingNotes from it.
+- You are a strength coach, not a doctor or therapist. If asked something clearly outside training (injury diagnosis, medical conditions, medications, mental health, or unrelated off-topic requests), keep it brief, don't pretend to be qualified, and steer warmly back to training. Within training, engage fully.
+
+== When building a workout ==
+You generate ONE workout from the user's profile, the focus they want (infer it from their message and their split), and ONLY the exercises available to them.
+
+== CoachWorkout schema (schemaVersion 1) ==
+{
+  "kind": "workout",
+  "schemaVersion": 1,
+  "workoutName": "Push Day",
+  "prescribedExercises": [
+    {
+      "slot": 1,
+      "ref": { "kind": "library", "exerciseId": "<id from AVAILABLE>", "variant": "<a listed variant label>" },
+      "sets": [
+        { "setType": "warmup",  "targetReps": 10 },
+        { "setType": "working", "targetReps": 8 }
+      ],
+      "repRangeLabel": "8"
+    }
+  ],
+  "programmingNotes": "2-4 sentences on why this shape/volume/selection.",
+  "nextSessionIntent": null
+}
+
+== Hard rules (violations are rejected) ==
+- Every exercise MUST come from AVAILABLE EXERCISES — there is no fallback option. Use only ids and variant labels listed in AVAILABLE, verbatim.
+- setType is ONLY "warmup" or "working". Never drop/amrap/cluster/etc.
+- Every set has a concrete integer targetReps.
+- NEVER prescribe weight — the logger owns load.
+- programmingNotes is REQUIRED and never empty.
+- Obey the user's Active Rules absolutely, and interpret them LITERALLY:
+  · A rule naming a movement applies only to that EXACT movement, not its family — "no deadlifts" bans Deadlift, but not Romanian Deadlift or Rack Pull.
+  · A rule scoped to a day type ("every Pull/Back day", "every leg day") fires ONLY when the user's FOCUS literally matches that day type. It does NOT apply to Full Body, Upper Body, or any composite focus just because that focus includes the muscle's work. A Full Body day is not a Pull/Back day.
+- Name the workout plainly after the focus: "Chest Day", "Back Day", "Push Day", "Pull Day", "Leg Day", etc. Do not append the focus, invent compound names, or reference the session history in the name.
+
+== Rotation — SYSTEMATIC variation, not novelty ==
+Variation should be systematic and serve training — NOT random novelty. The evidence: systematic variation that covers a muscle's different regions and angles (incline, flat and decline pressing for the chest; leg extensions alongside squats for all quad heads) supports complete growth, but random session-to-session swapping does not add growth and can even hinder it. Movement VALUE beats novelty: keep the staples consistent, vary movements to cover a muscle's regions, and never change something just to be different.
+
+The only hard rule:
+- NEVER prescribe the identical primary movement two sessions in a row for the same focus. Avoiding back-to-back repeats is the priority — NOT avoiding repeats at all costs.
+
+Beyond that, treat movements by their role:
+- STAPLE COMPOUNDS (e.g. barbell bench, squat, barbell row, overhead press) are the lifts the user PROGRESSES on. Program them REGULARLY — a given staple should recur roughly every 2-3 sessions for its focus, because a user can only build strength on a lift they train consistently. Do NOT rotate a staple out just because it appeared recently; rotate it only to avoid a back-to-back repeat, then bring it back. A great staple done every 2nd-3rd session is correct; a great staple appearing once in six sessions is WRONG. Most variety should come from which staple leads and from the accessory slots — not from benching the user away from barbell bench.
+- ROTATE THE LEAD across sessions: do not open with the same compound every time. If the user benched first last session, open with incline or another press this time, and feel free to vary the order of the compounds session to session. The lead movement and variant must never be identical two sessions running. On a composite day (Upper, Full Body, Push, Pull) it is fine to open with the primary press most sessions, but occasionally lead with a different movement category — a row or a shoulder press rather than a chest press — for variety.
+- ACCESSORIES & ISOLATION: vary the MOVEMENT for variety only where real alternatives exist. When a muscle has just one suitable isolation (quads → Leg Extension, hamstrings → Leg Curl, side delts → Lateral Raise), keep using it every session — that is correct programming, not repetition. For every exercise pick the single most natural variant for it, and use ONLY a variant label that is listed under that exact exercise. Never swap a variant just to be different, and NEVER pair an exercise with a variant that belongs to a different exercise.
+
+Mention the rotation choice in programmingNotes (e.g. "leading with front squat this session since the last two opened on back squat").
+If NO recent sessions are provided, build the single best session for this focus from scratch (lead with the top staple).
+
+== Volume — WEEKLY volume drives growth; size each session by training frequency ==
+slot order: primary compound(s) first, then accessories, then isolation/finishers.
+- The real target is WEEKLY volume per muscle: about 10-20 hard working sets per muscle PER WEEK. That weekly total is the primary driver of growth — no single session is. Within ONE session a muscle gets the most from roughly 6-10 hard sets; returns fall off beyond that in a single session.
+- SIZE THE SESSION BY FREQUENCY:
+  · Single-muscle "bro-split" day (Chest, Shoulders, Arms): the muscle is likely trained only ~once this week, so program toward the higher end — about 10-14 sets for it (≈ 4-6 exercises) — to approach the weekly target in one session, accepting this is less efficient than spreading it. BACK is large and multi-region — allow 6-7 exercises.
+  · Multi-muscle day in a higher-frequency split (Push, Pull, Upper, Lower, Full Body, Legs — typically each muscle 2+ times/week): keep each session leaner, about 6-9 sets per muscle (5-7 exercises total), letting weekly volume accumulate across the week's sessions.
+- COVER THE WHOLE FOCUS: distribute slots across ALL the muscle groups the focus trains — do not over-concentrate on one. Upper Body trains chest, back, shoulders AND arms, so include at least one direct arm movement (a curl or a triceps movement) and do NOT stack more than ~2 shoulder movements. Push includes triceps and Pull includes biceps — give each at least one direct arm movement too.
+- NEVER pad to hit a number. If quality movements run out, do fewer quality sets — never add low-value filler to fill slots.
+
+== Rep ranges & effort ==
+Hypertrophy occurs across a WIDE rep range (roughly 5-30 reps) when sets are taken close to failure and weekly volume is met — the exact rep number matters far less than the effort. Practical defaults: compounds 3-4 sets of 6-12, isolations 3 sets of 10-20.
+EFFORT is the real driver: take working sets close to failure — about 1-3 reps in reserve. Training to absolute failure is NOT required and adds fatigue without clear extra growth.
+1-2 warmup sets on the heavy compounds only; isolations need no warmups.
+
+Now respond to the user: a JSON workout if they want one, plain conversational text otherwise.`;
+
+// ── CoachWorkout -> active-workout converter ────────────────────────
+function buildActiveWorkoutFromCoach(coachWorkout, workoutHistory, customExercises, now) {
+  const hist0 = workoutHistory || [];
+  const customs = customExercises || [];
+  const newExercises = [];
+  (coachWorkout.prescribedExercises || [])
+    .slice()
+    .sort((a, b) => (a.slot || 0) - (b.slot || 0))
+    .forEach((pe) => {
+      const ref = pe.ref || {};
+      if (ref.kind !== "library") return;
+      const exDef = findExerciseById(ref.exerciseId, customs);
+      if (!exDef) return;
+      const variant = exDef.variants.find((v) => v.label === ref.variant) || exDef.variants[0];
+      const hist = getVariantHistory(exDef.id, variantKey(variant), hist0, customs);
+      const lastSession = hist.length ? hist[hist.length - 1] : null;
+      const sets = (pe.sets || []).map((ps, i) => {
+        const refSet = lastSession ? (lastSession.sets[i] || lastSession.sets[lastSession.sets.length - 1]) : null;
+        const hasPrevWeight = refSet != null && refSet.weight !== undefined && refSet.weight !== null && refSet.weight !== "";
+        const hasReps = Number.isInteger(ps.targetReps) && ps.targetReps > 0;
+        return {
+          weight: "", reps: "", done: false,
+          type: ps.setType === "warmup" ? "warmup" : "working",
+          rir: null,
+          weightIsPlaceholder: hasPrevWeight,
+          repsIsPlaceholder: hasReps,
+          placeholderWeight: hasPrevWeight ? refSet.weight : "",
+          placeholderReps: hasReps ? ps.targetReps : "",
+        };
+      });
+      newExercises.push({
+        uid: `e${Date.now()}_${Math.random().toString(36).slice(2, 6)}_${newExercises.length}`,
+        exerciseId: exDef.id, name: exDef.name, primary: exDef.primary, variant, sets, collapsed: false,
+      });
+    });
+  if (newExercises.length === 0) return null;
+  return {
+    exercises: newExercises,
+    workoutName: (typeof coachWorkout.workoutName === "string" && coachWorkout.workoutName.trim())
+      ? coachWorkout.workoutName.trim() : deriveWorkoutName(newExercises, now),
+    startTime: now, restTimer: null, nameWasEdited: true,
+  };
+}
+
+// ── Chat-side helpers (CoachWorkout -> bubble; generation gate) ──────
+function deriveScheme(pe) {
+  const working = (pe.sets || []).filter((s) => s.setType === "working");
+  const n = working.length || (pe.sets || []).length;
+  let rep = pe.repRangeLabel;
+  if (!rep) {
+    const reps = working.map((s) => s.targetReps);
+    const uniform = reps.length && reps.every((r) => r === reps[0]);
+    rep = uniform ? String(reps[0]) : (reps.join("/") || "?");
+  }
+  return `${n}×${rep}`;
+}
+function coachWorkoutToBubble(cw, resolveName) {
+  const pres = cw.prescribedExercises || [];
+  const exercises = pres.slice().sort((a, b) => (a.slot || 0) - (b.slot || 0)).map((pe) => {
+    const ref = pe.ref || {};
+    const name = ref.kind === "library" ? (resolveName(ref.exerciseId) || ref.exerciseId) : ref.name;
+    return { name, scheme: deriveScheme(pe) };
+  });
+  const workingTotal = pres.reduce((n, pe) => n + (pe.sets || []).filter((s) => s.setType === "working").length, 0);
+  const title = (cw.workoutName || "Workout").trim();
+  const intro = `${title} — ${exercises.length} exercise${exercises.length === 1 ? "" : "s"}, ${workingTotal} working sets.`;
+  return { title, exercises, intro, outro: "Ready when you are." };
+}
+// Full equipment-available pool (all focuses) — the model infers the focus
+// itself from the message, so it gets the whole library it can actually use
+// and picks. Validator still enforces library membership.
+function availableAll(equipSet, library) {
+  const out = [];
+  for (const ex of library) {
+    if (COACH_BANNED_IDS.has(ex.id)) continue;
+    const usable = (ex.variants || []).filter((v) => variantUsable(v, equipSet));
+    if (usable.length === 0) continue;
+    out.push({ id: ex.id, name: ex.name, type: ex.type, variants: usable.map((v) => v.label) });
+  }
+  return out;
+}
+
+// Builds one conversational turn: profile, rules, split + what's due, recent
+// sessions, the last workout Coach built (with its programmingNotes so it can
+// explain its own choices), the full available library, the chat so far, and
+// the new message. The model reads all of it and decides: build or talk.
+function buildCoachTurn(state, ctx) {
+  const goalLabel = COACH_GOAL_LABELS[state.planGoal] || state.planGoal || "Build Muscle";
+  const rulesText = (state.coachRules || []).map((r) => "- " + (typeof r === "string" ? r : r.text)).join("\n") || "(none)";
+  const splitText = (ctx.rotation || []).map((d) => d.label).join(" → ") || "(no split set)";
+  const lastW = ctx.lastWorkout;
+  const lastText = lastW
+    ? `${lastW.workoutName}: ${(lastW.prescribedExercises || []).map((pe) => (pe.ref && pe.ref.kind === "library" && COACH_LIB_INDEX[pe.ref.exerciseId] ? COACH_LIB_INDEX[pe.ref.exerciseId].name : (pe.ref && pe.ref.name) || "?")).join(", ")}\nYour notes on it: ${lastW.programmingNotes || "(none)"}`
+    : "(none yet this session)";
+  const chatText = (ctx.recentChat || []).map((m) => `${m.role === "user" ? "User" : "Coach"}: ${m.text}`).join("\n") || "(start of conversation)";
+  return `== USER PROFILE ==
+Name: ${state.userName || "there"}
+Fitness level: ${coachTitleCase(state.fitnessLevel) || "Intermediate"}
+Goal: ${goalLabel}
+Days/week: ${state.planDaysPerWeek}
+
+== ACTIVE RULES (obey absolutely) ==
+${rulesText}
+
+== THEIR SPLIT ==
+${splitText}
+Due next by rotation: ${ctx.dueFocusLabel || "(no split — pick a sensible focus)"}
+
+== RECENT SESSIONS (rotate away from these) ==
+${recentSessionsBlock(state.workoutHistory)}
+
+== LAST WORKOUT YOU BUILT (this session) ==
+${lastText}
+
+== AVAILABLE EXERCISES (id | name | [variants] | type) — when building, use these verbatim ==
+${compactLibrary(ctx.fullPool || [])}
+
+== CONVERSATION SO FAR ==
+${chatText}
+
+User's new message: ${ctx.userMessage}`;
+}
+
+const COACH_ERROR_TEXT = "I had trouble putting that together. Mind trying again?";
+
+
 /* Variant key helper: deterministic string derived from a variant's equipment
    list. Sorting ensures stability regardless of how the variant was declared.
    Example: { equipment: ["barbell", "flat_bench"] } → "barbell+flat_bench".
@@ -1230,34 +1592,34 @@ function formatShortDate(isoDate) {
 /* ── Shared Components ───────────────────────────────────────── */
 
 function PhoneFrame({ children }) {
-  // Stripped-down passthrough wrapper for real-device rendering.
-  // Previously this rendered a fake 375×812 phone bezel with a fake "9:41"
-  // status bar and home indicator — fine for the artifact preview, but on
-  // a real iPhone it produced a phone-in-a-phone effect. Now it just
-  // provides a flex column container; the surrounding outer wrapper sets
-  // the height, and the existing screen flex layout fills it correctly.
-  //
-  // paddingTop: env(safe-area-inset-top) — in PWA mode (saved to home
-  // screen), iOS draws the app under the status bar. Without this, the
-  // first row of every screen collides with the iOS clock and battery
-  // icons. The bottom safe-area is handled inside TabBar instead, so
-  // the TabBar's background can extend to the true bottom edge.
   return (
     <div
       style={{
-        width: "100%",
-        height: "100%",
-        background: COLORS.bg,
-        position: "relative",
-        overflow: "hidden",
+        width: 375, height: 812, borderRadius: 44, background: COLORS.bg,
+        position: "relative", overflow: "hidden",
+        boxShadow: "0 25px 80px rgba(0,0,0,0.6), 0 0 0 2px #333",
         fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-        display: "flex",
-        flexDirection: "column",
-        paddingTop: "env(safe-area-inset-top)",
+        display: "flex", flexDirection: "column",
       }}
     >
+      <div
+        style={{
+          height: 50, display: "flex", alignItems: "center", justifyContent: "space-between",
+          padding: "0 28px", fontSize: 14, fontWeight: 600, color: COLORS.text, flexShrink: 0,
+        }}
+      >
+        <span>9:41</span>
+        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          <svg width="17" height="12" viewBox="0 0 17 12" fill="white"><rect x="0" y="3" width="3" height="9" rx="1" /><rect x="4.5" y="2" width="3" height="10" rx="1" /><rect x="9" y="0" width="3" height="12" rx="1" /><rect x="13.5" y="1" width="3" height="11" rx="1" fillOpacity="0.3" /></svg>
+          <svg width="16" height="12" viewBox="0 0 16 12" fill="white"><path d="M8 2.4C10.6 2.4 13 3.5 14.7 5.3L16 4C14 1.9 11.1 .5 8 .5S2 1.9 0 4L1.3 5.3C3 3.5 5.4 2.4 8 2.4z" fillOpacity="0.3" /><path d="M8 5.4C9.8 5.4 11.4 6.1 12.6 7.3L13.9 6C12.4 4.5 10.3 3.5 8 3.5S3.6 4.5 2.1 6L3.4 7.3C4.6 6.1 6.2 5.4 8 5.4z" fillOpacity="0.6" /><path d="M8 8.4C9 8.4 9.9 8.8 10.5 9.5L8 12 5.5 9.5C6.1 8.8 7 8.4 8 8.4z" /></svg>
+          <svg width="27" height="13" viewBox="0 0 27 13" fill="white"><rect x="0" y="0.5" width="23" height="12" rx="3.5" stroke="white" strokeWidth="1" fill="none" /><rect x="24.5" y="4" width="2" height="5" rx="1" fillOpacity="0.4" /><rect x="1.5" y="2" width="18" height="9" rx="2" fill="white" /></svg>
+        </div>
+      </div>
       <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
         {children}
+      </div>
+      <div style={{ height: 34, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+        <div style={{ width: 134, height: 5, borderRadius: 3, background: "rgba(255,255,255,0.2)" }} />
       </div>
     </div>
   );
@@ -1488,9 +1850,6 @@ function WelcomeScreen({ onGetStarted, onSignIn }) {
   useEffect(() => { setTimeout(() => setLogoV(true), 200); setTimeout(() => setContentV(true), 900); }, []);
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "0 32px", position: "relative" }}>
-      {/* V.15 marker — temporary build indicator. Bump with each push to
-          verify cache isn't serving stale code. Remove before shipping. */}
-      <div style={{ position: "absolute", top: 16, right: 20, color: COLORS.textSecondary, fontSize: 11, fontWeight: 500, letterSpacing: 1, opacity: 0.7 }}>V.15</div>
       <div style={{ position: "absolute", top: "40%", textAlign: "center", opacity: logoV ? 1 : 0, transform: logoV ? "translateY(-50%) scale(1)" : "translateY(-50%) scale(1.08)", transition: "all 0.9s cubic-bezier(0.22,1,0.36,1)" }}>
         <h1 style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 92, fontWeight: 700, color: COLORS.gold, margin: 0, letterSpacing: 8 }}>MYG</h1>
       </div>
@@ -6991,7 +7350,7 @@ function getChatDisplayName(chat) {
   return formatChatDefaultName(chat.createdAt);
 }
 
-function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFocused, onAppendMessage, onUpdateLastMessage, onNewChat, onSwitchChat, onDeleteChat, onRenameChat, pendingSeed, onSeedConsumed }) {
+function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFocused, onAppendMessage, onUpdateLastMessage, onRespondAsCoach, onStartCoachWorkout, onNewChat, onSwitchChat, onDeleteChat, onRenameChat, pendingSeed, onSeedConsumed }) {
   // Bible §4.7: hard cap on user message length. Keeps one chat message
   // within a single API call's budget and prevents runaway prompts. The
   // counter only appears in the last 100 chars so it doesn't distract
@@ -7026,6 +7385,10 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
   // streamIntervalRef = the per-chunk setInterval that grows the text.
   const firstTokenTimeoutRef = useRef(null);
   const streamIntervalRef = useRef(null);
+  // Guards the async generation against a chat switch mid-flight: holds the
+  // chat id the in-flight generation is for. Nulled on chat switch; the
+  // resolve handler drops its result if this no longer matches.
+  const activeGenChatRef = useRef(null);
   // Textarea ref for auto-grow. We measure scrollHeight on every input
   // change and resize up to a max. Past the max it scrolls internally.
   const textareaRef = useRef(null);
@@ -7063,41 +7426,9 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
   // STREAM_TICK_MS / STREAM_CHARS_PER_TICK — the per-chunk cadence of
   //   the fake stream. Tuned to land near 40-50 chars/sec which sits
   //   inside the 30-60 t/s band D-051 measured on Sonnet.
-  //
-  // LEG_DAY_SCRIPT is the FIRST-MESSAGE reply: a leg-day prescription
-  // rendered with the structured `kind: "workout"` bubble (Variant B
-  // gold-rule header layout). Independent of training history — the
-  // mock has no concept of user history yet. The workout object shape
-  // mirrors what the real Coach output schema will probably look like
-  // once D-001 is locked, but it's not authoritative; it's mock-only
-  // data and will get rewritten when the schema session happens.
-  //
-  // COMING_SOON_SCRIPT is the SUBSEQUENT-MESSAGE reply: a short text
-  // bubble explaining the mock is single-shot and pointing the user
-  // at "start a new chat" if they want to see the demo again.
   const FIRST_TOKEN_DELAY_MS = 350;
   const STREAM_TICK_MS = 70;
   const STREAM_CHARS_PER_TICK = 4;
-
-  const LEG_DAY_SCRIPT = {
-    kind: "workout",
-    intro: "Today's leg day — full gym, 6 exercises, ~20 working sets.",
-    title: "Leg Day",
-    exercises: [
-      { name: "Back Squat",            scheme: "4×6–8"   },
-      { name: "Romanian Deadlift",     scheme: "3×8–10"  },
-      { name: "Bulgarian Split Squat", scheme: "3×8–10"  },
-      { name: "Lying Leg Curl",        scheme: "3×10–12" },
-      { name: "Leg Extension",         scheme: "3×10–12" },
-      { name: "Standing Calf Raise",   scheme: "4×12–15" },
-    ],
-    outro: "Ready when you are.",
-  };
-
-  const COMING_SOON_SCRIPT = {
-    kind: "text",
-    text: "Coming soon — real Coach AI launching in a few weeks. For now, try sending a fresh message in a new chat to see a workout demo.",
-  };
 
   // ─────────────────────────────────────────────────────────────────
 
@@ -7176,41 +7507,33 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
     }
     onAppendMessage({ role: "user", text: u });
 
-    // §6.3 streaming sequence:
-    //   thinking indicator → ~350ms wait → first token arrives,
-    //   indicator clears, message grows token-by-token.
+    // Session 56: every message goes to Coach. The model decides whether to
+    // build a workout or just talk; we render whichever came back. No gate.
     setIsThinking(true);
-    firstTokenTimeoutRef.current = setTimeout(() => {
-      firstTokenTimeoutRef.current = null;
+    const reqChatId = chat.id;
+    activeGenChatRef.current = reqChatId;
+    onRespondAsCoach(u, chat.messages).then((res) => {
+      // Dropped if the user switched chats while Coach was responding.
+      if (activeGenChatRef.current !== reqChatId) return;
       setIsThinking(false);
-
-      if (isFirstUserMessage) {
-        // First user message → render the structured leg-day workout
-        // bubble. Streaming surface = the intro line + outro line; the
-        // workout block (title + rows) renders alongside the streamed
-        // prose without itself being chunked. This matches what the
-        // real Coach API will probably do — structured tool_use blocks
-        // appear in full once their tool result is back, not character
-        // by character. (Open per D-001; revisit when the schema lands.)
-        const introOutroBuffer = `${LEG_DAY_SCRIPT.intro}\n${LEG_DAY_SCRIPT.outro}`;
-        streamText(introOutroBuffer, {
+      if (res && res.kind === "workout") {
+        const b = coachWorkoutToBubble(res.coachWorkout, (id) => (COACH_LIB_INDEX[id] ? COACH_LIB_INDEX[id].name : id));
+        // Streamed surface = intro + outro prose; the workout block renders
+        // in full at the \n boundary (structured blocks aren't char-chunked).
+        streamText(`${b.intro}\n${b.outro}`, {
           role: "coach",
           kind: "workout",
-          workout: {
-            title: LEG_DAY_SCRIPT.title,
-            exercises: LEG_DAY_SCRIPT.exercises,
-          },
-          intro: LEG_DAY_SCRIPT.intro,
-          outro: LEG_DAY_SCRIPT.outro,
+          workout: { title: b.title, exercises: b.exercises },
+          intro: b.intro,
+          outro: b.outro,
+          coachWorkout: res.coachWorkout, // carried so Start can export it
         });
+      } else if (res && res.kind === "reply") {
+        streamText(res.message, { role: "coach", kind: "text" });
       } else {
-        // Subsequent message → "coming soon" canned text reply.
-        streamText(COMING_SOON_SCRIPT.text, {
-          role: "coach",
-          kind: "text",
-        });
+        streamText(COACH_ERROR_TEXT, { role: "coach", kind: "text" });
       }
-    }, FIRST_TOKEN_DELAY_MS);
+    });
   };
 
   // ── Consume a "Ask Coach about this observation" deep-link ─────────
@@ -7311,6 +7634,7 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
     setIsThinking(false);
     setIsStreaming(false);
     cancelStream();
+    activeGenChatRef.current = null; // drop any in-flight Coach generation for the old chat
     // cancelStream is stable enough for this purpose (closes over refs).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chat?.id]);
@@ -7538,13 +7862,13 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
 
                 {/* Start This Workout CTA — left-justified directly under
                     the bubble. Only renders once streaming completes so it
-                    doesn't pop in mid-stream. No-op tap for v1 (real wiring
-                    is the export-to-Workout pipeline behind D-001 Coach
-                    output schema lock); logs to console as a breadcrumb. */}
+                    doesn't pop in mid-stream. Exports the CoachWorkout carried
+                    on the message into the logger (Session 56); guards against
+                    legacy persisted messages that predate the schema. */}
                 {isDone && (
                   <div style={{ display: "flex", justifyContent: "flex-start", marginTop: 8 }}>
                     <button
-                      onClick={() => console.log("[mock] Start This Workout tapped — export pipeline not yet wired (D-001)")}
+                      onClick={() => { if (m.coachWorkout) onStartCoachWorkout(m.coachWorkout); }}
                       style={{
                         background: COLORS.gold,
                         color: COLORS.bg,
@@ -12255,7 +12579,6 @@ function TabBar({ active, onTab }) {
         display: "flex", justifyContent: "space-around",
         borderTop: `1px solid ${COLORS.border}`, background: COLORS.bg,
         flexShrink: 0, position: "relative", padding: "8px 0 6px",
-        paddingBottom: "calc(6px + env(safe-area-inset-bottom))",
       }}
     >
       {/* Sliding gold underline. Single-sided accent → no border-radius. */}
@@ -12633,6 +12956,11 @@ export default function MYGFitness() {
   // ("+ 1 more →", "View all 7 →") are derived from .length.
   const [planGoal, setPlanGoal] = useState(h.planGoal || "build_muscle");
   const [planDaysPerWeek, setPlanDaysPerWeek] = useState(typeof h.planDaysPerWeek === "number" ? h.planDaysPerWeek : 6);
+  // Coach split rotation + cursor (Session 56). Rotation is null until set;
+  // resolveRotation() seeds from days/week at read-time. Cursor advances on
+  // a "next"-sourced Coach workout start.
+  const [coachRotation, setCoachRotation] = useState(validateStoredRotation(h.coachRotation));
+  const [rotationCursor, setRotationCursor] = useState(Number.isInteger(h.rotationCursor) ? h.rotationCursor : 0);
   const [coachRules, setCoachRules] = useState(h.coachRules !== null && h.coachRules !== undefined ? h.coachRules : MOCK_COACH_RULES);
   const [coachObservations, setCoachObservations] = useState(h.coachObservations !== null && h.coachObservations !== undefined ? h.coachObservations : MOCK_COACH_OBSERVATIONS);
   const [progressPRs, setProgressPRs] = useState(h.progressPRs !== null && h.progressPRs !== undefined ? h.progressPRs : MOCK_PROGRESS_PRS);
@@ -12681,6 +13009,8 @@ export default function MYGFitness() {
       restCountdownTargetPref,
       planGoal,
       planDaysPerWeek,
+      coachRotation,
+      rotationCursor,
       coachRules,
       coachObservations,
       progressPRs,
@@ -12708,6 +13038,8 @@ export default function MYGFitness() {
     restCountdownTargetPref,
     planGoal,
     planDaysPerWeek,
+    coachRotation,
+    rotationCursor,
     coachRules,
     coachObservations,
     progressPRs,
@@ -12794,6 +13126,67 @@ export default function MYGFitness() {
     setWorkoutMinimized(false);
     setOpenHistoryId(null); // dismiss the recap sheet
     setActiveTab("workout"); // surface the new workout
+  };
+
+  // ── Coach AI (Session 56) ──────────────────────────────────────────
+  // One turn of Coach. EVERY message goes to the model with full context
+  // (profile, rules, split, recent sessions, last workout + its notes, the
+  // available library, the chat so far). The model decides: build a workout
+  // (returns CoachWorkout JSON) or just talk (returns plain text). The app
+  // branches on what came back. No keyword gate — the model routes itself.
+  const respondAsCoach = async (userMessage, messages) => {
+    const rotation = resolveRotation(coachRotation, planDaysPerWeek);
+    const due = walkRotation(rotation, rotationCursor);
+    const fullPool = availableAll(selectedEquipment, EXERCISE_LIBRARY);
+    const lastMsg = [...(messages || [])].reverse().find((m) => m.kind === "workout" && m.coachWorkout);
+    const recentChat = (messages || []).slice(-6).map((m) => ({
+      role: m.role,
+      text: m.text || (m.workout ? `[built workout: ${m.workout.title}]` : ""),
+    }));
+    const state = { userName, fitnessLevel, planGoal, planDaysPerWeek, coachRules, workoutHistory };
+    const turn = buildCoachTurn(state, {
+      rotation, dueFocusLabel: due ? due.label : null,
+      lastWorkout: lastMsg ? lastMsg.coachWorkout : null,
+      recentChat, userMessage, fullPool,
+    });
+    try {
+      const { text } = await callCoach(COACH_SYSTEM_PROMPT, turn);
+      const clean = text.replace(/```json/g, "").replace(/```/g, "").trim();
+      let obj = null;
+      if (clean.startsWith("{")) { try { obj = JSON.parse(clean); } catch { obj = null; } }
+      if (obj && obj.kind === "workout") {
+        const v = validateCoachWorkout(obj, COACH_LIB_INDEX);
+        if (!v.ok) { console.warn("[coach] schema violations", v.errors); return { kind: "error" }; }
+        return { kind: "workout", coachWorkout: obj };
+      }
+      // Not a workout -> conversational reply (plain prose, or a non-workout
+      // JSON object's message field if the model wrapped it).
+      const message = obj && typeof obj.message === "string" ? obj.message : text.trim();
+      return { kind: "reply", message: message || COACH_ERROR_TEXT };
+    } catch (e) {
+      console.warn("[coach] turn failed", e);
+      return { kind: "error" };
+    }
+  };
+
+  // Export a CoachWorkout into the logger. Mirrors repeatWorkoutFromSession's
+  // tail; advances the rotation cursor so "my next workout" walks forward.
+  const startWorkoutFromCoach = (coachWorkout) => {
+    const now = new Date();
+    const aw = buildActiveWorkoutFromCoach(coachWorkout, workoutHistory, customExercises, now);
+    if (!aw) return false;
+    setActiveWorkout(aw);
+    setWorkoutMinimized(false);
+    setActiveTab("workout");
+    setRotationCursor((c) => c + 1);
+    return true;
+  };
+
+  // Conflict-aware entry point (matches requestStartEmptyWorkout / Repeat):
+  // queue behind the save/discard modal if a workout is already active.
+  const requestStartWorkoutFromCoach = (coachWorkout) => {
+    if (activeWorkout) setPendingStartAction({ type: "coach", coachWorkout });
+    else startWorkoutFromCoach(coachWorkout);
   };
 
   const updateActiveWorkout = (patch) => {
@@ -12896,6 +13289,8 @@ export default function MYGFitness() {
       startEmptyWorkout();
     } else if (pendingStartAction.type === "repeat") {
       repeatWorkoutFromSession(pendingStartAction.session);
+    } else if (pendingStartAction.type === "coach") {
+      startWorkoutFromCoach(pendingStartAction.coachWorkout);
     }
   };
 
@@ -13043,6 +13438,8 @@ export default function MYGFitness() {
           onSetInputFocused={setCoachInputFocused}
           onAppendMessage={appendCoachMessage}
           onUpdateLastMessage={updateLastCoachMessage}
+          onRespondAsCoach={respondAsCoach}
+          onStartCoachWorkout={requestStartWorkoutFromCoach}
           onNewChat={startNewCoachChat}
           onSwitchChat={switchCoachChat}
           onDeleteChat={deleteCoachChat}
@@ -13498,7 +13895,7 @@ export default function MYGFitness() {
   };
 
   return (
-    <div style={{ width: "100vw", height: "100vh", background: COLORS.bg }}>
+    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#0a0a0a", padding: "40px 20px" }}>
       <style>{`
         input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 24px; height: 24px; border-radius: 50%; background: #FFD700; cursor: pointer; border: 3px solid #111111; box-shadow: 0 0 8px rgba(255,215,0,0.4); }
         input[type="range"]::-moz-range-thumb { width: 24px; height: 24px; border-radius: 50%; background: #FFD700; cursor: pointer; border: 3px solid #111111; box-shadow: 0 0 8px rgba(255,215,0,0.4); }
