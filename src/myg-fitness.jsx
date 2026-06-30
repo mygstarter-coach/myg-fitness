@@ -1850,9 +1850,9 @@ function WelcomeScreen({ onGetStarted, onSignIn }) {
   useEffect(() => { setTimeout(() => setLogoV(true), 200); setTimeout(() => setContentV(true), 900); }, []);
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "0 32px", position: "relative" }}>
-      {/* V.16 marker — temporary build indicator. Bump with each push to
+      {/* V.18 marker — temporary build indicator. Bump with each push to
           verify cache isn't serving stale code. Remove before shipping. */}
-      <div style={{ position: "absolute", top: 16, right: 20, color: COLORS.textSecondary, fontSize: 11, fontWeight: 500, letterSpacing: 1, opacity: 0.7 }}>V.16</div>
+      <div style={{ position: "absolute", top: 16, right: 20, color: COLORS.textSecondary, fontSize: 11, fontWeight: 500, letterSpacing: 1, opacity: 0.7 }}>V.18</div>
       <div style={{ position: "absolute", top: "40%", textAlign: "center", opacity: logoV ? 1 : 0, transform: logoV ? "translateY(-50%) scale(1)" : "translateY(-50%) scale(1.08)", transition: "all 0.9s cubic-bezier(0.22,1,0.36,1)" }}>
         <h1 style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 92, fontWeight: 700, color: COLORS.gold, margin: 0, letterSpacing: 8 }}>MYG</h1>
       </div>
@@ -7353,7 +7353,7 @@ function getChatDisplayName(chat) {
   return formatChatDefaultName(chat.createdAt);
 }
 
-function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFocused, onAppendMessage, onUpdateLastMessage, onRespondAsCoach, onStartCoachWorkout, onNewChat, onSwitchChat, onDeleteChat, onRenameChat, pendingSeed, onSeedConsumed }) {
+function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFocused, onAppendMessage, onUpdateLastMessage, onRespondAsCoach, onStartCoachWorkout, onBuildDebug, onNewChat, onSwitchChat, onDeleteChat, onRenameChat, pendingSeed, onSeedConsumed }) {
   // Bible §4.7: hard cap on user message length. Keeps one chat message
   // within a single API call's budget and prevents runaway prompts. The
   // counter only appears in the last 100 chars so it doesn't distract
@@ -7375,6 +7375,26 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
   // strictly for input-side gating.
   const [isStreaming, setIsStreaming] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  // Dogfooding: transient "Copied" feedback for the copy-debug button.
+  const [debugCopied, setDebugCopied] = useState(false);
+  // Robust clipboard write — prefers the async Clipboard API, falls back to
+  // a hidden textarea + execCommand for browsers/contexts where it's blocked.
+  const copyText = async (text) => {
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+        return true;
+      }
+    } catch (e) { /* fall through to legacy path */ }
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.focus(); ta.select();
+      const ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+      return ok;
+    } catch (e) { return false; }
+  };
   // Per-row 3-dot menu: id of the chat whose menu is open, or null.
   const [openMenuId, setOpenMenuId] = useState(null);
   // Rename target: { id, draft } or null.
@@ -7683,6 +7703,27 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
+          {/* Copy debug — dogfooding tool. Copies this whole chat as JSON
+              (context snapshot + every workout's full coachWorkout/notes) so
+              it can be pasted back for analysis. */}
+          <button
+            onClick={async () => {
+              try {
+                const ok = await copyText(onBuildDebug(chat));
+                setDebugCopied(ok);
+                setTimeout(() => setDebugCopied(false), 1500);
+              } catch (e) { console.warn("[coach] copy debug failed", e); }
+            }}
+            title="Copy debug (for analysis)"
+            style={{ background: "transparent", border: "none", cursor: "pointer", padding: 8, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 8, minWidth: 30 }}
+          >
+            {debugCopied
+              ? <span style={{ color: COLORS.gold, fontSize: 11, fontWeight: 600 }}>Copied</span>
+              : <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={COLORS.textSecondary} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="9" y="9" width="13" height="13" rx="2" />
+                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                </svg>}
+          </button>
           {/* History button */}
           <button
             onClick={() => setHistoryOpen(true)}
@@ -13193,6 +13234,38 @@ export default function MYGFitness() {
     else startWorkoutFromCoach(coachWorkout);
   };
 
+  // Dogfooding export: package a whole Coach chat as JSON — the context Coach
+  // was working from (rules, equipment, split, the history it saw) plus every
+  // message, with each workout's full coachWorkout (ids, variants, sets, and
+  // programmingNotes). Pasted back for analysis. Returns a pretty JSON string.
+  const buildChatDebug = (chat) => {
+    const rotation = resolveRotation(coachRotation, planDaysPerWeek);
+    const due = walkRotation(rotation, rotationCursor);
+    const recentSessions = (workoutHistory || []).slice(0, 8).map((s) => ({
+      name: s.name, date: s.date,
+      exercises: (s.exercises || []).map((e) => ({ name: e.name, variant: e.variantLabel })),
+    }));
+    const messages = ((chat && chat.messages) || []).map((m) => {
+      const base = { role: m.role, kind: m.kind || "text", text: m.text || "" };
+      if (m.kind === "workout" && m.coachWorkout) base.coachWorkout = m.coachWorkout;
+      return base;
+    });
+    return JSON.stringify({
+      _debug: "myg-coach-chat",
+      exportedAt: new Date().toISOString(),
+      chat: { id: chat && chat.id, title: (chat && chat.title) || null },
+      context: {
+        userName, fitnessLevel, planGoal, planDaysPerWeek,
+        coachRules: (coachRules || []).map((r) => (typeof r === "string" ? r : r.text)),
+        equipment: Array.from(selectedEquipment || []),
+        split: rotation.map((d) => d.label),
+        rotationCursor, dueNext: due ? due.label : null,
+        recentSessions,
+      },
+      messages,
+    }, null, 2);
+  };
+
   const updateActiveWorkout = (patch) => {
     setActiveWorkout((prev) => {
       if (!prev) return prev;
@@ -13444,6 +13517,7 @@ export default function MYGFitness() {
           onUpdateLastMessage={updateLastCoachMessage}
           onRespondAsCoach={respondAsCoach}
           onStartCoachWorkout={requestStartWorkoutFromCoach}
+          onBuildDebug={buildChatDebug}
           onNewChat={startNewCoachChat}
           onSwitchChat={switchCoachChat}
           onDeleteChat={deleteCoachChat}
