@@ -1592,34 +1592,34 @@ function formatShortDate(isoDate) {
 /* ── Shared Components ───────────────────────────────────────── */
 
 function PhoneFrame({ children }) {
-  // Stripped-down passthrough wrapper for real-device rendering.
-  // Previously this rendered a fake 375×812 phone bezel with a fake "9:41"
-  // status bar and home indicator — fine for the artifact preview, but on
-  // a real iPhone it produced a phone-in-a-phone effect. Now it just
-  // provides a flex column container; the surrounding outer wrapper sets
-  // the height, and the existing screen flex layout fills it correctly.
-  //
-  // paddingTop: env(safe-area-inset-top) — in PWA mode (saved to home
-  // screen), iOS draws the app under the status bar. Without this, the
-  // first row of every screen collides with the iOS clock and battery
-  // icons. The bottom safe-area is handled inside TabBar instead, so
-  // the TabBar's background can extend to the true bottom edge.
   return (
     <div
       style={{
-        width: "100%",
-        height: "100%",
-        background: COLORS.bg,
-        position: "relative",
-        overflow: "hidden",
+        width: 375, height: 812, borderRadius: 44, background: COLORS.bg,
+        position: "relative", overflow: "hidden",
+        boxShadow: "0 25px 80px rgba(0,0,0,0.6), 0 0 0 2px #333",
         fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-        display: "flex",
-        flexDirection: "column",
-        paddingTop: "env(safe-area-inset-top)",
+        display: "flex", flexDirection: "column",
       }}
     >
+      <div
+        style={{
+          height: 50, display: "flex", alignItems: "center", justifyContent: "space-between",
+          padding: "0 28px", fontSize: 14, fontWeight: 600, color: COLORS.text, flexShrink: 0,
+        }}
+      >
+        <span>9:41</span>
+        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          <svg width="17" height="12" viewBox="0 0 17 12" fill="white"><rect x="0" y="3" width="3" height="9" rx="1" /><rect x="4.5" y="2" width="3" height="10" rx="1" /><rect x="9" y="0" width="3" height="12" rx="1" /><rect x="13.5" y="1" width="3" height="11" rx="1" fillOpacity="0.3" /></svg>
+          <svg width="16" height="12" viewBox="0 0 16 12" fill="white"><path d="M8 2.4C10.6 2.4 13 3.5 14.7 5.3L16 4C14 1.9 11.1 .5 8 .5S2 1.9 0 4L1.3 5.3C3 3.5 5.4 2.4 8 2.4z" fillOpacity="0.3" /><path d="M8 5.4C9.8 5.4 11.4 6.1 12.6 7.3L13.9 6C12.4 4.5 10.3 3.5 8 3.5S3.6 4.5 2.1 6L3.4 7.3C4.6 6.1 6.2 5.4 8 5.4z" fillOpacity="0.6" /><path d="M8 8.4C9 8.4 9.9 8.8 10.5 9.5L8 12 5.5 9.5C6.1 8.8 7 8.4 8 8.4z" /></svg>
+          <svg width="27" height="13" viewBox="0 0 27 13" fill="white"><rect x="0" y="0.5" width="23" height="12" rx="3.5" stroke="white" strokeWidth="1" fill="none" /><rect x="24.5" y="4" width="2" height="5" rx="1" fillOpacity="0.4" /><rect x="1.5" y="2" width="18" height="9" rx="2" fill="white" /></svg>
+        </div>
+      </div>
       <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
         {children}
+      </div>
+      <div style={{ height: 34, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+        <div style={{ width: 134, height: 5, borderRadius: 3, background: "rgba(255,255,255,0.2)" }} />
       </div>
     </div>
   );
@@ -1850,9 +1850,6 @@ function WelcomeScreen({ onGetStarted, onSignIn }) {
   useEffect(() => { setTimeout(() => setLogoV(true), 200); setTimeout(() => setContentV(true), 900); }, []);
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "0 32px", position: "relative" }}>
-      {/* V.18 marker — temporary build indicator. Bump with each push to
-          verify cache isn't serving stale code. Remove before shipping. */}
-      <div style={{ position: "absolute", top: 16, right: 20, color: COLORS.textSecondary, fontSize: 11, fontWeight: 500, letterSpacing: 1, opacity: 0.7 }}>V.18</div>
       <div style={{ position: "absolute", top: "40%", textAlign: "center", opacity: logoV ? 1 : 0, transform: logoV ? "translateY(-50%) scale(1)" : "translateY(-50%) scale(1.08)", transition: "all 0.9s cubic-bezier(0.22,1,0.36,1)" }}>
         <h1 style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 92, fontWeight: 700, color: COLORS.gold, margin: 0, letterSpacing: 8 }}>MYG</h1>
       </div>
@@ -7353,7 +7350,147 @@ function getChatDisplayName(chat) {
   return formatChatDefaultName(chat.createdAt);
 }
 
-function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFocused, onAppendMessage, onUpdateLastMessage, onRespondAsCoach, onStartCoachWorkout, onBuildDebug, onNewChat, onSwitchChat, onDeleteChat, onRenameChat, pendingSeed, onSeedConsumed }) {
+// ── Coach empty-state greeting (Session 57) ─────────────────────────
+// The warm line shown above the composer on a fresh chat — replaced the
+// fixed starter chips. Combines two tiers:
+//   • Cheap tier — day-of-week flavor + a rotating motivational pool.
+//     Always available; the fallback and the source of daily variety.
+//   • Rich tier  — reads the split rotation + this-week training count so
+//     the greeting knows where you actually are ("Push day's up", "one more
+//     this week?"). Same "it knows me" lever the Why-this panel pulls.
+// We build a candidate pool weighted toward the richest lines the data
+// supports, then pick ONE with a day-stable seed: it varies day to day (and
+// after each logged workout) but stays constant within a day so it can't
+// flicker as the user types in the composer.
+// Per-app-open seed for the Coach greeting cadence. Computed once when the
+// bundle evaluates (i.e. per page load / app launch), so it's stable across
+// tab switches and CoachTab remounts within one sitting, and fresh on reload.
+const COACH_SESSION_SEED = Math.floor(Math.random() * 100000);
+function startOfWeek(d) {
+  const x = new Date(d);
+  const day = (x.getDay() + 6) % 7; // Mon=0 … Sun=6
+  x.setHours(0, 0, 0, 0);
+  x.setDate(x.getDate() - day);
+  return x;
+}
+// ── Coach greeting library (Session 57) ─────────────────────────────
+// Data table: each entry is ONE category with a `tier`, a `when(ctx)`
+// predicate, and `lines` (string or ctx=>string). The engine below builds
+// ctx once, keeps the categories whose `when` passes, and picks by tier
+// weight + cadence seed. Adding a line = edit an array; adding a category =
+// one row. No logic changes needed to grow the library.
+//
+// Tiers, by how OFTEN each surfaces — personalization is earned, not
+// constant (same restraint as gold being sparse):
+//   • event   — rare, high-signal moments (PR, comeback, milestone). WIN
+//               when they fire. Added in the pass-2 detector work.
+//   • context — everyday situational lines. Seasoning: ~1 in 4 openings.
+//   • generic — warm, curious baseline (Claude-style). The frequent default.
+const COACH_GREETINGS = [
+  // ── context — everyday situational (seasoning) ──
+  { id: "due_session", tier: "context",
+    when: (c) => c.dueLabel && !c.trainedToday,
+    lines: [
+      (c) => `${c.dueLabel} is up when you're ready.`,
+      (c) => `Looks like ${c.dueLabel.toLowerCase()} today.`,
+      (c) => `${c.dueLabel} is on the board.`,
+    ] },
+  { id: "week_progress", tier: "context",
+    when: (c) => c.underGoal && !c.trainedToday,
+    lines: [
+      (c) => c.remaining === 1
+        ? `${c.trainedThisWeek} in this week. One more hits your number.`
+        : `${c.trainedThisWeek} in this week. Keep it rolling.`,
+    ] },
+  { id: "fresh_week", tier: "context",
+    when: (c) => c.freshWeek && !c.trainedToday && !c.isMonday,
+    lines: [`Clean slate this week.`, `Nothing logged yet this week.`] },
+  { id: "week_kickoff", tier: "context",
+    when: (c) => c.isMonday && !c.trainedToday,
+    lines: [`New week. Let's start it clean.`, `Monday. Set the tone.`] },
+  { id: "goal_hit", tier: "context",
+    when: (c) => c.hitGoal && !c.trainedToday,
+    lines: [`You hit your number this week. Here for extra?`, `Week's done on paper. Anything extra?`] },
+  { id: "returning_today", tier: "context",
+    when: (c) => c.trainedToday,
+    lines: [`You're back. What's up?`, `Round two?`, (c) => `Twice in a day, ${c.name}. What's on your mind?`] },
+
+  // ── generic — warm, curious baseline (frequent) ──
+  { id: "warm", tier: "generic",
+    when: () => true,
+    lines: [
+      `Good to see you.`, `What's the plan?`, `Where do you want to start?`,
+      `Ready when you are.`, `What are we hitting today?`, `What's on your mind?`,
+      (c) => `Good to see you, ${c.name}.`, `Let's get to work.`,
+    ] },
+  { id: "time_morning", tier: "generic",
+    when: (c) => c.hour < 11,
+    lines: [(c) => `Morning, ${c.name}.`, `Morning. Let's get moving.`] },
+  { id: "time_evening", tier: "generic",
+    when: (c) => c.hour >= 19,
+    lines: [`Evening.`, `Winding down, or just getting started?`] },
+  { id: "day_sunday", tier: "generic",
+    when: (c) => c.dow === 0,
+    lines: [(c) => `Happy Sunday, ${c.name}.`] },
+  { id: "day_friday", tier: "generic",
+    when: (c) => c.dow === 5,
+    lines: [`Friday. Good place to be.`] },
+];
+
+function buildCoachGreeting({ userName, now, workoutHistory, coachRotation, rotationCursor, planDaysPerWeek, sessionSeed }) {
+  const name = userName || "there";
+  const d = now instanceof Date ? now : new Date();
+  const goal = Number.isInteger(planDaysPerWeek) ? planDaysPerWeek : 3;
+  const pad = (n) => String(n).padStart(2, "0");
+  const todayStr = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  const weekStart = startOfWeek(d);
+  const hist = Array.isArray(workoutHistory) ? workoutHistory : [];
+  let trainedThisWeek = 0, trainedToday = false;
+  for (const s of hist) {
+    if (!s || !s.date) continue;
+    if (s.date === todayStr) trainedToday = true;
+    const sd = new Date(s.date + "T00:00:00");
+    if (!isNaN(sd) && sd >= weekStart) trainedThisWeek++;
+  }
+  const due = walkRotation(resolveRotation(coachRotation, goal), rotationCursor);
+  const dueLabel = due && due.label ? due.label : null;
+
+  const ctx = {
+    name, dow: d.getDay(), hour: d.getHours(),
+    trainedToday, trainedThisWeek, goal, dueLabel,
+    isMonday: d.getDay() === 1,
+    freshWeek: trainedThisWeek === 0,
+    underGoal: trainedThisWeek > 0 && trainedThisWeek < goal,
+    hitGoal: trainedThisWeek >= goal,
+    remaining: Math.max(0, goal - trainedThisWeek),
+  };
+
+  const resolve = (l) => (typeof l === "function" ? l(ctx) : l);
+  const linesFor = (tier) => COACH_GREETINGS
+    .filter((g) => g.tier === tier && g.when(ctx))
+    .flatMap((g) => g.lines.map(resolve))
+    .filter(Boolean);
+
+  // Cadence seed — stable within a sitting + time bucket, fresh across the
+  // day and across app opens (Session 57 cadence).
+  const hr = d.getHours();
+  const timeBucket = hr < 5 ? 3 : hr < 11 ? 0 : hr < 17 ? 1 : hr < 22 ? 2 : 3;
+  const dayNum = Math.floor((d - new Date(d.getFullYear(), 0, 0)) / 86400000);
+  const seed = dayNum * 4 + timeBucket + hist.length + (Number.isInteger(sessionSeed) ? sessionSeed : 0);
+  const pick = (arr) => arr[((seed % arr.length) + arr.length) % arr.length];
+
+  // Tier weighting: rare events WIN when present; otherwise generic is the
+  // baseline (~3 of 4 openings) with everyday context as seasoning (~1 of 4).
+  const events = linesFor("event");
+  if (events.length) return pick(events);
+  const context = linesFor("context");
+  const generic = linesFor("generic");
+  const wantContext = context.length > 0 && (seed % 4 === 0);
+  const pool = wantContext ? context : (generic.length ? generic : context);
+  return pool.length ? pick(pool) : `What's the plan?`;
+}
+
+function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFocused, onAppendMessage, onUpdateLastMessage, onRespondAsCoach, onStartCoachWorkout, onBuildDebug, onNewChat, onSwitchChat, onDeleteChat, onRenameChat, pendingSeed, onSeedConsumed, workoutHistory, coachRotation, rotationCursor, planDaysPerWeek, planGoal, selectedEquipment }) {
   // Bible §4.7: hard cap on user message length. Keeps one chat message
   // within a single API call's budget and prevents runaway prompts. The
   // counter only appears in the last 100 chars so it doesn't distract
@@ -7375,6 +7512,16 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
   // strictly for input-side gating.
   const [isStreaming, setIsStreaming] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  // Per-message "Why this?" disclosure — Set of message indices whose
+  // programmingNotes rationale is currently expanded. Keyed by index, which is
+  // stable within a chat's render (messages never reorder). Reset on chat
+  // switch so an expanded index can't carry over to a different conversation.
+  const [expandedWhy, setExpandedWhy] = useState(() => new Set());
+  const toggleWhy = (i) => setExpandedWhy((prev) => {
+    const next = new Set(prev);
+    if (next.has(i)) next.delete(i); else next.add(i);
+    return next;
+  });
   // Dogfooding: transient "Copied" feedback for the copy-debug button.
   const [debugCopied, setDebugCopied] = useState(false);
   // Robust clipboard write — prefers the async Clipboard API, falls back to
@@ -7455,14 +7602,47 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
 
   // ─────────────────────────────────────────────────────────────────
 
-  // Cold-start message is derived at render time if the current chat
-  // has no messages yet. Bible §4.5 — real copy is deferred.
-  const coldStart = `Hey ${userName}! I'm your Coach. I see you're focused on building muscle with 3 days per week at a full gym. Want me to build you a workout for today, or do you have a question?`;
-  const messages = chat && chat.messages.length > 0
-    ? chat.messages
-    : [{ role: "coach", text: coldStart }];
+  // Cold-start nudge — shown ONLY on true first-run (the user has never sent
+  // a message to Coach in any chat). It appears as Coach's opening message in
+  // the very first thread, visible before the user types, and persists into
+  // that chat's history once they send. Every empty chat after first-run shows
+  // the bare rotating greeting instead — the cold-start is no longer injected
+  // at the top of every chat.
+  //
+  // Now pulls REAL onboarding data (goal / days per week / equipment) instead
+  // of hardcoded "building muscle · 3 days · full gym". NOTE: the exact wording
+  // of this line is still pending the calm-veteran voice rewrite — this is the
+  // data-correct placeholder, not the final copy.
+  const COACH_GOAL_PHRASE = { build_muscle: "building muscle", lose_weight: "losing weight", gain_strength: "getting stronger", get_lean: "getting lean" };
+  const goalPhrase = COACH_GOAL_PHRASE[planGoal] || "training";
+  const gymLabel = deriveEquipmentLabel(selectedEquipment); // "Full gym" | "Home gym" | "Bodyweight only" | "N items selected" | "No equipment selected"
+  const gymClause = /gym/i.test(gymLabel)
+    ? ` at a ${gymLabel.toLowerCase()}`
+    : gymLabel === "Bodyweight only"
+      ? " with bodyweight only"
+      : ""; // custom / none: omit rather than print awkward grammar
+  const days = Number.isInteger(planDaysPerWeek) ? planDaysPerWeek : 3;
+  const coldStart = `Good to meet you, ${userName}. I'm your Coach. I know what you're after — ${goalPhrase}, ${days} ${days === 1 ? "day" : "days"} a week${gymClause}. Want me to build today's session, or is there something you'd rather talk through first?`;
+  const neverMessagedCoach = !(chats || []).some((c) => (c.messages || []).some((m) => m.role === "user"));
 
   const currentIsEmpty = !chat || chat.messages.length === 0;
+  // First-run: render the cold-start nudge as Coach's first message (visible
+  // before send). Not-first-run empty: render the bare greeting.
+  const showFirstRunNudge = currentIsEmpty && neverMessagedCoach;
+  const showGreeting = currentIsEmpty && !neverMessagedCoach;
+  const messages = (chat && chat.messages.length > 0)
+    ? chat.messages
+    : (showFirstRunNudge ? [{ role: "coach", text: coldStart }] : []);
+
+  // Empty-state greeting. useMemo keeps it stable while the composer input
+  // changes (so it can't reshuffle as the user types); it only recomputes on
+  // a new chat, a new day, or after a workout is logged. Recomputed against
+  // the live rotation/history so the line reflects where the user actually is.
+  const emptyGreeting = useMemo(
+    () => buildCoachGreeting({ userName, now: new Date(), workoutHistory, coachRotation, rotationCursor, planDaysPerWeek, sessionSeed: COACH_SESSION_SEED }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [chat?.id, userName, (workoutHistory || []).length, rotationCursor, planDaysPerWeek]
+  );
   // canSend gates both the button visual and the send call. Disabled while
   // Coach is thinking or streaming so the user can't fire a second message
   // on top of an in-flight reply.
@@ -7478,6 +7658,7 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
       firstTokenTimeoutRef.current = null;
     }
     if (streamIntervalRef.current !== null) {
+      clearTimeout(streamIntervalRef.current);
       clearInterval(streamIntervalRef.current);
       streamIntervalRef.current = null;
     }
@@ -7486,46 +7667,69 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
   // Streaming helper. Given the FULL final text and the metadata for the
   // empty placeholder message to append, this:
   //   1. Appends the placeholder Coach message (with streaming: true).
-  //   2. Starts a setInterval that grows the message's `text` field by
-  //      STREAM_CHARS_PER_TICK each tick.
-  //   3. When the full text has been delivered, clears the interval and
-  //      flips the message's streaming flag to false (which is what the
-  //      renderer reads to decide whether to show the workout CTA button).
+  //   2. Reveals a GROWING PREFIX of the text at word boundaries, in bursts
+  //      of 1-3 words with a variable inter-burst delay (and the occasional
+  //      longer pause). This is the "real-stream feel" interim — it mimics the
+  //      burst-and-pause cadence of true token streaming so words land whole
+  //      instead of smearing in 4-char fixed chunks. (It's still a replay of
+  //      text we already have; real SSE token streaming is the next big task,
+  //      at which point this whole helper is replaced by the live token sink.)
+  //   3. When the full text has been delivered, flips the message's streaming
+  //      flag to false (which is what the renderer reads to decide whether to
+  //      show the workout CTA + footer).
   //
-  // The streaming append uses updateLastCoachMessage to mutate the LAST
-  // message in the chat — which is the one we just appended. If the user
-  // switches chats mid-stream, cancelStream() will fire via the chat-switch
-  // useEffect and the interval will be killed before it can clobber the
-  // wrong chat. (updateLastCoachMessage is also chat-id-scoped on the App
+  // We reveal a prefix of the EXACT string (including the embedded \n the
+  // workout path uses), so the renderer's indexOf("\n") split that materializes
+  // the workout card still works unchanged.
+  //
+  // If the user switches chats mid-stream, cancelStream() fires via the
+  // chat-switch useEffect and kills the pending timer before it can clobber
+  // the wrong chat. (onUpdateLastMessage is also chat-id-scoped on the App
   // side, so even a race wouldn't leak across chats.)
+  const STREAM_BURST_MIN_MS = 42;   // fastest gap between word-bursts
+  const STREAM_BURST_JITTER_MS = 70; // random spread added on top
+  const STREAM_PAUSE_CHANCE = 0.14;  // odds of a longer "thinking" pause
+  const STREAM_PAUSE_MS = 180;       // extra ms when a pause lands
   const streamText = (fullText, placeholder) => {
     onAppendMessage({ ...placeholder, text: "", streaming: true });
-    let i = 0;
     setIsStreaming(true);
-    streamIntervalRef.current = setInterval(() => {
-      i = Math.min(fullText.length, i + STREAM_CHARS_PER_TICK);
-      onUpdateLastMessage({ text: fullText.slice(0, i) });
-      if (i >= fullText.length) {
-        clearInterval(streamIntervalRef.current);
+    // Reveal stops = index just past each whitespace run, plus the end. Walking
+    // these in 1-3 step bursts reveals whole words at a time.
+    const stops = [];
+    for (let k = 0; k < fullText.length; k++) {
+      const c = fullText[k];
+      if (c === " " || c === "\n") stops.push(k + 1);
+    }
+    stops.push(fullText.length);
+    let s = -1;
+    const tick = () => {
+      const burst = 1 + Math.floor(Math.random() * 3);
+      s = Math.min(stops.length - 1, s + burst);
+      const idx = stops[s];
+      onUpdateLastMessage({ text: fullText.slice(0, idx) });
+      if (idx >= fullText.length) {
         streamIntervalRef.current = null;
         onUpdateLastMessage({ streaming: false });
         setIsStreaming(false);
+        return;
       }
-    }, STREAM_TICK_MS);
+      let delay = STREAM_BURST_MIN_MS + Math.random() * STREAM_BURST_JITTER_MS;
+      if (Math.random() < STREAM_PAUSE_CHANCE) delay += STREAM_PAUSE_MS;
+      streamIntervalRef.current = setTimeout(tick, delay);
+    };
+    streamIntervalRef.current = setTimeout(tick, 0);
   };
 
   const send = () => {
     if (!canSend) return;
     const u = input.trim();
     setInput("");
-    // Seed the cold-start on first user message so the persisted chat
-    // history reads coherently when reopened. Note: we check
-    // `chat.messages.length === 0` BEFORE appending the user message so
-    // this branch is true exactly when this is the user's first message
-    // in the current chat — the same condition that picks the leg-day
-    // script below.
-    const isFirstUserMessage = chat.messages.length === 0;
-    if (isFirstUserMessage) {
+    // Persist the cold-start nudge as the opening Coach line ONLY on the
+    // user's very first message to Coach, ever — so it lives in the first
+    // chat's history and nowhere else. (It was previously injected at the top
+    // of EVERY chat's first send.) After first-run, neverMessagedCoach is
+    // false and no cold-start is prepended.
+    if (neverMessagedCoach && chat.messages.length === 0) {
       onAppendMessage({ role: "coach", text: coldStart });
     }
     onAppendMessage({ role: "user", text: u });
@@ -7541,9 +7745,12 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
       setIsThinking(false);
       if (res && res.kind === "workout") {
         const b = coachWorkoutToBubble(res.coachWorkout, (id) => (COACH_LIB_INDEX[id] ? COACH_LIB_INDEX[id].name : id));
-        // Streamed surface = intro + outro prose; the workout block renders
-        // in full at the \n boundary (structured blocks aren't char-chunked).
-        streamText(`${b.intro}\n${b.outro}`, {
+        // Streamed surface = intro prose + the \n that triggers the workout
+        // card to materialize. The outro is intentionally NOT streamed (it's
+        // no longer rendered) — streaming it would just delay isDone, leaving
+        // the card on screen with no Start button for the length of the
+        // invisible outro. The trailing \n is what flips showWorkoutBlock on.
+        streamText(`${b.intro}\n`, {
           role: "coach",
           kind: "workout",
           workout: { title: b.title, exercises: b.exercises },
@@ -7557,6 +7764,101 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
         streamText(COACH_ERROR_TEXT, { role: "coach", kind: "text" });
       }
     });
+  };
+
+  // Regenerate the latest Coach reply — "give me another." Re-fires the most
+  // recent user turn against the history that preceded the current reply, and
+  // streams a fresh Coach message below it. We do NOT replace the existing
+  // message in place (that would mean mutating a non-last message mid-stream,
+  // which fights the last-message-scoped stream path and invites index races);
+  // appending the new take reuses the exact proven send() flow. Gated in the UI
+  // to the last message only, so "the latest user turn" is always the right one
+  // to re-run. No-op while a reply is already in flight.
+  const regenerate = () => {
+    if (!isOnline || isThinking || isStreaming) return;
+    const real = chat ? chat.messages : [];
+    // Find the last user message — that's the turn we're re-answering.
+    let u = null;
+    for (let k = real.length - 1; k >= 0; k--) {
+      if (real[k].role === "user") { u = real[k].text; break; }
+    }
+    if (!u) return;
+    setIsThinking(true);
+    const reqChatId = chat.id;
+    activeGenChatRef.current = reqChatId;
+    onRespondAsCoach(u, real).then((res) => {
+      if (activeGenChatRef.current !== reqChatId) return;
+      setIsThinking(false);
+      if (res && res.kind === "workout") {
+        const b = coachWorkoutToBubble(res.coachWorkout, (id) => (COACH_LIB_INDEX[id] ? COACH_LIB_INDEX[id].name : id));
+        streamText(`${b.intro}\n`, {
+          role: "coach", kind: "workout",
+          workout: { title: b.title, exercises: b.exercises },
+          intro: b.intro, outro: b.outro,
+          coachWorkout: res.coachWorkout,
+        });
+      } else if (res && res.kind === "reply") {
+        streamText(res.message, { role: "coach", kind: "text" });
+      } else {
+        streamText(COACH_ERROR_TEXT, { role: "coach", kind: "text" });
+      }
+    });
+  };
+
+  // ── Coach message footer ────────────────────────────────────────────
+  // The bubble-less Coach text is anchored by this strip beneath it: a small
+  // gold monogram (signature / "this is Coach" / end-of-message marker) plus
+  // context-aware actions. The monogram lives DOWN HERE, not in a left gutter,
+  // so the message text keeps full horizontal width.
+  //   - Workout messages: Regenerate (last msg only) + Why this?
+  //   - Coach text replies: Regenerate (last msg only)
+  //   - Cold-start greeting / legacy messages: monogram only
+  // "Why this?" expands the workout's programmingNotes (D-031) inline — the
+  // rationale already rode in on the message, so there's no round trip.
+  const renderCoachFooter = (m, i) => {
+    const isWorkout = m.kind === "workout";
+    const isCoachText = m.kind === "text";
+    const isLastMsg = i === messages.length - 1 && !isStreaming && !isThinking;
+    const showRegen = (isWorkout || isCoachText) && isLastMsg && isOnline;
+    const notes = isWorkout && m.coachWorkout ? m.coachWorkout.programmingNotes : null;
+    const showWhy = !!notes;
+    const whyOpen = expandedWhy.has(i);
+    const actionStyle = {
+      display: "flex", alignItems: "center", gap: 5,
+      color: COLORS.textSecondary, fontSize: 12.5, cursor: "pointer",
+      background: "transparent", border: "none", padding: "6px 2px", fontFamily: "inherit",
+      WebkitTapHighlightColor: "transparent",
+    };
+    return (
+      <div style={{ marginTop: 13, paddingTop: 12, borderTop: "1px solid #1c1c1c" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 15 }}>
+          <div style={{
+            width: 21, height: 21, borderRadius: "50%", border: "1px solid #5a4a00",
+            flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center",
+          }} aria-label="Coach">
+            <span style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontStyle: "italic", color: COLORS.gold, fontSize: 11, fontWeight: 700 }}>C</span>
+          </div>
+          {showRegen && (
+            <button className="myg-tab-btn" onClick={regenerate} style={actionStyle}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={COLORS.textSecondary} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10" /><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" /></svg>
+              Regenerate
+            </button>
+          )}
+          {showWhy && (
+            <button className="myg-tab-btn" onClick={() => toggleWhy(i)} style={{ ...actionStyle, color: whyOpen ? COLORS.gold : COLORS.textSecondary }}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={whyOpen ? COLORS.gold : COLORS.textSecondary} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" /><line x1="12" y1="17" x2="12.01" y2="17" /></svg>
+              Why this?
+            </button>
+          )}
+        </div>
+        {showWhy && whyOpen && (
+          <div style={{ marginTop: 13, padding: "12px 14px", borderLeft: `2px solid #5a4a00`, background: "#161616", borderRadius: "0 8px 8px 0", animation: "coachReveal 180ms cubic-bezier(0.22,1,0.36,1)" }}>
+            <div style={{ color: COLORS.gold, fontSize: 10.5, letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 7, opacity: 0.8 }}>Coach's reasoning</div>
+            <div style={{ color: "#cfcfcf", fontSize: 13, lineHeight: 1.6 }}>{notes}</div>
+          </div>
+        )}
+      </div>
+    );
   };
 
   // ── Consume a "Ask Coach about this observation" deep-link ─────────
@@ -7642,6 +7944,23 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
     container.scrollTo({ top: container.scrollHeight, behavior: "smooth" });
   }, [messages.length, isThinking]);
 
+  // Keep the bottom pinned WHILE a reply streams. The effect above only fires
+  // on messages.length / isThinking changes; during the word-burst reveal the
+  // array length never changes (we mutate the last message), so without this
+  // the growing text would run off the bottom edge and the user would have to
+  // scroll by hand. Runs every render while streaming, but only re-pins if the
+  // user is already near the bottom — so it never yanks someone who scrolled up
+  // to re-read. No smooth behavior here: per-tick smooth scrolling stutters.
+  useEffect(() => {
+    if (!isStreaming) return;
+    const el = bottomRef.current;
+    if (!el) return;
+    const c = el.parentElement;
+    if (!c) return;
+    const nearBottom = c.scrollHeight - c.scrollTop - c.clientHeight < 140;
+    if (nearBottom) c.scrollTo({ top: c.scrollHeight });
+  });
+
   const chatRelative = (c) => formatRelativeDate(new Date(c.createdAt).toISOString().slice(0, 10));
 
   // Close any open per-row menu when the drawer closes
@@ -7656,6 +7975,7 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
   useEffect(() => {
     setIsThinking(false);
     setIsStreaming(false);
+    setExpandedWhy(new Set());
     cancelStream();
     activeGenChatRef.current = null; // drop any in-flight Coach generation for the old chat
     // cancelStream is stable enough for this purpose (closes over refs).
@@ -7763,18 +8083,19 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
       {/* Messages */}
       <div ref={coachScrollRef} style={{ flex: 1, minHeight: 0, padding: "16px 24px", overflowY: "auto", WebkitOverflowScrolling: "touch", position: "relative" }}>
         <ScrollHint scrollRef={coachScrollRef} />
-        {currentIsEmpty ? (
-          /* ── Empty-state (Option B, Session 47) ──────────────────────
-             Replaces the lone cold-start bubble on a fresh chat. Calm,
-             not full: gold monogram + one prompt line + 3 starter chips.
-             Chips PREFILL the input and focus it (not auto-send) so the
-             user can edit before sending. The cold-start greeting still
-             becomes the first real Coach message once the conversation
-             actually starts (messages[] logic upstream unchanged). */
+        {showGreeting ? (
+          /* ── Empty-state (Session 57) ────────────────────────────────
+             Warm, contextual greeting instead of a fixed command menu. The
+             monogram + one rotating line (day/rotation/week aware) reads like
+             a coach greeting you rather than a tool offering a menu. No chips:
+             the composer + onboarding already carry discoverability. The
+             cold-start greeting still becomes the first real Coach message
+             once the conversation actually starts (messages[] logic upstream
+             unchanged). */
           <div style={{
             minHeight: "100%", display: "flex", flexDirection: "column",
             alignItems: "center", justifyContent: "center",
-            textAlign: "center", padding: "0 24px",
+            textAlign: "center", padding: "0 32px",
           }}>
             <div style={{
               width: 56, height: 56, borderRadius: "50%",
@@ -7785,39 +8106,11 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
             }}>C</div>
             <div style={{
               fontFamily: "Georgia, 'Times New Roman', serif",
-              fontSize: 18, color: COLORS.text, margin: "16px 0 16px",
+              fontSize: 20, lineHeight: 1.4, color: COLORS.text,
+              margin: "18px 0 0", maxWidth: 300,
+              animation: "coachReveal 220ms cubic-bezier(0.22,1,0.36,1)",
             }}>
-              What can I help with?
-            </div>
-            <div style={{
-              display: "flex", flexWrap: "wrap", justifyContent: "center",
-              maxWidth: 280, gap: 0,
-            }}>
-              {[
-                "Build me today\u2019s workout",
-                "I\u2019m short on time",
-                "Check my form",
-              ].map((label) => (
-                <button
-                  key={label}
-                  className="myg-press"
-                  onClick={() => {
-                    setInput(label);
-                    if (textareaRef.current) textareaRef.current.focus();
-                  }}
-                  disabled={!isOnline}
-                  style={{
-                    padding: "10px 16px", margin: 5,
-                    border: `1px solid ${COLORS.border}`,
-                    borderRadius: 20, background: "#161616",
-                    color: isOnline ? "#bbb" : COLORS.inactive,
-                    fontSize: 13, cursor: isOnline ? "pointer" : "default",
-                    transition: "transform 90ms ease-out",
-                  }}
-                >
-                  {label}
-                </button>
-              ))}
+              {emptyGreeting}
             </div>
           </div>
         ) : messages.map((m, i) => {
@@ -7849,68 +8142,69 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
             const showWorkoutBlock = nlIdx >= 0;
             const isDone = m.streaming === false;
             return (
-              <div key={i} style={{ marginBottom: 12 }}>
-                <div style={{ display: "flex", justifyContent: "flex-start" }}>
+              <div key={i} style={{ marginBottom: 14 }}>
+                {/* Intro line — streams in. Coach's plain text sits directly
+                    on the background (no bubble); only the workout block below
+                    gets a frame. */}
+                <div style={{
+                  maxWidth: "94%",
+                  color: COLORS.text,
+                  fontSize: 14, lineHeight: 1.55,
+                  padding: "2px 2px",
+                  marginBottom: showWorkoutBlock ? 13 : 0,
+                }}>{introVisible}</div>
+
+                {/* Workout block — the only Coach output that lives in a card.
+                    Materializes once the \n in the stream buffer is reached.
+                    Coach's File row grammar: gold italic Georgia caps title
+                    over a #242424 hairline, then exercise rows with the sans
+                    scheme on the right. */}
+                {showWorkoutBlock && m.workout && (
                   <div style={{
-                    maxWidth: "92%", padding: "14px 16px", borderRadius: 16,
-                    background: COLORS.card,
-                    color: COLORS.text,
-                    fontSize: 14, lineHeight: 1.5,
-                    borderBottomLeftRadius: 4,
+                    background: "#1A1A1A",
+                    border: "1px solid #242424",
+                    borderRadius: 14,
+                    padding: "14px 15px",
                   }}>
-                    {/* Intro line — streams in */}
-                    <div style={{ marginBottom: showWorkoutBlock ? 12 : 0 }}>{introVisible}</div>
-
-                    {/* Workout block — materializes in full once the \n
-                        in the stream buffer is reached. Coach's File row
-                        grammar: gold italic Georgia caps title over a
-                        #3a2e00 gold hairline, then Georgia 13px label +
-                        sans 12px #aaa scheme, #2a2a2a row dividers. */}
-                    {showWorkoutBlock && m.workout && (
-                      <div>
-                        <div style={{
-                          fontFamily: "Georgia, 'Times New Roman', serif",
-                          fontStyle: "italic",
-                          color: COLORS.gold,
-                          fontSize: 13,
-                          letterSpacing: 2,
-                          textTransform: "uppercase",
-                          paddingBottom: 6,
-                          borderBottom: "1px solid #3a2e00",
-                          marginBottom: 8,
-                        }}>{m.workout.title}</div>
-                        {m.workout.exercises.map((ex, j) => (
-                          <div key={j} style={{
-                            fontFamily: "Georgia, 'Times New Roman', serif",
-                            fontSize: 13,
-                            padding: "6px 0",
-                            borderBottom: j === m.workout.exercises.length - 1 ? "none" : "1px solid #2a2a2a",
-                            display: "flex",
-                            justifyContent: "space-between",
-                            alignItems: "baseline",
-                            gap: 12,
-                          }}>
-                            <span>{ex.name}</span>
-                            <span style={{ color: "#aaa", fontFamily: "-apple-system, system-ui, sans-serif", fontSize: 12, fontVariantNumeric: "tabular-nums" }}>{ex.scheme}</span>
-                          </div>
-                        ))}
+                    <div style={{
+                      display: "flex", justifyContent: "space-between", alignItems: "baseline",
+                      paddingBottom: 9, marginBottom: 4,
+                      borderBottom: "1px solid #242424",
+                    }}>
+                      <span style={{
+                        fontFamily: "Georgia, 'Times New Roman', serif",
+                        fontStyle: "italic",
+                        color: COLORS.gold,
+                        fontSize: 13,
+                        letterSpacing: 2.5,
+                        textTransform: "uppercase",
+                      }}>{m.workout.title}</span>
+                    </div>
+                    {m.workout.exercises.map((ex, j) => (
+                      <div key={j} style={{
+                        fontSize: 14,
+                        padding: "8px 0",
+                        paddingBottom: j === m.workout.exercises.length - 1 ? 0 : 8,
+                        borderBottom: j === m.workout.exercises.length - 1 ? "none" : "1px solid #1d1d1d",
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "baseline",
+                        gap: 12,
+                      }}>
+                        <span style={{ color: "#f0f0f0" }}>{ex.name}</span>
+                        <span style={{ color: "#8a8a8a", fontFamily: "-apple-system, system-ui, sans-serif", fontSize: 12, fontVariantNumeric: "tabular-nums" }}>{ex.scheme}</span>
                       </div>
-                    )}
-
-                    {/* Outro line — streams in after the \n boundary */}
-                    {showWorkoutBlock && (
-                      <div style={{ marginTop: 12 }}>{outroVisible}</div>
-                    )}
+                    ))}
                   </div>
-                </div>
+                )}
 
-                {/* Start This Workout CTA — left-justified directly under
-                    the bubble. Only renders once streaming completes so it
-                    doesn't pop in mid-stream. Exports the CoachWorkout carried
-                    on the message into the logger (Session 56); guards against
-                    legacy persisted messages that predate the schema. */}
+                {/* Start this workout CTA — gold fill, right arrow. Only
+                    renders once streaming completes so it doesn't pop in
+                    mid-stream. Exports the CoachWorkout carried on the message
+                    into the logger (Session 56); guards against legacy
+                    persisted messages that predate the schema. */}
                 {isDone && (
-                  <div style={{ display: "flex", justifyContent: "flex-start", marginTop: 8 }}>
+                  <div style={{ display: "flex", justifyContent: "flex-start", marginTop: 11 }}>
                     <button
                       onClick={() => { if (m.coachWorkout) onStartCoachWorkout(m.coachWorkout); }}
                       style={{
@@ -7923,32 +8217,48 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
                         fontWeight: 600,
                         cursor: "pointer",
                         fontFamily: "inherit",
+                        display: "flex", alignItems: "center", gap: 8,
                       }}
                     >
-                      Start This Workout
+                      Start this workout
+                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={COLORS.bg} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="5" y1="12" x2="19" y2="12" /><polyline points="12 5 19 12 12 19" /></svg>
                     </button>
                   </div>
                 )}
+                {isDone && renderCoachFooter(m, i)}
               </div>
             );
           }
 
-          // ── Default rendering: plain text bubble ─────────────────────
+          // ── Default rendering: user bubble vs. bubble-less Coach text ──
           // Covers user messages, the cold-start, all legacy persisted
-          // messages (no `kind` field), and the "coming soon" reply.
-          // Behavior identical to the pre-mock-reply implementation.
+          // messages (no `kind` field), and conversational Coach replies.
+          // User messages sit in a gray bubble (gold removed — gold is a
+          // sparse accent, not a fill). Coach's plain text renders directly
+          // on the background with no bubble; only the workout block (above)
+          // gets a frame.
           return (
-            <div key={i} style={{ marginBottom: 12, display: "flex", justifyContent: m.role === "user" ? "flex-end" : "flex-start" }}>
-              <div style={{
-                maxWidth: "80%", padding: "12px 16px", borderRadius: 16,
-                background: m.role === "user" ? COLORS.gold : COLORS.card,
-                color: m.role === "user" ? COLORS.bg : COLORS.text,
-                fontSize: 14, lineHeight: 1.5,
-                borderBottomRightRadius: m.role === "user" ? 4 : 16,
-                borderBottomLeftRadius: m.role === "coach" ? 4 : 16,
-              }}>
-                {m.text}
-              </div>
+            <div key={i} style={{ marginBottom: 14, display: "flex", justifyContent: m.role === "user" ? "flex-end" : "flex-start" }}>
+              {m.role === "user" ? (
+                <div style={{
+                  maxWidth: "80%", padding: "12px 16px", borderRadius: 16,
+                  background: "#232323", color: COLORS.text,
+                  fontSize: 14, lineHeight: 1.5,
+                  borderBottomRightRadius: 4,
+                }}>
+                  {m.text}
+                </div>
+              ) : (
+                <div style={{ maxWidth: "94%" }}>
+                  <div style={{
+                    color: COLORS.text,
+                    fontSize: 14, lineHeight: 1.55, padding: "2px 2px",
+                  }}>
+                    {m.text}
+                  </div>
+                  {m.role === "coach" && m.streaming !== true && renderCoachFooter(m, i)}
+                </div>
+              )}
             </div>
           );
         })}
@@ -8078,7 +8388,7 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
               transition: "opacity 0.15s ease",
             }}
           >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={canSend ? COLORS.bg : COLORS.textSecondary} strokeWidth="2.5"><line x1="22" y1="2" x2="11" y2="13" /><polygon points="22 2 15 22 11 13 2 9 22 2" /></svg>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={canSend ? COLORS.bg : COLORS.textSecondary} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="19" x2="12" y2="5" /><polyline points="5 12 12 5 19 12" /></svg>
           </button>
         </div>
       </div>
@@ -12623,7 +12933,6 @@ function TabBar({ active, onTab }) {
         display: "flex", justifyContent: "space-around",
         borderTop: `1px solid ${COLORS.border}`, background: COLORS.bg,
         flexShrink: 0, position: "relative", padding: "8px 0 6px",
-        paddingBottom: "calc(6px + env(safe-area-inset-bottom))",
       }}
     >
       {/* Sliding gold underline. Single-sided accent → no border-radius. */}
@@ -13524,6 +13833,12 @@ export default function MYGFitness() {
           onRenameChat={renameCoachChat}
           pendingSeed={pendingCoachSeed}
           onSeedConsumed={() => setPendingCoachSeed(null)}
+          workoutHistory={workoutHistory}
+          coachRotation={coachRotation}
+          rotationCursor={rotationCursor}
+          planDaysPerWeek={planDaysPerWeek}
+          planGoal={planGoal}
+          selectedEquipment={selectedEquipment}
         />
       );
       case "exercises": return (
@@ -13973,12 +14288,13 @@ export default function MYGFitness() {
   };
 
   return (
-    <div style={{ width: "100vw", height: "100vh", background: COLORS.bg }}>
+    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#0a0a0a", padding: "40px 20px" }}>
       <style>{`
         input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 24px; height: 24px; border-radius: 50%; background: #FFD700; cursor: pointer; border: 3px solid #111111; box-shadow: 0 0 8px rgba(255,215,0,0.4); }
         input[type="range"]::-moz-range-thumb { width: 24px; height: 24px; border-radius: 50%; background: #FFD700; cursor: pointer; border: 3px solid #111111; box-shadow: 0 0 8px rgba(255,215,0,0.4); }
         @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
         @keyframes coachDot { 0%, 60%, 100% { opacity: 0.2; } 30% { opacity: 1; } }
+        @keyframes coachReveal { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
         @keyframes shakeField {
           0%, 100% { transform: translateX(0); }
           15% { transform: translateX(-6px); }
