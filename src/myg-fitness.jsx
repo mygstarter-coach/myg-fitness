@@ -167,6 +167,8 @@ function saveSnapshot(state) {
       rotationCursor: Number.isInteger(state.rotationCursor) ? state.rotationCursor : 0,
       coachRules: Array.isArray(state.coachRules) ? state.coachRules : [],
       coachObservations: Array.isArray(state.coachObservations) ? state.coachObservations : [],
+      // Post-workout questions pin (Finish Flow session).
+      pendingCoachQuestions: state.pendingCoachQuestions || null,
       progressPRs: Array.isArray(state.progressPRs) ? state.progressPRs : [],
       bodyStats: state.bodyStats && typeof state.bodyStats === "object" ? state.bodyStats : null,
       // Coach's File metadata. lastUpdatedAt is shown in the signed footer
@@ -224,6 +226,12 @@ function loadSnapshot() {
       rotationCursor: Number.isInteger(parsed.rotationCursor) && parsed.rotationCursor >= 0 ? parsed.rotationCursor : 0,
       coachRules: Array.isArray(parsed.coachRules) ? parsed.coachRules : null,
       coachObservations: Array.isArray(parsed.coachObservations) ? parsed.coachObservations : null,
+      // Post-workout questions pin (Finish Flow session). One pending set
+      // at a time; a new finish replaces a stale unanswered one.
+      pendingCoachQuestions: parsed.pendingCoachQuestions && typeof parsed.pendingCoachQuestions === "object"
+        && Array.isArray(parsed.pendingCoachQuestions.questions)
+        && Array.isArray(parsed.pendingCoachQuestions.answered)
+        ? parsed.pendingCoachQuestions : null,
       progressPRs: Array.isArray(parsed.progressPRs) ? parsed.progressPRs : null,
       bodyStats: parsed.bodyStats && typeof parsed.bodyStats === "object" ? migrateBodyStats(parsed.bodyStats) : null,
       coachFileOpenedAt: typeof parsed.coachFileOpenedAt === "number" ? parsed.coachFileOpenedAt : null,
@@ -920,12 +928,7 @@ function recentSessionsBlock(workoutHistory) {
 //       preview sandbox makes work without a key.
 //    So the same file runs in the preview for fast iteration AND on Vercel
 //    for phone dogfooding. ───────────────────────────────────────────────
-async function callCoach(systemPrompt, userMessage) {
-  const body = {
-    model: "claude-sonnet-4-6", max_tokens: 2000,
-    system: systemPrompt, messages: [{ role: "user", content: userMessage }],
-  };
-
+async function coachRequest(body) {
   // Path 1: the Vercel proxy. Present only on the deployed site.
   let data = null;
   try {
@@ -960,17 +963,117 @@ async function callCoach(systemPrompt, userMessage) {
     }
     data = await res.json();
   }
-
-  const text = (data.content || []).filter((b) => b.type === "text").map((b) => b.text).join("");
-  return { text, usage: data.usage || null };
+  return data;
 }
 
-const COACH_SYSTEM_PROMPT = `You are Coach, the AI strength & conditioning coach living inside MYG Fitness. You are a chat coach: you talk with the user AND build their workouts. Decide what they need each turn.
+// Runs one tool call defensively: a throwing executor becomes a structured
+// error result the model can read — a bad lookup never kills the turn.
+function coachRunToolSafe(runTool, name, input) {
+  try {
+    const out = runTool(name, input);
+    return JSON.stringify(out == null ? { error: "Tool returned nothing." } : out);
+  } catch (e) {
+    return JSON.stringify({ error: `Tool failed: ${String((e && e.message) || e).slice(0, 200)}` });
+  }
+}
+
+// Session 62: callCoach is now a tool-use loop. Backward compatible — with
+// no opts it is the old single-shot call. With { tools, runTool } the model
+// may request lookups mid-turn; each tool_use round executes locally against
+// live app state and the transcript grows assistant(tool_use) →
+// user(tool_result) until the model answers in text. maxRounds caps the
+// spend (§11 cost defense): past the cap every further tool call gets one
+// "budget exhausted — answer now" result; if the model STILL calls tools
+// after that, we take whatever text exists and stop. Never an infinite loop.
+const COACH_TOOL_MAX_ROUNDS = 5;
+
+async function callCoach(systemPrompt, userMessage, opts = {}) {
+  const { tools = null, runTool = null, maxRounds = COACH_TOOL_MAX_ROUNDS } = opts;
+  const useTools = !!(tools && runTool);
+  const messages = [{ role: "user", content: userMessage }];
+  let usage = null;
+  let exhaustedNoteSent = false;
+  for (let round = 0; ; round++) {
+    const body = {
+      model: "claude-sonnet-4-6", max_tokens: 2000,
+      system: systemPrompt, messages,
+    };
+    if (useTools) body.tools = tools;
+    const data = await coachRequest(body);
+    usage = data.usage || usage;
+    const content = data.content || [];
+    const toolUses = content.filter((b) => b.type === "tool_use");
+    const text = content.filter((b) => b.type === "text").map((b) => b.text).join("");
+    if (!useTools || toolUses.length === 0) return { text, usage };
+    if (exhaustedNoteSent) return { text, usage }; // model ignored the budget note — bail with what we have
+    const budgetLeft = round < maxRounds;
+    messages.push({ role: "assistant", content });
+    messages.push({
+      role: "user",
+      content: toolUses.map((tu) => ({
+        type: "tool_result",
+        tool_use_id: tu.id,
+        content: budgetLeft
+          ? coachRunToolSafe(runTool, tu.name, tu.input)
+          : JSON.stringify({ error: "Tool budget for this turn is used up. Answer now from what you already have." }),
+      })),
+    });
+    if (!budgetLeft) exhaustedNoteSent = true;
+  }
+}
+
+const COACH_SYSTEM_PROMPT = `You are Coach, the AI strength & conditioning coach living inside MYG Fitness. You talk with the user AND build their workouts. Decide what they need each turn.
+
+== WHO YOU ARE ==
+A calm veteran coach. Direct, unhurried, quietly authoritative. You assume the user is a capable adult. Touchstone: a good strength coach or physical therapist — not a hype man, not a cheerleader, not a customer-service bot.
+
+Voice rules:
+- State, don't sell. "Lower body's up when you're ready," not "Time to CRUSH lower body!"
+- Economical. Short sentences. No hype adverbs. No exclamation points except genuine milestones. No emoji.
+- Warmth is earned, not ambient. Ordinary sessions get brief, factual acknowledgment ("Logged. Everything landed where it should."). Showing up is the baseline, not an achievement to applaud on repeat.
+- PRs are the exception — when the user hits a genuine personal best, show real heat. "210 for 8 — that's a bench PR. Hell of a set. The 205 wall is behind you; I'm building from the new number." Genuinely fired up, still adult-to-adult. Never manufactured hype, never emoji.
+- Confident, with a point of view. You make calls. "Bent-over row leads today," not "Do you maybe want to consider rows?"
+- Never guilt. A rest day or missed day is never scolded. A rough session gets perspective, not interrogation: one heavy-feeling day is noise — say so, change nothing, move on.
+- Match the user's energy on bare greetings. "Hey Coach" gets "Hey — what's up?", not an unrequested workout. Wait for intent.
+
+== HOW YOU TALK ==
+- State the what; keep the why out of your prose. Your programming reasoning lives in the workout's programmingNotes field, which the user can open on demand. Do not narrate rationale alongside a prescription. When the user ASKS "why," answer plainly — from the programmingNotes you actually wrote, so your story stays consistent.
+- Never ask a question the logged data already answers, and never ask the user to justify a single-session choice ("why did you go lighter?", "why'd you skip curls?"). One occurrence is noise. Patterns over multiple sessions may earn a question; single events never do.
+- Programming decisions are yours to make, not to poll. "Squat or leg press?" is your call. Questions are for things only the user knows (pain, schedule, preference).
+- Pushback: if the user overrides your programming, push back ONCE with one short reason, offer the modified version, then defer completely. You are not a yes-machine and not a wall.
+- Never reference rest-timer values between sets — that data reflects logging cadence, not real rest. Never mention it.
+- Keep replies short by default. A question deserves an answer, not an essay.
+
+== SCOPE ==
+- Training — programming, exercise selection, form, rep schemes, progression, motivation, equipment, this app: engage fully, with depth.
+- Training-adjacent (sleep, nutrition basics, supplements, recovery, soreness, mobility): answer like a knowledgeable coach — useful, evidence-based, brief. Give real numbers and practical guidance. Point to a doctor only when it turns medical or needs individualized prescription (conditions, medications, chronic problems). Do NOT open with disclaimers on everyday questions; a coach who hedges everything is useless.
+- Pain, injury, medical conditions, medications, mental health: three moves, always — acknowledge it plainly, hand it to the right professional ("that's a PT/doctor call, not mine"), then immediately offer what you CAN do ("meantime I can build around it — want Thursday without knee load?"). Never diagnose, never prescribe, never pretend qualification. Never just say "I can't help" and stop.
+- If the user expresses hopelessness, self-harm, or crisis: respond with exactly this shape, nothing clever: "I'm glad you said something. I'm the wrong tool for this one and I won't pretend otherwise — please talk to someone trained for it: call or text 988. The gym will be here, and so will I, whenever you're ready." Do not improvise beyond it, do not pivot back to training in the same breath.
+- Fully off-topic requests (essays, trivia, code, anything not fitness): brief, warm deflection in character. "Not my lane — I'm your coach. Want to talk training, I'm here."
+- You honor the user's Active Rules absolutely. If the user states a NEW standing rule in chat, honor it for this conversation and acknowledge it — but do not claim you saved it to their file (you can't yet); tell them it holds while you're talking and to add it in Coach's File to make it permanent.
+
+== YOUR TOOLS (the user's real data) ==
+You can look things up mid-reply: a lift's full logged history (get_exercise_history — takes the exercise id from AVAILABLE, verbatim), a past session by exact date or id (get_session_detail), the user's standing rules with dates (get_user_rules_full), what's on file about how they train (get_observations), and their recorded bests (get_benchmarks).
+- Use them whenever the user asks about their own history, numbers, trends, records, a past session, or what you know about them — and before making ANY claim about their data. Never guess or invent a number a tool can fetch.
+- Don't fetch what this message already gives you (profile, rules text, recent session shapes are above). Fetch when you need the detail underneath — sets, weights, dates, trends.
+- A tool error is information: fix the input (pick the right id from AVAILABLE) and retry once, or tell the user plainly that nothing is on record. Never present a guess as data.
+- Keep lookups purposeful — a couple per reply, not a fishing trip.
+- Talk like a coach about what comes back. Never mention tool names, JSON, ids, or internal fields. Translate data into plain training language: "Bench is climbing — 225×6 two weeks ago, 235×5 Friday."
+
+== QUICK REPLIES (tappable chips) ==
+When — and ONLY when — your reply puts a bounded choice in front of the user (a question with 2-4 clear answers, a decision between named options, a confirm/deny), respond as a JSON object instead of plain text:
+{"kind":"text","text":"your message exactly as you would have written it","quickReplies":["First option","Second option"]}
+Rules:
+- 2-4 chips, each 1-4 words, each a complete answer the user could have typed. They are the user's answers, not a menu of features.
+- Chips must map to THIS message only. Never generic ("Build workout", "View stats") unless that is literally the choice you posed.
+- Open conversation, explanations, acknowledgments, greetings: plain text, NO JSON, no chips.
+- Never attach quickReplies to a workout JSON — the app adds workout action chips itself.
+- If the user taps "Swap something" after a workout you built, reply with kind:"text" asking which one, with the workout's exercise names as the chips; when they pick, re-issue the full updated CoachWorkout JSON. If they tap "Make it shorter", re-issue a shorter CoachWorkout (fewer exercises/sets), same focus.
 
 == HOW TO RESPOND (decide every message) ==
-- If the user wants a workout — "build me a leg day", "push", "my next workout", "make me something", or otherwise clearly asking you to program — respond with ONLY the CoachWorkout JSON object specified below. No prose, no markdown, no code fences. Just the JSON.
-- Otherwise — questions, "why did you pick that?", "how many sets?", "thanks", normal chat — respond with a SHORT, plain conversational message as ordinary TEXT (not JSON). Talk like a knowledgeable coach: direct, brief, no fluff. When they ask about a workout you just built, explain it using your own programmingNotes from it.
-- You are a strength coach, not a doctor or therapist. If asked something clearly outside training (injury diagnosis, medical conditions, medications, mental health, or unrelated off-topic requests), keep it brief, don't pretend to be qualified, and steer warmly back to training. Within training, engage fully.
+- User wants a workout built ("build me a leg day", "push", "my next workout") -> respond with ONLY the CoachWorkout JSON object below. No prose, no markdown, no code fences.
+- Your reply poses a bounded 2-4 option choice -> the kind:"text" JSON object above. Nothing outside the JSON.
+- Everything else -> plain conversational text. No JSON, no fences.
 
 == When building a workout ==
 You generate ONE workout from the user's profile, the focus they want (infer it from their message and their split), and ONLY the exercises available to them.
@@ -1000,7 +1103,7 @@ You generate ONE workout from the user's profile, the focus they want (infer it 
 - setType is ONLY "warmup" or "working". Never drop/amrap/cluster/etc.
 - Every set has a concrete integer targetReps.
 - NEVER prescribe weight — the logger owns load.
-- programmingNotes is REQUIRED and never empty.
+- programmingNotes is REQUIRED and never empty. Write it as the real reason you built this session this way — it is what you will quote when the user asks "why."
 - Obey the user's Active Rules absolutely, and interpret them LITERALLY:
   · A rule naming a movement applies only to that EXACT movement, not its family — "no deadlifts" bans Deadlift, but not Romanian Deadlift or Rack Pull.
   · A rule scoped to a day type ("every Pull/Back day", "every leg day") fires ONLY when the user's FOCUS literally matches that day type. It does NOT apply to Full Body, Upper Body, or any composite focus just because that focus includes the muscle's work. A Full Body day is not a Pull/Back day.
@@ -1015,7 +1118,7 @@ The only hard rule:
 Beyond that, treat movements by their role:
 - STAPLE COMPOUNDS (e.g. barbell bench, squat, barbell row, overhead press) are the lifts the user PROGRESSES on. Program them REGULARLY — a given staple should recur roughly every 2-3 sessions for its focus, because a user can only build strength on a lift they train consistently. Do NOT rotate a staple out just because it appeared recently; rotate it only to avoid a back-to-back repeat, then bring it back. A great staple done every 2nd-3rd session is correct; a great staple appearing once in six sessions is WRONG. Most variety should come from which staple leads and from the accessory slots — not from benching the user away from barbell bench.
 - ROTATE THE LEAD across sessions: do not open with the same compound every time. If the user benched first last session, open with incline or another press this time, and feel free to vary the order of the compounds session to session. The lead movement and variant must never be identical two sessions running. On a composite day (Upper, Full Body, Push, Pull) it is fine to open with the primary press most sessions, but occasionally lead with a different movement category — a row or a shoulder press rather than a chest press — for variety.
-- ACCESSORIES & ISOLATION: vary the MOVEMENT for variety only where real alternatives exist. When a muscle has just one suitable isolation (quads → Leg Extension, hamstrings → Leg Curl, side delts → Lateral Raise), keep using it every session — that is correct programming, not repetition. For every exercise pick the single most natural variant for it, and use ONLY a variant label that is listed under that exact exercise. Never swap a variant just to be different, and NEVER pair an exercise with a variant that belongs to a different exercise.
+- ACCESSORIES & ISOLATION: vary the MOVEMENT for variety only where real alternatives exist. When a muscle has just one suitable isolation (quads -> Leg Extension, hamstrings -> Leg Curl, side delts -> Lateral Raise), keep using it every session — that is correct programming, not repetition. For every exercise pick the single most natural variant for it, and use ONLY a variant label that is listed under that exact exercise. Never swap a variant just to be different, and NEVER pair an exercise with a variant that belongs to a different exercise.
 
 Mention the rotation choice in programmingNotes (e.g. "leading with front squat this session since the last two opened on back squat").
 If NO recent sessions are provided, build the single best session for this focus from scratch (lead with the top staple).
@@ -1024,7 +1127,7 @@ If NO recent sessions are provided, build the single best session for this focus
 slot order: primary compound(s) first, then accessories, then isolation/finishers.
 - The real target is WEEKLY volume per muscle: about 10-20 hard working sets per muscle PER WEEK. That weekly total is the primary driver of growth — no single session is. Within ONE session a muscle gets the most from roughly 6-10 hard sets; returns fall off beyond that in a single session.
 - SIZE THE SESSION BY FREQUENCY:
-  · Single-muscle "bro-split" day (Chest, Shoulders, Arms): the muscle is likely trained only ~once this week, so program toward the higher end — about 10-14 sets for it (≈ 4-6 exercises) — to approach the weekly target in one session, accepting this is less efficient than spreading it. BACK is large and multi-region — allow 6-7 exercises.
+  · Single-muscle "bro-split" day (Chest, Shoulders, Arms): the muscle is likely trained only ~once this week, so program toward the higher end — about 10-14 sets for it (~4-6 exercises) — to approach the weekly target in one session, accepting this is less efficient than spreading it. BACK is large and multi-region — allow 6-7 exercises.
   · Multi-muscle day in a higher-frequency split (Push, Pull, Upper, Lower, Full Body, Legs — typically each muscle 2+ times/week): keep each session leaner, about 6-9 sets per muscle (5-7 exercises total), letting weekly volume accumulate across the week's sessions.
 - COVER THE WHOLE FOCUS: distribute slots across ALL the muscle groups the focus trains — do not over-concentrate on one. Upper Body trains chest, back, shoulders AND arms, so include at least one direct arm movement (a curl or a triceps movement) and do NOT stack more than ~2 shoulder movements. Push includes triceps and Pull includes biceps — give each at least one direct arm movement too.
 - NEVER pad to hit a number. If quality movements run out, do fewer quality sets — never add low-value filler to fill slots.
@@ -1034,7 +1137,7 @@ Hypertrophy occurs across a WIDE rep range (roughly 5-30 reps) when sets are tak
 EFFORT is the real driver: take working sets close to failure — about 1-3 reps in reserve. Training to absolute failure is NOT required and adds fatigue without clear extra growth.
 1-2 warmup sets on the heavy compounds only; isolations need no warmups.
 
-Now respond to the user: a JSON workout if they want one, plain conversational text otherwise.`;
+Now respond: a CoachWorkout JSON if they want a workout, a kind:"text" JSON if you are posing a bounded choice, plain conversational text otherwise — always in the voice defined above.`;
 
 // ── CoachWorkout -> active-workout converter ────────────────────────
 function buildActiveWorkoutFromCoach(coachWorkout, workoutHistory, customExercises, now) {
@@ -1077,6 +1180,21 @@ function buildActiveWorkoutFromCoach(coachWorkout, workoutHistory, customExercis
     workoutName: (typeof coachWorkout.workoutName === "string" && coachWorkout.workoutName.trim())
       ? coachWorkout.workoutName.trim() : deriveWorkoutName(newExercises, now),
     startTime: now, restTimer: null, nameWasEdited: true,
+    // ── Finish Flow inputs (this session) ──
+    // fromCoach drives the D-100 rotation-cursor advance-on-completion.
+    // prescription is the D-013 stored-separately snapshot of what Coach
+    // prescribed — the future D-032 prescribed-vs-logged diff consumes it,
+    // and classifySessionMode() reads it today for the A/B/C tag. Both
+    // ride the activeWorkout through the localStorage snapshot (the
+    // serializer spreads ...w) and are copied onto the committed session
+    // at Finish.
+    fromCoach: true,
+    prescription: {
+      workoutName: coachWorkout.workoutName || null,
+      programmingNotes: coachWorkout.programmingNotes || null,
+      prescribedExercises: coachWorkout.prescribedExercises || [],
+      prescribedAt: now.toISOString(),
+    },
   };
 }
 
@@ -1159,7 +1277,326 @@ ${chatText}
 User's new message: ${ctx.userMessage}`;
 }
 
+// ── Coach READ TOOLS (Session 62) ────────────────────────────────────
+// Coach's first real data access: five read-only tools the model can call
+// mid-turn via the tool-use loop in callCoach. Executors are pure
+// (input, state) → plain object so the Node harness tests them without
+// React. state = { workoutHistory, customExercises, coachRules,
+// coachObservations, progressPRs }.
+//
+// Locked rules (Session 62):
+// - Fail loud, never guess: unknown ids/dates return a structured error
+//   plus honest candidates — the model retries; nothing fuzzy-matches.
+// - Humanized, never raw: tier integers, e1RM vocabulary, and internal
+//   field names never appear in values Coach might quote. Trends are
+//   deterministic pre-computed summaries in plain training language.
+// - No anchor_status yet: the D-070 engine doesn't exist, so these tools
+//   return real history + a computed trend — never simulated anchor states.
+
+const COACH_TOOL_DEFS = [
+  {
+    name: "get_exercise_history",
+    description: "Logged history for one exercise across all its variants: per-session sets (weight/reps/type), dates, and a pre-computed strength trend. Use the exercise id exactly as listed in AVAILABLE EXERCISES.",
+    input_schema: {
+      type: "object",
+      properties: {
+        exercise_id: { type: "string", description: "Exercise id from AVAILABLE EXERCISES, verbatim (e.g. \"bench_press\")." },
+        last_n: { type: "integer", description: "How many most-recent sessions to return (default 5, max 10)." },
+      },
+      required: ["exercise_id"],
+    },
+  },
+  {
+    name: "get_session_detail",
+    description: "Full detail of one past workout session — every exercise, every set, duration, volume, and the programming notes if Coach prescribed it. Address by exact session_id or exact date (YYYY-MM-DD).",
+    input_schema: {
+      type: "object",
+      properties: {
+        session_id: { type: "string", description: "Exact session id." },
+        date: { type: "string", description: "Exact date, YYYY-MM-DD. If multiple sessions share the date, all are returned." },
+      },
+    },
+  },
+  {
+    name: "get_user_rules_full",
+    description: "The user's standing rules with the date each was added.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "get_observations",
+    description: "Everything on file about how this user trains — noted patterns and stated preferences, each with a plain-language status, the sessions it came from, and the underlying signal.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "get_benchmarks",
+    description: "The user's recorded bests: all-time PRs and first-logged baselines per lift, with dates.",
+    input_schema: { type: "object", properties: {} },
+  },
+];
+
+function coachMsToDate(ms) {
+  const d = new Date(ms);
+  return isNaN(d.getTime()) ? null : toISODate(d);
+}
+
+// Best working set of a session's sets for one exercise. Weighted lifts
+// score via the rep-capped Epley helper (D-087); pure-bodyweight sessions
+// fall back to best working reps (score 0 marks the reps-only case).
+function coachBestWorkingSet(sets) {
+  const working = (sets || []).filter((s) => s.type !== "warmup" && Number(s.reps) > 0);
+  if (!working.length) return null;
+  const weighted = working.filter((s) => Number(s.weight) > 0);
+  if (weighted.length) {
+    let best = weighted[0];
+    for (const s of weighted) {
+      if (e1rm(Number(s.weight), Number(s.reps)) > e1rm(Number(best.weight), Number(best.reps))) best = s;
+    }
+    return { weight: Number(best.weight), reps: Number(best.reps), score: e1rm(Number(best.weight), Number(best.reps)) };
+  }
+  let best = working[0];
+  for (const s of working) if (Number(s.reps) > Number(best.reps)) best = s;
+  return { weight: 0, reps: Number(best.reps), score: 0 };
+}
+
+// Humanized trend line across chronological session points [{ best }].
+// Direction verdict comes from the capped-Epley score engine-side; the
+// string shows only real W×R values — internal vocabulary never leaks.
+function coachTrendLine(points) {
+  const pts = (points || []).filter((p) => p.best);
+  if (pts.length < 2) return null;
+  const weighted = pts.filter((p) => p.best.score > 0);
+  const use = weighted.length >= 2 ? weighted : pts;
+  const scores = use.map((p) => (p.best.score > 0 ? p.best.score : p.best.reps));
+  const seq = use
+    .map((p) => (p.best.score > 0 ? `${p.best.weight}×${p.best.reps}` : `BW×${p.best.reps}`))
+    .join(" → ");
+  const first = scores[0];
+  const last = scores[scores.length - 1];
+  if (!first) return null;
+  const pct = ((last - first) / first) * 100;
+  const dir =
+    pct > 1.5 ? `trending up (~${pct.toFixed(1)}% over the span)`
+    : pct < -1.5 ? `trending down (~${Math.abs(pct).toFixed(1)}% over the span)`
+    : "holding steady";
+  return `${seq} — ${dir}`;
+}
+
+// Trends are PER VARIANT (§8.5/§12.7 — strength lives at the variant level;
+// a barbell bench and a DB bench are different anchors). Mixing variants in
+// one trend line produced a false "trending down 60%" in dogfooding-shaped
+// data — this grouping is the fix, not an optimization.
+function coachVariantTrends(matches, lastN) {
+  const byVariant = new Map();
+  for (const m of matches) {
+    if (!byVariant.has(m.variant)) byVariant.set(m.variant, []);
+    byVariant.get(m.variant).push(m);
+  }
+  const lines = [];
+  for (const [variant, list] of byVariant) {
+    const recent = list.slice(-lastN);
+    const t = coachTrendLine(recent);
+    if (t) lines.push(`${variant}: ${t}.`);
+    else if (recent.length === 1 && recent[0].best) {
+      const b = recent[0].best;
+      lines.push(`${variant}: one session on record — ${b.score > 0 ? `${b.weight}×${b.reps}` : `BW×${b.reps}`} (nothing to trend yet).`);
+    }
+  }
+  return lines;
+}
+
+function coachToolExerciseHistory(input, state) {
+  const id = String(input.exercise_id || "").trim();
+  const lastN = Math.max(1, Math.min(10, Number(input.last_n) || 5));
+  const libHit = COACH_LIB_INDEX[id] ? { id, name: COACH_LIB_INDEX[id].name } : null;
+  const customHit = !libHit ? (state.customExercises || []).find((c) => c.id === id) : null;
+  const exDef = libHit || (customHit ? { id: customHit.id, name: customHit.name } : null);
+  if (!exDef) {
+    const tokens = id.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+    const near = [];
+    for (const ex of EXERCISE_LIBRARY) {
+      const hay = (ex.id + " " + ex.name).toLowerCase();
+      if (tokens.some((t) => hay.includes(t))) near.push({ exercise_id: ex.id, name: ex.name });
+      if (near.length >= 6) break;
+    }
+    return { error: `No exercise with id "${id}". Use an id from AVAILABLE EXERCISES, verbatim.`, did_you_mean: near };
+  }
+  const matches = [];
+  for (const session of state.workoutHistory || []) {
+    for (const ex of session.exercises || []) {
+      const resolved = resolveSessionExercise(ex, state.customExercises || []);
+      if (!resolved || resolved.exerciseId !== exDef.id) continue;
+      matches.push({
+        date: session.date,
+        session_name: session.name,
+        variant: ex.variantLabel,
+        sets: (ex.sets || []).map((s) => ({ weight: s.weight, reps: s.reps, type: s.type })),
+        best: coachBestWorkingSet(ex.sets),
+      });
+    }
+  }
+  matches.sort((a, b) => String(a.date).localeCompare(String(b.date)));
+  const recent = matches.slice(-lastN);
+  const trends = coachVariantTrends(matches, lastN);
+  return {
+    exercise: exDef.name,
+    sessions_on_record: matches.length,
+    showing_most_recent: recent.length,
+    history: recent.map(({ best, ...rest }) => rest),
+    trend_note: "Best working set per session, oldest → newest, tracked separately per variant — different variants are different lifts, never compare across them.",
+    trends: trends.length ? trends : (matches.length === 0 ? ["Never logged."] : []),
+  };
+}
+
+function coachSessionToDetail(s) {
+  let workingSets = 0;
+  let volume = 0;
+  for (const ex of s.exercises || []) {
+    for (const t of ex.sets || []) {
+      if (t.type !== "warmup") workingSets++;
+      volume += (Number(t.weight) || 0) * (Number(t.reps) || 0);
+    }
+  }
+  const source = s.fromCoach
+    ? s.mode === "A"
+      ? "coach-prescribed, followed as written"
+      : s.mode === "B"
+      ? "coach-prescribed, user adjusted it"
+      : "coach-prescribed"
+    : "no prescription on record — the user's own session, treat it as canonical, not a deviation";
+  return {
+    session_id: s.id,
+    name: s.name,
+    date: s.date,
+    duration_min: s.durationSec ? Math.round(s.durationSec / 60) : null,
+    source,
+    coach_notes_at_prescription: (s.prescription && s.prescription.programmingNotes) || null,
+    total_working_sets: workingSets,
+    total_volume_lb: Math.round(volume),
+    exercises: (s.exercises || []).map((ex) => ({
+      name: ex.name,
+      variant: ex.variantLabel,
+      sets: (ex.sets || []).map((t) => ({ weight: t.weight, reps: t.reps, type: t.type })),
+    })),
+  };
+}
+
+function coachToolSessionDetail(input, state) {
+  const hist = state.workoutHistory || [];
+  const wantId = input.session_id ? String(input.session_id).trim() : null;
+  const wantDate = input.date ? String(input.date).trim() : null;
+  if (!wantId && !wantDate) return { error: "Provide session_id or date (YYYY-MM-DD)." };
+  const found = wantId ? hist.filter((s) => s.id === wantId) : hist.filter((s) => s.date === wantDate);
+  if (!found.length) {
+    return {
+      error: wantId ? `No session with id "${wantId}".` : `No session logged on ${wantDate}.`,
+      recent_sessions: hist.slice(0, 10).map((s) => ({ session_id: s.id, date: s.date, name: s.name })),
+    };
+  }
+  return { sessions: found.map(coachSessionToDetail) };
+}
+
+function coachToolRules(input, state) {
+  const rules = (state.coachRules || []).map((r) =>
+    typeof r === "string"
+      ? { rule: r, added_on: null }
+      : { rule: r.text, added_on: r.createdAt ? coachMsToDate(r.createdAt) : null }
+  );
+  return { count: rules.length, rules };
+}
+
+// D-071 humanized status strings — adapted for the D-123 provisional
+// tiering (tier-2 includes direct survey statements, not only twice-seen
+// patterns). Raw tier integers never appear in the return.
+function coachObservationStatus(o) {
+  const monthsSince = (ms) => Math.max(0, Math.round((Date.now() - ms) / (30 * 24 * 3600 * 1000)));
+  if (o.encodedAs === "occasional") {
+    const age = o.encodedAt ? ` — encoded ${monthsSince(o.encodedAt)} month(s) ago` : "";
+    const refresh = o.refreshDueAt && Date.now() > o.refreshDueAt ? "; refresh due — worth re-checking with the user" : "";
+    return `occasional-rotation preference — user chose "keep as occasional"${age}${refresh}`;
+  }
+  if (o.tier >= 3) {
+    const age = o.createdAt ? ` — established ${monthsSince(o.createdAt)} month(s) ago` : "";
+    return `standing pattern${age}`;
+  }
+  if (o.tier === 2) return "noted — a repeated sighting or the user's own direct statement; okay to raise when relevant, not a standing preference";
+  return "watching — single occurrence, keep silent";
+}
+
+function coachToolObservations(input, state) {
+  const obs = [...(state.coachObservations || [])].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  return {
+    count: obs.length,
+    observations: obs.map((o) => ({
+      note: o.text,
+      status: coachObservationStatus(o),
+      filed_on: o.createdAt ? coachMsToDate(o.createdAt) : null,
+      from_sessions: (o.provenance && o.provenance.sessions) || [],
+      detail: (o.provenance && o.provenance.signal) || null,
+    })),
+  };
+}
+
+function coachToolBenchmarks(input, state) {
+  const rows = [...(state.progressPRs || [])].sort((a, b) => (b.achievedAt || 0) - (a.achievedAt || 0));
+  return {
+    count: rows.length,
+    benchmarks: rows.map((p) => ({
+      exercise: p.exerciseName,
+      best: p.value,
+      kind: p.isPR ? "all-time PR" : "first-logged baseline",
+      achieved_on: p.achievedAt ? coachMsToDate(p.achievedAt) : null,
+    })),
+  };
+}
+
+function executeCoachTool(name, input, state) {
+  const args = input || {};
+  switch (name) {
+    case "get_exercise_history": return coachToolExerciseHistory(args, state);
+    case "get_session_detail": return coachToolSessionDetail(args, state);
+    case "get_user_rules_full": return coachToolRules(args, state);
+    case "get_observations": return coachToolObservations(args, state);
+    case "get_benchmarks": return coachToolBenchmarks(args, state);
+    default: return { error: `Unknown tool "${name}".` };
+  }
+}
+
 const COACH_ERROR_TEXT = "I had trouble putting that together. Mind trying again?";
+
+// ── Coach reply parser (Session 60) — pure, testable ────────────────
+// The model returns one of three shapes: a CoachWorkout JSON, a
+// {kind:"text", text, quickReplies} JSON (bounded-choice replies that
+// carry tappable chips), or plain prose. This ladder decides which,
+// with graceful degradation: malformed chips -> plain text reply;
+// malformed workout -> loud error (fail-loud contract, D-001/§4).
+function sanitizeQuickReplies(arr) {
+  if (!Array.isArray(arr)) return null;
+  const out = [];
+  for (const v of arr) {
+    if (typeof v !== "string") continue;
+    const t = v.trim();
+    if (!t || t.length > 32) continue;
+    if (out.some((x) => x.toLowerCase() === t.toLowerCase())) continue;
+    out.push(t);
+    if (out.length === 4) break;
+  }
+  return out.length ? out : null;
+}
+function parseCoachReply(rawText, validate) {
+  const clean = (rawText || "").replace(/```json/g, "").replace(/```/g, "").trim();
+  let obj = null;
+  if (clean.startsWith("{")) { try { obj = JSON.parse(clean); } catch { obj = null; } }
+  if (obj && obj.kind === "workout") {
+    const v = validate(obj);
+    if (!v.ok) { console.warn("[coach] schema violations", v.errors); return { kind: "error" }; }
+    return { kind: "workout", coachWorkout: obj };
+  }
+  if (obj && obj.kind === "text" && typeof obj.text === "string" && obj.text.trim()) {
+    return { kind: "reply", message: obj.text.trim(), quickReplies: sanitizeQuickReplies(obj.quickReplies) };
+  }
+  const message = obj && typeof obj.message === "string" ? obj.message : clean;
+  return { kind: "reply", message: message || COACH_ERROR_TEXT, quickReplies: null };
+}
 
 
 /* Variant key helper: deterministic string derived from a variant's equipment
@@ -1310,27 +1747,43 @@ function normalizeForSearch(s) {
   return s.toLowerCase().replace(/[-\s]+/g, "");
 }
 
+// Relevance score for ranking search results. Higher = better match. Name
+// matches outrank muscle matches, which outrank variant-label matches — so a
+// query like "pull" surfaces Pull-Up above Bicep Curl, whose "Low Pulley"
+// variant merely CONTAINS the substring "pull". 0 means no match. The same
+// fields are consulted as the old boolean matcher, so the set of matching
+// exercises is unchanged — only their order gains a score.
+function searchRelevance(ex, query) {
+  const q = normalizeForSearch(query);
+  if (!q) return 0;
+  const scoreFor = (needle) => {
+    if (!needle) return 0;
+    const nameN = normalizeForSearch(ex.name);
+    // 1 — name matches (strongest → weakest).
+    if (nameN === needle) return 100;             // exact name
+    if (nameN.startsWith(needle)) return 90;      // name begins with query ("pullup" ⊃ "pull")
+    const words = ex.name.split(/[^a-z0-9]+/i).map(normalizeForSearch).filter(Boolean);
+    if (words.some((w) => w.startsWith(needle))) return 75; // a name word begins with query ("Face Pull")
+    if (nameN.includes(needle)) return 55;        // substring anywhere in the name
+    // 2 — muscle matches (medium).
+    if (normalizeForSearch(ex.primary).includes(needle)) return 40;
+    if (ex.secondary && ex.secondary.some((m) => normalizeForSearch(m).includes(needle))) return 30;
+    // 3 — variant-label matches (weakest — this is the "Low Pulley" case).
+    if (ex.variants.some((v) => normalizeForSearch(v.label).includes(needle))) return 10;
+    return 0;
+  };
+  let best = scoreFor(q);
+  // Alias expansion (e.g. "rdl" → "romanian deadlift"), scored one notch below
+  // a direct hit so a real match always wins the tie.
+  const alias = SEARCH_ALIASES[q];
+  if (alias) best = Math.max(best, Math.max(0, scoreFor(normalizeForSearch(alias)) - 5));
+  return best;
+}
+
 function exerciseMatchesSearch(ex, query) {
   const q = normalizeForSearch(query);
   if (!q) return true;
-  // Direct match against name, primary, secondary, variants.
-  if (normalizeForSearch(ex.name).includes(q)) return true;
-  if (normalizeForSearch(ex.primary).includes(q)) return true;
-  if (ex.secondary && ex.secondary.some((m) => normalizeForSearch(m).includes(q))) return true;
-  if (ex.variants.some((v) => normalizeForSearch(v.label).includes(q))) return true;
-  // Alias match — if the query is a known abbreviation, also try its
-  // expansion against the same fields. Avoids false negatives like "rdl"
-  // returning zero results. Lookup key is normalized so "Incline Press",
-  // "incline press", "incline-press", and "InclinePress" all resolve.
-  const alias = SEARCH_ALIASES[q];
-  if (alias) {
-    const a = normalizeForSearch(alias);
-    if (normalizeForSearch(ex.name).includes(a)) return true;
-    if (normalizeForSearch(ex.primary).includes(a)) return true;
-    if (ex.secondary && ex.secondary.some((m) => normalizeForSearch(m).includes(a))) return true;
-    if (ex.variants.some((v) => normalizeForSearch(v.label).includes(a))) return true;
-  }
-  return false;
+  return searchRelevance(ex, query) > 0;
 }
 /* ── Derived history helpers ─────────────────────────────────────
    History was previously stored in a separate MOCK_HISTORY keyed by
@@ -1587,6 +2040,127 @@ function formatSetSummary(set, sep = "×") {
 function formatShortDate(isoDate) {
   const d = new Date(isoDate + "T00:00:00");
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+/* ── Finish Flow helpers (Bible §6.2 / §10.6, built this session) ── */
+
+/* D-086 duration plausibility guard. Duration is best-effort, NOT a Coach
+   signal. Implausible elapsed values (timer left running overnight — S12
+   ran 28h) are discarded at commit rather than stored, so the Finish
+   payoff and history never print a junk number. Plausible window:
+   1 minute to 5 hours of gym time. */
+const DURATION_MIN_SEC = 60;
+const DURATION_MAX_SEC = 5 * 3600;
+function plausibleDurationSec(sec) {
+  return Number.isFinite(sec) && sec >= DURATION_MIN_SEC && sec <= DURATION_MAX_SEC ? sec : null;
+}
+
+/* "52 min" display for history rows; null-safe (guarded duration). */
+function formatDurationMin(sec) {
+  if (!Number.isFinite(sec) || sec <= 0) return null;
+  return `${Math.max(1, Math.round(sec / 60))} min`;
+}
+
+/* PR detection for the Finish payoff. A session set is a PR when its
+   e1RM (Epley, reps capped at 12 per D-087) beats every prior set of the
+   same exercise across all earlier history. Same name-keyed convention as
+   countPRsThisWeek. `history` must NOT yet contain the session being
+   scored (true at Finish time — the session commits after the payoff).
+   Returns [{ name, variantLabel, set: {weight, reps}, prevBest }] —
+   one entry per exercise, the best new set wins. Bodyweight/blank-weight
+   sets are skipped (no e1RM without a load). */
+function detectSessionPRs(session, history) {
+  if (!session || !session.exercises || session.exercises.length === 0) return [];
+  const maxByEx = new Map();
+  for (const w of (history || [])) {
+    for (const ex of (w.exercises || [])) {
+      if (!ex.name) continue;
+      for (const s of (ex.sets || [])) {
+        const w_lb = Number(s.weight);
+        const reps = Number(s.reps);
+        if (!Number.isFinite(w_lb) || !Number.isFinite(reps) || w_lb <= 0 || reps <= 0) continue;
+        const e1 = e1rm(w_lb, reps);
+        if (e1 > (maxByEx.get(ex.name) || 0)) maxByEx.set(ex.name, e1);
+      }
+    }
+  }
+  const prs = [];
+  for (const ex of session.exercises) {
+    if (!ex.name) continue;
+    let best = null;
+    let bestE1 = maxByEx.get(ex.name) || 0;
+    const prior = maxByEx.get(ex.name) || 0;
+    for (const s of (ex.sets || [])) {
+      const w_lb = Number(s.weight);
+      const reps = Number(s.reps);
+      if (!Number.isFinite(w_lb) || !Number.isFinite(reps) || w_lb <= 0 || reps <= 0) continue;
+      const e1 = e1rm(w_lb, reps);
+      if (e1 > bestE1) { bestE1 = e1; best = { weight: w_lb, reps }; }
+    }
+    // Only a PR if the lift had prior history to beat — a first-ever log
+    // is a baseline, not a PR (matches anchor-seeding semantics, D-070).
+    if (best && prior > 0) prs.push({ name: ex.name, variantLabel: ex.variantLabel, set: best, prevBest: prior });
+  }
+  return prs;
+}
+
+/* Mode classification (D-047, naive v1). The real prescribed-vs-logged
+   diff (D-032) is a future session; this stores enough to tell the modes
+   apart. C = no prescription on the session (user-built). A = prescription
+   present and the logged library-exercise set matches it exactly (variant
+   swaps still count as A per S13 dogfooding — we compare exercise ids,
+   not variants). B = prescription present, exercises deviated. */
+function classifySessionMode(session) {
+  const p = session && session.prescription;
+  if (!p || !Array.isArray(p.prescribedExercises)) return "C";
+  const prescribedIds = new Set(
+    p.prescribedExercises
+      .filter((pe) => pe.ref && pe.ref.kind === "library")
+      .map((pe) => pe.ref.exerciseId)
+  );
+  const loggedIds = new Set((session.exercises || []).map((ex) => ex.exerciseId).filter(Boolean));
+  if (prescribedIds.size === loggedIds.size && [...prescribedIds].every((id) => loggedIds.has(id))) return "A";
+  return "B";
+}
+
+/* Demo survey questions for the Finish Flow shell. PLACEHOLDER content —
+   the survey UX (D-049: one question per screen, "1 of N", 2-3 options +
+   "Other..." escape, no per-question skip) is real and shipping now; the
+   question SOURCE swaps to the Coach engines (D-070/D-071 earned questions,
+   materiality bar, tier gates) when those land. Shapes mimic the kinds of
+   questions the real Coach will ask so the flow dogfoods honestly.
+   Budget respected: never more than 2 demo questions. */
+function buildDemoSurveyQuestions(session, prs) {
+  const qs = [];
+  if (!session || !session.exercises || session.exercises.length === 0) return qs;
+  // Q1 — felt-sense on the session's biggest lift (single-session
+  // observation category, §10.10 (b)).
+  let top = null, topVol = -1;
+  for (const ex of session.exercises) {
+    const vol = (ex.sets || []).reduce((sum, s) => {
+      const w = Number(s.weight), r = Number(s.reps);
+      return sum + (Number.isFinite(w) && Number.isFinite(r) ? w * r : 0);
+    }, 0);
+    if (vol > topVol) { topVol = vol; top = ex; }
+  }
+  if (top) {
+    qs.push({
+      id: "demo_feltsense",
+      text: `${top.name} — how did the working sets feel?`,
+      options: ["Had more in the tank", "Right at the edge", "Ground me down"],
+      obsLabel: `${top.name} working sets`,
+    });
+  }
+  // Q2 — only when a PR fired (earned question; scope-explicit per D-044).
+  if (prs && prs.length > 0) {
+    qs.push({
+      id: "demo_pr",
+      text: `PR on ${prs[0].name} — planned push, or it just moved?`,
+      options: ["Planned it", "It just moved", "Not sure it was real"],
+      obsLabel: `${prs[0].name} PR`,
+    });
+  }
+  return qs;
 }
 
 /* ── Shared Components ───────────────────────────────────────── */
@@ -1850,9 +2424,9 @@ function WelcomeScreen({ onGetStarted, onSignIn }) {
   useEffect(() => { setTimeout(() => setLogoV(true), 200); setTimeout(() => setContentV(true), 900); }, []);
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "0 32px", position: "relative" }}>
-      {/* V.19 marker — temporary build indicator. Bump with each push to
+      {/* V.20 marker — temporary build indicator. Bump with each push to
           verify cache isn't serving stale code. Remove before shipping. */}
-      <div style={{ position: "absolute", top: 16, right: 20, color: COLORS.textSecondary, fontSize: 11, fontWeight: 500, letterSpacing: 1, opacity: 0.7 }}>V.19</div>
+      <div style={{ position: "absolute", top: 16, right: 20, color: COLORS.textSecondary, fontSize: 11, fontWeight: 500, letterSpacing: 1, opacity: 0.7 }}>V.20</div>
       <div style={{ position: "absolute", top: "40%", textAlign: "center", opacity: logoV ? 1 : 0, transform: logoV ? "translateY(-50%) scale(1)" : "translateY(-50%) scale(1.08)", transition: "all 0.9s cubic-bezier(0.22,1,0.36,1)" }}>
         <h1 style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 92, fontWeight: 700, color: COLORS.gold, margin: 0, letterSpacing: 8 }}>MYG</h1>
       </div>
@@ -2741,14 +3315,15 @@ function sumVolumeThisWeek(history) {
     if ((w.date || "") < mondayISO) continue;
     for (const ex of (w.exercises || [])) {
       for (const s of (ex.sets || [])) {
-        // Only count completed sets that have both weight and reps.
         // Warmup sets count toward volume (Strong-app convention) —
         // a deliberate decision that may be revisited if dogfooding
         // surfaces a complaint. Today: volume is "lb moved" regard-
-        // less of set type.
+        // less of set type. (History sets are already done-filtered at
+        // commit — the old `!s.completed` guard here was dead code that
+        // skipped EVERY set, zeroing this stat. Fixed in the Finish
+        // Flow session.)
         const w_lb = Number(s.weight);
         const reps = Number(s.reps);
-        if (!s.completed) continue;
         if (!Number.isFinite(w_lb) || !Number.isFinite(reps)) continue;
         total += w_lb * reps;
       }
@@ -2782,11 +3357,13 @@ function countPRsThisWeek(history) {
       const name = ex.name;
       if (!name) continue;
       for (const s of (ex.sets || [])) {
-        if (!s.completed) continue;
+        // (History sets are already done-filtered at commit — a stale
+        // `!s.completed` guard here skipped every set and zeroed the
+        // count. Removed in the Finish Flow session.)
         const w_lb = Number(s.weight);
         const reps = Number(s.reps);
         if (!Number.isFinite(w_lb) || !Number.isFinite(reps) || w_lb <= 0 || reps <= 0) continue;
-        const e1 = w_lb * (1 + reps / 30);
+        const e1 = e1rm(w_lb, reps);
         const prior = maxByEx.get(name) || 0;
         if (e1 > prior) {
           maxByEx.set(name, e1);
@@ -2869,7 +3446,14 @@ function computeStreak(history) {
 }
 
 function toISODate(d) {
-  return d.toISOString().slice(0, 10);
+  // Local calendar date (YYYY-MM-DD). Must NOT use toISOString(): that
+  // converts to UTC, so an evening workout west of UTC (or a morning one
+  // east of it) gets stamped a day off, desyncing streak / this-week /
+  // Coach-greeting checks that anchor "today" from the local clock.
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }
 
 /* ── Workout Tab ─────────────────────────────────────────────────
@@ -3622,9 +4206,19 @@ function WorkoutTab({
   finishedSession, customExercises = [],
   restTimerMode, restCountdownTarget, onChangeRestTimerMode, onChangeRestCountdownTarget,
   onStartEmpty, onUpdateWorkout, onMinimize, onCancel, onFinish,
-  onCommitFinished, onDiscardFinished,
+  onCommitFinished, onCommitFinishedToCoach, onDiscardFinished, onUpdateFinished,
   onRepeatWorkout, onTabChange,
 }) {
+  // Hooks live ABOVE the early return (§15 hygiene fix, this session —
+  // the prior early-return-above-useRef ordering was verified benign but
+  // fragile; hoisting is the one-line fix the Bible prescribed).
+  // Ref on the outer container — passed down to ActiveLogger so its drag
+  // math can measure the actual rendered height and compute MAX_SHEET_TOP
+  // exactly. Hardcoded constants were a few px off (TabBar/PhoneFrame
+  // metrics are font-dependent), causing the sheet to overshoot its
+  // resting position during drag.
+  const containerRef = useRef(null);
+  const workoutScrollRef = useRef(null);
 
   // Finish summary screen takes priority — once user taps Finish, that's
   // a deliberate action and we want to show the payoff before anything else.
@@ -3632,8 +4226,11 @@ function WorkoutTab({
     return (
       <FinishSummaryScreen
         session={finishedSession}
+        history={history}
         onDone={onCommitFinished}
+        onDoneToCoach={onCommitFinishedToCoach}
         onDiscard={onDiscardFinished}
+        onUpdateSession={onUpdateFinished}
       />
     );
   }
@@ -3649,14 +4246,6 @@ function WorkoutTab({
   // active (the messaging would be wrong), but the Start Empty button
   // stays visible so it can be tapped after minimizing — that triggers
   // the conflict modal from step 2.
-  // Ref on the outer container — passed down to ActiveLogger so its drag
-  // math can measure the actual rendered height and compute MAX_SHEET_TOP
-  // exactly. Hardcoded constants were a few px off (TabBar/PhoneFrame
-  // metrics are font-dependent), causing the sheet to overshoot its
-  // resting position during drag.
-  const containerRef = useRef(null);
-  const workoutScrollRef = useRef(null);
-
   return (
     <div ref={containerRef} style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, position: "relative" }}>
       <div ref={workoutScrollRef} style={{ flex: 1, padding: "8px 24px 20px", overflowY: "auto", position: "relative" }}>
@@ -3711,7 +4300,8 @@ function WorkoutTab({
                 <span style={{ color: COLORS.textSecondary, fontSize: 12 }}>{formatShortDate(w.date)}</span>
               </div>
               <div style={{ color: COLORS.textSecondary, fontSize: 12, marginBottom: 10, fontVariantNumeric: "tabular-nums" }}>
-                {Math.round(w.durationSec / 60)} min · {volume.toLocaleString()} lbs
+                {/* Duration omitted when the D-086 guard nulled it. */}
+                {formatDurationMin(w.durationSec) ? `${formatDurationMin(w.durationSec)} · ` : ""}{volume.toLocaleString()} lbs
               </div>
               {/* Per-exercise rows: name (variant), sets count, max set */}
               {w.exercises.map((ex, i) => {
@@ -6952,11 +7542,20 @@ function AddExerciseSheet({ userEquipment, customExercises = [], workoutHistory 
   const groups = ["All", "Chest", "Back", "Shoulders", "Arms", "Legs", "Core", "Full Body", "Cardio"];
 
   const base = getExercisesForFilter(filter, customExercises);
-  const filtered = base.filter((e) => {
+  let filtered = base.filter((e) => {
     if (search && !exerciseMatchesSearch(e, search)) return false;
     if (onlyMine && !exerciseHasAnyAvailableVariant(e, userEquipment)) return false;
     return true;
   });
+  // While searching, order by match quality so the exercise NAME wins over a
+  // variant-label substring hit ("pull" → Pull-Up above Bicep Curl). base is
+  // already alphabetical, so equal scores keep alphabetical order.
+  if (search) {
+    filtered = filtered
+      .map((e) => ({ e, s: searchRelevance(e, search) }))
+      .sort((a, b) => b.s - a.s || a.e.name.localeCompare(b.e.name))
+      .map((x) => x.e);
+  }
 
   return (
     <>
@@ -7184,7 +7783,8 @@ function HistoryRecapSheet({ session, onClose, onRepeat }) {
             fontSize: 22, color: COLORS.text, margin: "0 0 4px", fontWeight: 400,
           }}>{session.name}</h2>
           <div style={{ color: COLORS.textSecondary, fontSize: 12 }}>
-            {formatShortDate(session.date)} · {Math.round(session.durationSec / 60)} min · {volume.toLocaleString()} lbs
+            {/* Duration omitted when the D-086 guard nulled it. */}
+            {formatShortDate(session.date)} · {formatDurationMin(session.durationSec) ? `${formatDurationMin(session.durationSec)} · ` : ""}{volume.toLocaleString()} lbs
           </div>
         </div>
         <div style={{ flex: 1, overflowY: "auto", overscrollBehavior: "contain", padding: "0 20px 16px" }}>
@@ -7241,69 +7841,179 @@ function HistoryRecapSheet({ session, onClose, onRepeat }) {
   );
 }
 
-/* ── Finish Summary Screen ────────────────────────────────────────
-   STUB per Bible §6.2 — flagged for a dedicated design session. The real
-   version should feel like a payoff: PRs broken, XP earned, streak update,
-   total volume celebrated. For now this is an honest confirmation showing
-   what got logged so the data committal is at least visible. */
-function FinishSummaryScreen({ session, onDone, onDiscard }) {
+/* ── Finish Summary Screen (Finish Flow; survey moved to Coach tab) ──
+   The payoff moment (Bible §6.2 / §14 Finish Flow), Coach's File
+   grammar (gold spaced-caps section heads, hairline rules, Georgia
+   display, sans + tabular-nums chrome). Sections: SESSION (volume /
+   sets / duration — duration omitted when the D-086 guard nulled it),
+   PRS BROKEN (detectSessionPRs against prior history), LOGGED.
+   Session date is editable (D-086 — default is workout-start date,
+   correctable pre-commit).
+
+   Owner redesign (this session): NO survey screens here. Committing
+   creates the questions PIN in the Coach tab (pin above the composer
+   → bottom sheet — see CoachTab). This screen just points at it:
+   when questions exist, a gold "Coach has N questions →" line above
+   Done commits AND jumps to the Coach tab. Done commits and stays.
+   Either way the workout is saved — questions are never a hostage. */
+function FinishSummaryScreen({ session, history, onDone, onDoneToCoach, onDiscard, onUpdateSession }) {
+  const [editingDate, setEditingDate] = useState(false);
+
+  const empty = session.exercises.length === 0;
   const volume = totalVolumeFromExercises(session.exercises);
   const totalSets = session.exercises.reduce((n, ex) => n + ex.sets.length, 0);
-  const empty = session.exercises.length === 0;
+  const durationLabel = formatDurationMin(session.durationSec);
+  // PRs computed against prior history — the session commits after this
+  // screen, so `history` is exactly "everything before today". The same
+  // two pure functions run again at commit (App) to build the pin.
+  const prs = useMemo(() => detectSessionPRs(session, history), [session.id, history]);
+  const questions = useMemo(() => buildDemoSurveyQuestions(session, prs), [session.id, prs]);
+
+  // Coach's File grammar tokens (Session 49: "Coach's File grammar is
+  // the app's grammar" — first non-Profile surface wearing it).
+  const sectionHead = {
+    fontFamily: "-apple-system, system-ui, sans-serif", fontSize: 13,
+    color: COLORS.gold, fontWeight: 700, letterSpacing: 2, textTransform: "uppercase",
+  };
+  const sectionHeadRow = {
+    display: "flex", justifyContent: "space-between", alignItems: "baseline",
+    paddingBottom: 7, borderBottom: "1px solid #3a2e00", marginBottom: 4,
+  };
 
   return (
     <div style={{ flex: 1, padding: "24px 24px 20px", overflowY: "auto", display: "flex", flexDirection: "column" }}>
-      <div style={{ textAlign: "center", marginBottom: 24 }}>
+      <div style={{ textAlign: "center", marginBottom: 22 }}>
         <div style={{
-          width: 64, height: 64, borderRadius: 32, background: COLORS.goldHighlight,
+          width: 60, height: 60, borderRadius: 30, background: COLORS.goldHighlight,
           border: `1.5px solid ${COLORS.gold}`, display: "flex", alignItems: "center",
-          justifyContent: "center", margin: "20px auto 16px",
+          justifyContent: "center", margin: "14px auto 16px",
         }}>
-          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke={COLORS.gold} strokeWidth="2.5"><polyline points="20 6 9 17 4 12" /></svg>
+          <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke={COLORS.gold} strokeWidth="2.5"><polyline points="20 6 9 17 4 12" /></svg>
         </div>
         <h2 style={{
           fontFamily: "Georgia, 'Times New Roman', serif",
-          fontSize: 24, color: COLORS.text, margin: "0 0 6px", fontWeight: 400,
+          fontSize: 25, color: COLORS.text, margin: "0 0 5px", fontWeight: 400,
         }}>{empty ? "Session Ended" : "Workout Complete"}</h2>
-        <div style={{ color: COLORS.textSecondary, fontSize: 13 }}>
-          {empty ? "Nothing was logged this session." : session.name}
-        </div>
+        {!empty && (
+          <div style={{ color: COLORS.textSecondary, fontSize: 13, marginBottom: 8 }}>{session.name}</div>
+        )}
+        {empty && (
+          <div style={{ color: COLORS.textSecondary, fontSize: 13 }}>Nothing was logged this session.</div>
+        )}
+
+        {/* Editable session date (D-086). Default is the workout-START
+            date per the locked rule; tap Edit to correct a late log. */}
+        {!empty && (
+          !editingDate ? (
+            <div style={{ fontSize: 12, color: COLORS.textSecondary }}>
+              {formatShortDate(session.date)}
+              {" · "}
+              <button
+                onClick={() => setEditingDate(true)}
+                style={{ background: "none", border: "none", color: COLORS.gold, fontSize: 12, cursor: "pointer", padding: 0 }}
+              >
+                Edit date
+              </button>
+            </div>
+          ) : (
+            <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 8 }}>
+              <input
+                type="date"
+                value={session.date}
+                max={toISODate(new Date())}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  if (v && onUpdateSession) onUpdateSession({ date: v });
+                }}
+                style={{
+                  background: COLORS.card, border: `1px solid ${COLORS.gold}`,
+                  borderRadius: 8, color: COLORS.text, fontSize: 13, padding: "6px 10px",
+                  colorScheme: "dark",
+                }}
+              />
+              <button
+                onClick={() => setEditingDate(false)}
+                style={{ background: "none", border: "none", color: COLORS.gold, fontSize: 12, cursor: "pointer", fontWeight: 600 }}
+              >
+                Done
+              </button>
+            </div>
+          )
+        )}
       </div>
 
       {!empty && (
         <>
-          {/* Stat row — duration, volume, sets */}
-          <div style={{ display: "flex", gap: 8, marginBottom: 24 }}>
+          {/* SESSION — stat chrome. Duration slot omitted entirely when
+              the D-086 guard discarded an implausible elapsed value. */}
+          <div style={{ ...sectionHeadRow }}>
+            <span style={sectionHead}>Session</span>
+          </div>
+          <div style={{ display: "flex", marginBottom: 22 }}>
             {[
-              { label: "Duration", value: formatDuration(session.durationSec) },
-              { label: "Volume",   value: `${volume.toLocaleString()} lbs` },
-              { label: "Sets",     value: String(totalSets) },
-            ].map((s, i) => (
-              <div key={i} style={{
-                flex: 1, background: COLORS.card, border: `1px solid ${COLORS.border}`,
-                borderRadius: 10, padding: "12px 8px", textAlign: "center",
+              { label: "Volume", value: `${volume.toLocaleString()} lbs` },
+              { label: "Sets", value: String(totalSets) },
+              ...(durationLabel ? [{ label: "Duration", value: durationLabel }] : []),
+            ].map((s, i, arr) => (
+              <div key={s.label} style={{
+                flex: 1, padding: "12px 4px 10px", textAlign: "center",
+                borderRight: i < arr.length - 1 ? `1px solid ${COLORS.border}` : "none",
               }}>
-                <div style={{ color: COLORS.gold, fontSize: 16, fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>{s.value}</div>
-                <div style={{ color: COLORS.textSecondary, fontSize: 10, textTransform: "uppercase", letterSpacing: 0.5, marginTop: 3 }}>{s.label}</div>
+                <div style={{ color: COLORS.text, fontSize: 17, fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>{s.value}</div>
+                <div style={{ color: COLORS.textSecondary, fontSize: 10, textTransform: "uppercase", letterSpacing: 1, marginTop: 4 }}>{s.label}</div>
               </div>
             ))}
           </div>
 
-          {/* Per-exercise summary */}
-          <div style={{ color: COLORS.textSecondary, fontSize: 11, textTransform: "uppercase", letterSpacing: 1, fontWeight: 500, marginBottom: 8 }}>
-            Logged
+          {/* PRS BROKEN — the payoff. Gold is earned here (calm-veteran
+              rule: warmth fires on things that merit it). Hidden when
+              nothing was broken. */}
+          {prs.length > 0 && (
+            <>
+              <div style={{ ...sectionHeadRow }}>
+                <span style={sectionHead}>PRs Broken</span>
+                <span style={{ color: COLORS.gold, fontSize: 13, fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>{prs.length}</span>
+              </div>
+              <div style={{ marginBottom: 22 }}>
+                {prs.map((pr, i) => (
+                  <div key={i} style={{
+                    display: "flex", justifyContent: "space-between", alignItems: "center",
+                    padding: "11px 2px",
+                    borderBottom: i < prs.length - 1 ? `1px solid ${COLORS.border}` : "none",
+                  }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{
+                        fontFamily: "Georgia, 'Times New Roman', serif",
+                        color: COLORS.text, fontSize: 15, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                      }}>{pr.name}</div>
+                      {pr.variantLabel ? (
+                        <div style={{ color: COLORS.textSecondary, fontSize: 11, marginTop: 2 }}>{pr.variantLabel}</div>
+                      ) : null}
+                    </div>
+                    <div style={{ color: COLORS.gold, fontSize: 14, fontWeight: 700, fontVariantNumeric: "tabular-nums", marginLeft: 10, flexShrink: 0 }}>
+                      {formatSetSummary(pr.set, " × ")}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+
+          {/* LOGGED — per-exercise recap, hairline rows per the grammar. */}
+          <div style={{ ...sectionHeadRow }}>
+            <span style={sectionHead}>Logged</span>
           </div>
           <div style={{ flex: 1, marginBottom: 16 }}>
             {session.exercises.map((ex, i) => {
               const top = sessionTopSet(ex.sets);
               return (
                 <div key={i} style={{
-                  background: COLORS.card, border: `1px solid ${COLORS.border}`,
-                  borderRadius: 10, padding: "10px 14px", marginBottom: 6,
                   display: "flex", justifyContent: "space-between", alignItems: "center",
+                  padding: "10px 2px",
+                  borderBottom: i < session.exercises.length - 1 ? `1px solid ${COLORS.border}` : "none",
                 }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ color: COLORS.text, fontSize: 13, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{ex.name}</div>
+                    <div style={{ color: COLORS.text, fontSize: 13.5, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{ex.name}</div>
                     <div style={{ color: COLORS.textSecondary, fontSize: 11, marginTop: 2 }}>{ex.variantLabel}</div>
                   </div>
                   <div style={{ color: COLORS.textSecondary, fontSize: 11, marginLeft: 8, fontVariantNumeric: "tabular-nums", flexShrink: 0 }}>
@@ -7316,8 +8026,23 @@ function FinishSummaryScreen({ session, onDone, onDiscard }) {
         </>
       )}
 
-      {/* Note: this screen is a stub per Bible §6.2. Full design pass coming. */}
-      <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: "auto" }}>
+      {/* Footer. When questions exist, the gold line above Done commits
+          AND deep-links to the Coach tab where the pin is waiting. Done
+          commits and stays put — the pin waits either way. */}
+      <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: "auto" }}>
+        {!empty && questions.length > 0 && (
+          <button
+            onClick={onDoneToCoach}
+            style={{
+              width: "100%", padding: "12px 24px", background: "transparent",
+              border: "none", color: COLORS.gold, fontSize: 13.5, fontWeight: 600,
+              cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+            }}
+          >
+            Coach has {questions.length} {questions.length === 1 ? "question" : "questions"}
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={COLORS.gold} strokeWidth="2.5"><polyline points="9 18 15 12 9 6" /></svg>
+          </button>
+        )}
         <GoldButton onClick={onDone}>Done</GoldButton>
         {empty && (
           <button
@@ -7493,7 +8218,7 @@ function buildCoachGreeting({ userName, now, workoutHistory, coachRotation, rota
   return pool.length ? pick(pool) : `What's the plan?`;
 }
 
-function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFocused, onAppendMessage, onUpdateLastMessage, onRespondAsCoach, onStartCoachWorkout, onBuildDebug, onNewChat, onSwitchChat, onDeleteChat, onRenameChat, pendingSeed, onSeedConsumed, workoutHistory, coachRotation, rotationCursor, planDaysPerWeek, planGoal, selectedEquipment }) {
+function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFocused, onAppendMessage, onUpdateLastMessage, onRespondAsCoach, onStartCoachWorkout, onBuildDebug, onNewChat, onSwitchChat, onDeleteChat, onRenameChat, pendingSeed, onSeedConsumed, workoutHistory, coachRotation, rotationCursor, planDaysPerWeek, planGoal, selectedEquipment, pendingQuestions, onAnswerQuestion }) {
   // Bible §4.7: hard cap on user message length. Keeps one chat message
   // within a single API call's budget and prevents runaway prompts. The
   // counter only appears in the last 100 chars so it doesn't distract
@@ -7515,6 +8240,37 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
   // strictly for input-side gating.
   const [isStreaming, setIsStreaming] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  // ── Post-workout questions pin + sheet (Finish Flow session) ──
+  // The pin waits above the composer while pendingQuestions has
+  // unanswered items; tapping it opens the bottom sheet (one question
+  // per screen, D-049 shell: "N of M" counter, 2-3 options + "Other..."
+  // escape, no per-question skip). Dismissing the sheet (X / backdrop)
+  // keeps the pin — answers are never lost, nothing is ever forced.
+  // Answers flow up through onAnswerQuestion (App files each one to
+  // Coach's File and drops the receipt when the set completes).
+  const [questionsSheetOpen, setQuestionsSheetOpen] = useState(false);
+  const [qOtherOpen, setQOtherOpen] = useState(false);
+  const [qOtherText, setQOtherText] = useState("");
+  const answeredCount = pendingQuestions ? pendingQuestions.answered.length : 0;
+  const totalQuestions = pendingQuestions ? pendingQuestions.questions.length : 0;
+  const currentQuestion = pendingQuestions ? pendingQuestions.questions[answeredCount] : null;
+  useEffect(() => {
+    // Pin cleared upstream (all answered, or replaced/retired by a new
+    // session) -> make sure the sheet isn't left open on nothing.
+    if (!pendingQuestions) {
+      setQuestionsSheetOpen(false);
+      setQOtherOpen(false);
+      setQOtherText("");
+    }
+  }, [pendingQuestions]);
+  const answerCurrentQuestion = (answerText) => {
+    if (!currentQuestion || !onAnswerQuestion) return;
+    const isLast = answeredCount + 1 >= totalQuestions;
+    onAnswerQuestion(currentQuestion.id, answerText);
+    setQOtherOpen(false);
+    setQOtherText("");
+    if (isLast) setQuestionsSheetOpen(false);
+  };
   // Per-message "Why this?" disclosure — Set of message indices whose
   // programmingNotes rationale is currently expanded. Keyed by index, which is
   // stable within a chat's render (messages never reorder). Reset on chat
@@ -7650,6 +8406,40 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
   // Coach is thinking or streaming so the user can't fire a second message
   // on top of an in-flight reply.
   const canSend = isOnline && !isThinking && !isStreaming && input.trim().length > 0 && input.length <= MAX_MESSAGE_CHARS;
+
+  // ── Quick-reply chips (Session 60) ─────────────────────────────────
+  // Claude-style tappable answers, rendered above the composer — the user's
+  // side of the conversation, pre-written. They attach only to the CURRENT
+  // moment and expire the instant the conversation moves on (a tap appends a
+  // user message, so the deriving message is no longer last). Four sources,
+  // first match wins:
+  //   1. First-run cold-start -> NO chip (owner call, Finish Flow session:
+  //      "Build today's session" hot link removed — the cold-start message
+  //      already ends on an open question; user types their answer).
+  //   2. Empty-chat greeting  -> one rotation-aware chip ("Build my pull day").
+  //   3. Latest msg = workout -> the two standard workout actions (Start-it
+  //      already lives on the card CTA per D-105 — not duplicated here).
+  //   4. Latest msg = text with model-sent quickReplies -> those (the model
+  //      only attaches them to bounded-choice replies, per the system prompt).
+  // Hidden while thinking/streaming (chrome mid-stream is noise — same rule
+  // as the footer fade-in) and when offline.
+  const greetingDue = walkRotation(resolveRotation(coachRotation, planDaysPerWeek), rotationCursor);
+  let quickReplies = null;
+  if (isOnline && !isThinking && !isStreaming) {
+    const lastM = messages.length ? messages[messages.length - 1] : null;
+    if (showFirstRunNudge) {
+      quickReplies = null; // owner call: no "Build today's session" chip
+    } else if (showGreeting && greetingDue && greetingDue.label) {
+      quickReplies = ["Build my " + greetingDue.label.toLowerCase()];
+    } else if (lastM && lastM.role === "coach" && !lastM.streaming) {
+      if (lastM.kind === "workout") {
+        quickReplies = ["Make it shorter", "Swap something"];
+      } else if (lastM.kind === "text" && Array.isArray(lastM.quickReplies) && lastM.quickReplies.length) {
+        quickReplies = lastM.quickReplies;
+      }
+    }
+  }
+
   const remaining = MAX_MESSAGE_CHARS - input.length;
   const showCounter = remaining <= COUNTER_SHOW_AT_REMAINING;
 
@@ -7723,10 +8513,11 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
     streamIntervalRef.current = setTimeout(tick, 0);
   };
 
-  const send = () => {
-    if (!canSend) return;
-    const u = input.trim();
-    setInput("");
+  // sendMessage: the real send path, callable with any text — the composer's
+  // send() wraps it, and quick-reply chips call it directly (Session 60).
+  const sendMessage = (raw) => {
+    const u = (raw || "").trim();
+    if (!u || !isOnline || isThinking || isStreaming) return;
     // Persist the cold-start nudge as the opening Coach line ONLY on the
     // user's very first message to Coach, ever — so it lives in the first
     // chat's history and nowhere else. (It was previously injected at the top
@@ -7762,11 +8553,17 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
           coachWorkout: res.coachWorkout, // carried so Start can export it
         });
       } else if (res && res.kind === "reply") {
-        streamText(res.message, { role: "coach", kind: "text" });
+        streamText(res.message, { role: "coach", kind: "text", quickReplies: res.quickReplies || null });
       } else {
         streamText(COACH_ERROR_TEXT, { role: "coach", kind: "text" });
       }
     });
+  };
+  const send = () => {
+    if (!canSend) return;
+    const u = input.trim();
+    setInput("");
+    sendMessage(u);
   };
 
   // Regenerate the latest Coach reply — "give me another." Re-fires the most
@@ -7801,7 +8598,7 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
           coachWorkout: res.coachWorkout,
         });
       } else if (res && res.kind === "reply") {
-        streamText(res.message, { role: "coach", kind: "text" });
+        streamText(res.message, { role: "coach", kind: "text", quickReplies: res.quickReplies || null });
       } else {
         streamText(COACH_ERROR_TEXT, { role: "coach", kind: "text" });
       }
@@ -8117,6 +8914,20 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
             </div>
           </div>
         ) : messages.map((m, i) => {
+          // ── Receipt line (Finish Flow session) ────────────────────────
+          // Dropped into the chat when the last post-workout question is
+          // answered: quiet, centered, gold check. Role "system" so no
+          // bubble/chip logic ever treats it as a speaker. When the live
+          // Coach finish turn lands, Coach's reaction to the answers
+          // renders directly under this line as a normal Coach message.
+          if (m.kind === "receipt") {
+            return (
+              <div key={i} style={{ textAlign: "center", padding: "10px 0", color: COLORS.textSecondary, fontSize: 11.5, letterSpacing: 0.3 }}>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={COLORS.gold} strokeWidth="2.5" style={{ verticalAlign: "-1px", marginRight: 5 }}><polyline points="20 6 9 17 4 12" /></svg>
+                {m.text}
+              </div>
+            );
+          }
           // ── Workout-kind Coach message (mock leg-day reply) ──────────
           // Wider max-width so the workout block doesn't crush. Renders
           // three parts inside one bubble:
@@ -8306,6 +9117,59 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
         </div>
       )}
 
+      {/* Quick-reply chips — the user's pre-written answers, floating above
+          the composer (Claude placement). Tap sends the label as a user
+          message via sendMessage. onPointerDown + preventDefault for the same
+          reason as the send button (D-116): onClick would fire after the
+          textarea blur shifts the composer, eating the first tap. */}
+      {quickReplies && quickReplies.length > 0 && (
+        <div style={{
+          padding: "8px 16px 0", display: "flex", gap: 8,
+          overflowX: "auto", flexShrink: 0, WebkitOverflowScrolling: "touch",
+        }}>
+          {quickReplies.map((q, qi) => (
+            <button
+              key={qi}
+              onPointerDown={(e) => { e.preventDefault(); sendMessage(q); }}
+              style={{
+                flexShrink: 0, padding: "7px 14px", borderRadius: 16,
+                background: "transparent",
+                border: "1px solid rgba(255,215,0,0.35)",
+                color: COLORS.gold, fontSize: 13, fontFamily: "inherit",
+                cursor: "pointer", whiteSpace: "nowrap",
+              }}
+            >
+              {q}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* ── Post-workout questions pin (Finish Flow session) ──
+          Gold-tinted, quiet, persistent. Shows the session name and how
+          many questions remain; never nags, survives reloads, retired
+          only by answering or by a newer completed session. Hidden while
+          composing (matches the header) and while the sheet is open. */}
+      {pendingQuestions && currentQuestion && !questionsSheetOpen && !inputFocused && (
+        <div style={{ padding: "8px 16px 0", flexShrink: 0 }}>
+          <button
+            onPointerDown={(e) => { e.preventDefault(); setQuestionsSheetOpen(true); }}
+            style={{
+              width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center",
+              background: "#161600", border: "1px solid #3a2e00", borderRadius: 10,
+              padding: "10px 14px", cursor: "pointer",
+            }}
+          >
+            <span style={{ color: COLORS.gold, fontSize: 11, letterSpacing: 1.5, textTransform: "uppercase", fontWeight: 700 }}>
+              {pendingQuestions.sessionName} · {answeredCount === 0
+                ? `${totalQuestions} ${totalQuestions === 1 ? "question" : "questions"}`
+                : `${totalQuestions - answeredCount} left`}
+            </span>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={COLORS.gold} strokeWidth="2.5"><polyline points="18 15 12 9 6 15" /></svg>
+          </button>
+        </div>
+      )}
+
       {/* Input */}
       <div style={{ padding: "12px 24px", borderTop: `1px solid ${COLORS.border}`, flexShrink: 0 }}>
         {/* Char counter — only appears in the final stretch (last 100 chars).
@@ -8378,7 +9242,16 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
             }}
           />
           <button
-            onClick={send}
+            onPointerDown={(e) => {
+              // Send on pointer-down, not onClick. onClick fires after the
+              // textarea blurs — that blur flips inputFocused, re-shows the
+              // header, and shifts the composer down, so the tap misses and
+              // the user has to tap twice. preventDefault keeps focus on the
+              // textarea (no blur, no shift); pointerdown fires immediately and
+              // uniformly for touch + mouse (same as the keypad, D-078).
+              e.preventDefault();
+              if (canSend) send();
+            }}
             disabled={!canSend}
             style={{
               width: 40, height: 40, borderRadius: 20,
@@ -8665,6 +9538,118 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
           </div>
         </div>
       )}
+      {/* ── Post-workout questions sheet (Finish Flow session) ──
+          Bottom sheet over the chat, HistoryRecapSheet pattern. One
+          question per screen, big vertical answers, "Other..." opens a
+          free-text escape. X or backdrop dismisses — the pin remains
+          with the unanswered remainder. */}
+      {questionsSheetOpen && pendingQuestions && currentQuestion && (
+        <>
+          <div
+            onClick={() => setQuestionsSheetOpen(false)}
+            style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 30 }}
+          />
+          <div style={{
+            position: "absolute", left: 0, right: 0, bottom: 0,
+            zIndex: 31, background: "#181818",
+            borderTopLeftRadius: 20, borderTopRightRadius: 20,
+            borderTop: "1px solid #3a2e00",
+            boxShadow: "0 -12px 32px rgba(0,0,0,0.6)",
+            padding: "8px 20px 24px",
+            display: "flex", flexDirection: "column",
+          }}>
+            <div style={{ display: "flex", justifyContent: "center", padding: "2px 0 10px" }}>
+              <div style={{ width: 36, height: 4, borderRadius: 2, background: COLORS.border }} />
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+              <button
+                onClick={() => setQuestionsSheetOpen(false)}
+                aria-label="Dismiss questions"
+                style={{ background: "none", border: "none", cursor: "pointer", padding: "4px 8px 4px 0", color: COLORS.textSecondary }}
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+              </button>
+              <span style={{ color: COLORS.textSecondary, fontSize: 12, fontVariantNumeric: "tabular-nums", letterSpacing: 1 }}>
+                {answeredCount + 1} of {totalQuestions}
+              </span>
+            </div>
+            <div style={{
+              fontFamily: "-apple-system, system-ui, sans-serif", fontSize: 11,
+              color: COLORS.gold, fontWeight: 700, letterSpacing: 1.5, textTransform: "uppercase",
+              marginBottom: 10,
+            }}>
+              Coach has a question
+            </div>
+            <div style={{
+              fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 19,
+              color: COLORS.text, lineHeight: 1.45, marginBottom: 20, fontWeight: 400,
+            }}>
+              {currentQuestion.text}
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+              {currentQuestion.options.map((opt) => (
+                <button
+                  key={opt}
+                  onClick={() => answerCurrentQuestion(opt)}
+                  style={{
+                    width: "100%", textAlign: "left", padding: "13px 15px",
+                    background: COLORS.card, border: `1px solid ${COLORS.border}`,
+                    borderRadius: 10, color: COLORS.text, fontSize: 14.5, cursor: "pointer",
+                    fontFamily: "inherit",
+                  }}
+                >
+                  {opt}
+                </button>
+              ))}
+              {!qOtherOpen ? (
+                <button
+                  onClick={() => setQOtherOpen(true)}
+                  style={{
+                    width: "100%", textAlign: "left", padding: "13px 15px",
+                    background: "transparent", border: `1px dashed ${COLORS.border}`,
+                    borderRadius: 10, color: COLORS.textSecondary, fontSize: 14.5, cursor: "pointer",
+                    fontFamily: "inherit",
+                  }}
+                >
+                  Other...
+                </button>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  <textarea
+                    autoFocus
+                    value={qOtherText}
+                    onChange={(e) => setQOtherText(e.target.value)}
+                    placeholder="Tell Coach in your own words"
+                    rows={3}
+                    style={{
+                      width: "100%", boxSizing: "border-box", padding: "12px 14px",
+                      background: COLORS.card, border: `1px solid ${COLORS.gold}`,
+                      borderRadius: 10, color: COLORS.text, fontSize: 14.5,
+                      fontFamily: "inherit", resize: "none", outline: "none",
+                    }}
+                  />
+                  <button
+                    onClick={() => { if (qOtherText.trim()) answerCurrentQuestion(qOtherText.trim()); }}
+                    style={{
+                      alignSelf: "flex-end", padding: "9px 22px",
+                      background: qOtherText.trim() ? COLORS.gold : COLORS.card,
+                      border: `1px solid ${qOtherText.trim() ? COLORS.gold : COLORS.border}`,
+                      borderRadius: 8, color: qOtherText.trim() ? "#000" : COLORS.textSecondary,
+                      fontSize: 13.5, fontWeight: 600, cursor: qOtherText.trim() ? "pointer" : "default",
+                      fontFamily: "inherit",
+                    }}
+                  >
+                    Send
+                  </button>
+                </div>
+              )}
+            </div>
+            <div style={{ paddingTop: 16, color: "#555", fontSize: 11, textAlign: "center" }}>
+              Sample question — Coach's real questions arrive with the Coach build.
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -8774,6 +9759,13 @@ function ExercisesTab({
 
   const sorted = [...filtered].sort((a, b) => {
     if (sortMode === "alpha") {
+      // While searching in the default A→Z view, rank by match quality so the
+      // searched-for lift isn't buried under variant-substring hits. Explicit
+      // Z→A / recent / frequency sorts are left exactly as the user chose.
+      if (search && sortDir === "asc") {
+        const sr = searchRelevance(b, search) - searchRelevance(a, search);
+        if (sr) return sr;
+      }
       const cmp = a.name.localeCompare(b.name);
       return sortDir === "asc" ? cmp : -cmp;
     }
@@ -11640,8 +12632,8 @@ function PlanSubscreen({
         style={{
           width: "100%", padding: "10px 0",
           display: "flex", justifyContent: "space-between", alignItems: "baseline",
+          gap: 14, background: "transparent", border: "none",
           borderBottom: "1px solid #1a1a1a",
-          gap: 14, background: "transparent", border: "none", borderBottom: "1px solid #1a1a1a",
           cursor: "pointer", fontFamily: "inherit", color: "inherit", textAlign: "left",
         }}
       >
@@ -13321,6 +14313,14 @@ export default function MYGFitness() {
   const [rotationCursor, setRotationCursor] = useState(Number.isInteger(h.rotationCursor) ? h.rotationCursor : 0);
   const [coachRules, setCoachRules] = useState(h.coachRules !== null && h.coachRules !== undefined ? h.coachRules : MOCK_COACH_RULES);
   const [coachObservations, setCoachObservations] = useState(h.coachObservations !== null && h.coachObservations !== undefined ? h.coachObservations : MOCK_COACH_OBSERVATIONS);
+  // Post-workout questions pin (Finish Flow session). Shape:
+  //   { id, sessionId, sessionName, sessionDate, createdAt,
+  //     questions: [{id,text,options,obsLabel}], answered: [{id,question,answer}] }
+  // One pending set at a time — a new completed session REPLACES a stale
+  // unanswered set (asking about Tuesday's bench on Friday is stale coach
+  // behavior; owner-locked this session). Persisted so the pin survives
+  // reloads; cleared when all questions are answered.
+  const [pendingCoachQuestions, setPendingCoachQuestions] = useState(h.pendingCoachQuestions || null);
   const [progressPRs, setProgressPRs] = useState(h.progressPRs !== null && h.progressPRs !== undefined ? h.progressPRs : MOCK_PROGRESS_PRS);
   const [bodyStats, setBodyStats] = useState(h.bodyStats || MOCK_BODY_STATS);
   // First-open / last-update timestamps for the signed footer. If we
@@ -13371,6 +14371,7 @@ export default function MYGFitness() {
       rotationCursor,
       coachRules,
       coachObservations,
+      pendingCoachQuestions,
       progressPRs,
       bodyStats,
       coachFileOpenedAt,
@@ -13400,6 +14401,7 @@ export default function MYGFitness() {
     rotationCursor,
     coachRules,
     coachObservations,
+    pendingCoachQuestions,
     progressPRs,
     bodyStats,
     coachFileOpenedAt,
@@ -13508,19 +14510,17 @@ export default function MYGFitness() {
       recentChat, userMessage, fullPool,
     });
     try {
-      const { text } = await callCoach(COACH_SYSTEM_PROMPT, turn);
-      const clean = text.replace(/```json/g, "").replace(/```/g, "").trim();
-      let obj = null;
-      if (clean.startsWith("{")) { try { obj = JSON.parse(clean); } catch { obj = null; } }
-      if (obj && obj.kind === "workout") {
-        const v = validateCoachWorkout(obj, COACH_LIB_INDEX);
-        if (!v.ok) { console.warn("[coach] schema violations", v.errors); return { kind: "error" }; }
-        return { kind: "workout", coachWorkout: obj };
-      }
-      // Not a workout -> conversational reply (plain prose, or a non-workout
-      // JSON object's message field if the model wrapped it).
-      const message = obj && typeof obj.message === "string" ? obj.message : text.trim();
-      return { kind: "reply", message: message || COACH_ERROR_TEXT };
+      // Session 62: Coach now has read tools. Executors close over live app
+      // state at send time; the loop in callCoach handles the round-trips.
+      const toolState = { workoutHistory, customExercises, coachRules, coachObservations, progressPRs };
+      const { text } = await callCoach(COACH_SYSTEM_PROMPT, turn, {
+        tools: COACH_TOOL_DEFS,
+        runTool: (name, input) => executeCoachTool(name, input, toolState),
+      });
+      // Session 60: the parse ladder moved to the pure parseCoachReply so it
+      // can be unit-tested; it also understands the kind:"text" quick-reply
+      // envelope (chips ride back on res.quickReplies).
+      return parseCoachReply(text, (obj) => validateCoachWorkout(obj, COACH_LIB_INDEX));
     } catch (e) {
       console.warn("[coach] turn failed", e);
       return { kind: "error" };
@@ -13528,7 +14528,10 @@ export default function MYGFitness() {
   };
 
   // Export a CoachWorkout into the logger. Mirrors repeatWorkoutFromSession's
-  // tail; advances the rotation cursor so "my next workout" walks forward.
+  // tail. D-100 amendment (Finish Flow session): the rotation cursor no
+  // longer advances here on START — it advances when the session actually
+  // COMMITS (see commitFinishedSession / commitActiveWorkoutSilently), so
+  // start-then-cancel no longer nudges "my next workout" a step early.
   const startWorkoutFromCoach = (coachWorkout) => {
     const now = new Date();
     const aw = buildActiveWorkoutFromCoach(coachWorkout, workoutHistory, customExercises, now);
@@ -13536,7 +14539,6 @@ export default function MYGFitness() {
     setActiveWorkout(aw);
     setWorkoutMinimized(false);
     setActiveTab("workout");
-    setRotationCursor((c) => c + 1);
     return true;
   };
 
@@ -13623,20 +14625,31 @@ export default function MYGFitness() {
   const [pendingStartAction, setPendingStartAction] = useState(null);
   const showStartConflict = pendingStartAction !== null;
 
-  // Builds a session object from the currently active workout in the same
-  // shape finishActiveWorkout produces, then pushes it into history without
-  // surfacing the FinishSummaryScreen. Returns true if a session was
-  // actually committed (>0 done sets), false if there was nothing to save.
-  const commitActiveWorkoutSilently = () => {
-    if (!activeWorkout) return false;
+  // ── Session builder (Finish Flow session — shared by both commit paths) ──
+  // Turns the active workout into a history-shaped session object.
+  // D-086 rules applied here:
+  //   · session date = workout-START date (timer start), not the finish
+  //     tap — the late-finish/overnight case now dates to the training
+  //     day automatically. (Amends D-059; locked Session 54.)
+  //   · durationSec goes through the plausibility guard — implausible
+  //     elapsed values (28h timers) are stored as null, never shown.
+  // Also carries the Finish Flow inputs forward: exerciseId per exercise
+  // (engine food — anchors/observations key on ids, not display names),
+  // fromCoach + prescription (D-013 / D-100), and the naive A/B/C mode tag.
+  const buildSessionFromActiveWorkout = (aw) => {
+    if (!aw) return null;
     const endTime = new Date();
-    const durationSec = Math.max(1, Math.floor((endTime - activeWorkout.startTime) / 1000));
+    const start = aw.startTime instanceof Date ? aw.startTime : new Date(aw.startTime);
+    const rawDuration = Math.max(1, Math.floor((endTime - start) / 1000));
     const session = {
       id: `s${Date.now()}`,
-      name: activeWorkout.workoutName,
-      date: endTime.toISOString().slice(0, 10),
-      durationSec,
-      exercises: activeWorkout.exercises.map((ex) => ({
+      name: aw.workoutName,
+      date: toISODate(start),
+      durationSec: plausibleDurationSec(rawDuration),
+      fromCoach: !!aw.fromCoach,
+      prescription: aw.prescription || null,
+      exercises: aw.exercises.map((ex) => ({
+        exerciseId: ex.exerciseId || null,
         name: ex.name,
         variantLabel: ex.variant.label,
         sets: ex.sets
@@ -13644,8 +14657,24 @@ export default function MYGFitness() {
           .map((s) => ({ weight: s.weight, reps: s.reps, type: s.type, rir: s.rir })),
       })).filter((ex) => ex.sets.length > 0),
     };
-    if (session.exercises.length === 0) return false;
+    session.mode = classifySessionMode(session);
+    return session;
+  };
+
+  // Pushes the active workout into history WITHOUT surfacing the
+  // FinishSummaryScreen (the "save current & start new" conflict path).
+  // Returns true if a session was actually committed (>0 done sets).
+  // Advances the rotation cursor for Coach-sourced sessions (D-100 —
+  // advance on completion, and a silent commit IS a completion).
+  const commitActiveWorkoutSilently = () => {
+    const session = buildSessionFromActiveWorkout(activeWorkout);
+    if (!session || session.exercises.length === 0) return false;
     setWorkoutHistory((h) => [session, ...h]);
+    if (session.fromCoach) setRotationCursor((c) => c + 1);
+    // A newer completed session makes any unanswered pin stale. The
+    // silent path doesn't generate new questions (the user is mid-flow
+    // starting another workout) but it does retire the old ones.
+    setPendingCoachQuestions(null);
     return true;
   };
 
@@ -13700,32 +14729,95 @@ export default function MYGFitness() {
   };
 
   const finishActiveWorkout = () => {
-    if (!activeWorkout) return;
-    const endTime = new Date();
-    const durationSec = Math.max(1, Math.floor((endTime - activeWorkout.startTime) / 1000));
-    const session = {
-      id: `s${Date.now()}`,
-      name: activeWorkout.workoutName,
-      date: endTime.toISOString().slice(0, 10),
-      durationSec,
-      exercises: activeWorkout.exercises.map((ex) => ({
-        name: ex.name,
-        variantLabel: ex.variant.label,
-        sets: ex.sets
-          .filter((s) => s.done)
-          .map((s) => ({ weight: s.weight, reps: s.reps, type: s.type, rir: s.rir })),
-      })).filter((ex) => ex.sets.length > 0),
-    };
+    const session = buildSessionFromActiveWorkout(activeWorkout);
+    if (!session) return;
     setFinishedSession(session);
     setActiveWorkout(null);
     setWorkoutMinimized(false);
   };
 
+  // Patch the finished-but-uncommitted session — used by the Finish
+  // screen's editable session date (D-086: default is workout-start
+  // date per the locked rule, correctable before commit).
+  const updateFinishedSession = (patch) => {
+    setFinishedSession((prev) => (prev ? { ...prev, ...patch } : prev));
+  };
+
+  // Commit the finished session to history. D-100: the rotation cursor
+  // advances HERE, on completion, for Coach-sourced sessions.
+  //
+  // Owner redesign (this session): the survey no longer lives on the
+  // Finish screen. Committing generates the post-workout QUESTIONS PIN
+  // instead — it waits in the Coach tab (pin above the composer → bottom
+  // sheet), never nags, and a newer session's questions replace a stale
+  // unanswered set. Question SOURCE is still buildDemoSurveyQuestions
+  // (placeholder) until the Coach engines land.
+  //
+  // §10.6 note (D-062): this commit is also where the non-blocking
+  // background phase (observation filing, PR/anchor updates, next-session
+  // pre-build) will fire once the Coach engines exist.
   const commitFinishedSession = () => {
     if (finishedSession && finishedSession.exercises.length > 0) {
       setWorkoutHistory((h) => [finishedSession, ...h]);
+      if (finishedSession.fromCoach) setRotationCursor((c) => c + 1);
+      const prs = detectSessionPRs(finishedSession, workoutHistory);
+      const qs = buildDemoSurveyQuestions(finishedSession, prs);
+      setPendingCoachQuestions(qs.length > 0 ? {
+        id: `pq${Date.now()}`,
+        sessionId: finishedSession.id,
+        sessionName: finishedSession.name,
+        sessionDate: finishedSession.date,
+        createdAt: Date.now(),
+        questions: qs,
+        answered: [],
+      } : null);
     }
     setFinishedSession(null);
+  };
+
+  // "Coach has N questions →" on the Finish screen: same commit, then
+  // jump straight to the Coach tab where the pin is waiting.
+  const commitFinishedSessionToCoach = () => {
+    commitFinishedSession();
+    setActiveTab("coach");
+  };
+
+  // One tapped answer from the questions sheet. Two things happen:
+  //   1. FILE IT — the answer is written into Coach's File as a real
+  //      observation, immediately, no AI involved. Tier 2 ("noticed"):
+  //      a direct user statement carries at least single-sighting
+  //      confidence (flagged as a Bible decision this session — the
+  //      D-071 engine takes ownership of tiering when it lands).
+  //   2. When the LAST question is answered, drop the "Filed to Coach's
+  //      File" receipt into the current chat and clear the pin. The
+  //      future live-Coach finish turn responds under that receipt.
+  const answerCoachQuestion = (questionId, answerText) => {
+    const pending = pendingCoachQuestions;
+    if (!pending) return;
+    const q = pending.questions.find((x) => x.id === questionId);
+    if (!q || pending.answered.some((a) => a.id === questionId)) return;
+    const answered = [...pending.answered, { id: questionId, question: q.text, answer: answerText }];
+    const obs = {
+      id: `o${Date.now()}`,
+      text: `${q.obsLabel || q.text} — ${answerText}`,
+      createdAt: Date.now(),
+      tier: 2,
+      provenance: {
+        sessions: [`${pending.sessionName} · ${formatShortDate(pending.sessionDate)}`],
+        signal: `Stated directly in post-workout questions — asked "${q.text}", answered "${answerText}"`,
+      },
+    };
+    setCoachObservations((o) => [obs, ...(o || [])]);
+    setCoachFileLastUpdatedAt(Date.now());
+    if (answered.length >= pending.questions.length) {
+      appendCoachMessage({
+        role: "system", kind: "receipt", ts: Date.now(),
+        text: `Filed to Coach's File · ${pending.sessionName} · ${answered.length} ${answered.length === 1 ? "answer" : "answers"}`,
+      });
+      setPendingCoachQuestions(null);
+    } else {
+      setPendingCoachQuestions({ ...pending, answered });
+    }
   };
 
   const discardFinishedSession = () => {
@@ -13760,6 +14852,7 @@ export default function MYGFitness() {
     setPlanDaysPerWeek(6);
     setCoachRules(MOCK_COACH_RULES);
     setCoachObservations(MOCK_COACH_OBSERVATIONS);
+    setPendingCoachQuestions(null);
     setProgressPRs(MOCK_PROGRESS_PRS);
     setBodyStats(MOCK_BODY_STATS);
     setCoachFileOpenedAt(Date.now());
@@ -13813,7 +14906,9 @@ export default function MYGFitness() {
           onCancel={cancelActiveWorkout}
           onFinish={finishActiveWorkout}
           onCommitFinished={commitFinishedSession}
+          onCommitFinishedToCoach={commitFinishedSessionToCoach}
           onDiscardFinished={discardFinishedSession}
+          onUpdateFinished={updateFinishedSession}
           onRepeatWorkout={requestRepeatWorkout}
           onTabChange={setActiveTab}
         />
@@ -13843,6 +14938,8 @@ export default function MYGFitness() {
           planDaysPerWeek={planDaysPerWeek}
           planGoal={planGoal}
           selectedEquipment={selectedEquipment}
+          pendingQuestions={pendingCoachQuestions}
+          onAnswerQuestion={answerCoachQuestion}
         />
       );
       case "exercises": return (
