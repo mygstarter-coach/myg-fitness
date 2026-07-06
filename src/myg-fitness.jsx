@@ -407,7 +407,7 @@ function deriveEquipmentLabel(selectedSet) {
   return `${size} ${size === 1 ? "item" : "items"} selected`;
 }
 
-/* ── Exercise Library (117 exercises, source of truth: Project Bible §8) ──
+/* ── Exercise Library (116 exercises, source of truth: Project Bible §8) ──
    Each exercise: id, name, primary, secondary[], type, variants[].
    A variant is { label, equipment: [equipment_ids] } — user needs ALL ids in
    the list to have access to that variant (e.g. "Barbell").
@@ -511,7 +511,7 @@ const EXERCISE_LIBRARY = [
     { label: "Plyo Box", equipment: ["plyo_box"], bodyweight: true },
   ]},
 
-  // BACK (18) — deadlift/RDL/good_morning already declared under Legs with alsoIn
+  // BACK (19) — deadlift/RDL/good_morning already declared under Legs with alsoIn
   { id: "rack_pull", name: "Rack Pull", primary: "Back", pattern: "hinge_compound", secondary: ["Legs"], type: "Compound", variants: [
     { label: "Barbell + Squat Rack", equipment: ["barbell", "squat_rack"] },
   ]},
@@ -528,10 +528,11 @@ const EXERCISE_LIBRARY = [
     { label: "Barbell", equipment: ["barbell", "adjustable_bench"] },
     { label: "Dumbbells", equipment: ["dumbbells", "adjustable_bench"] },
   ]},
-  { id: "seated_row", name: "Seated Row", primary: "Back", pattern: "horizontal_pull", secondary: ["Arms"], type: "Compound", variants: [
+  { id: "seated_cable_row", name: "Seated Cable Row", primary: "Back", pattern: "horizontal_pull", secondary: ["Arms"], type: "Compound", variants: [
     { label: "Seated Cable Row", equipment: ["seated_cable_row"] },
+  ]},
+  { id: "iso_lateral_row", name: "Iso Lateral Row", primary: "Back", pattern: "horizontal_pull", secondary: ["Arms"], type: "Compound", variants: [
     { label: "Iso Lateral Row Machine", equipment: ["iso_lateral_row_machine"] },
-    { label: "Cable (Low Pulley)", equipment: ["cable_low"] },
   ]},
   { id: "tbar_row", name: "T-Bar Row", primary: "Back", pattern: "horizontal_pull", secondary: ["Arms"], type: "Compound", variants: [
     { label: "T-Bar Row Machine", equipment: ["tbar_row_machine"] },
@@ -574,7 +575,7 @@ const EXERCISE_LIBRARY = [
     { label: "Back Extension Machine", equipment: ["back_extension_machine"] },
   ]},
 
-  // CHEST (11)
+  // CHEST (14)
   { id: "bench_press", name: "Bench Press", primary: "Chest", pattern: "horizontal_press", secondary: ["Shoulders", "Arms"], type: "Compound", variants: [
     { label: "Barbell", equipment: ["barbell", "flat_bench"] },
     { label: "Dumbbells", equipment: ["dumbbells", "flat_bench"] },
@@ -589,9 +590,17 @@ const EXERCISE_LIBRARY = [
     { label: "Barbell", equipment: ["barbell", "adjustable_bench"] },
     { label: "Dumbbells", equipment: ["dumbbells", "adjustable_bench"] },
   ]},
-  { id: "machine_press", name: "Machine Press", primary: "Chest", pattern: "horizontal_press", secondary: ["Shoulders", "Arms"], type: "Compound", variants: [
+  { id: "wide_grip_bench", name: "Wide-Grip Bench Press", primary: "Chest", pattern: "horizontal_press", secondary: ["Shoulders", "Arms"], type: "Compound", variants: [
+    { label: "Barbell", equipment: ["barbell", "flat_bench"] },
+    { label: "Smith Machine", equipment: ["smith_machine", "flat_bench"] },
+  ]},
+  { id: "machine_chest_press", name: "Machine Chest Press", primary: "Chest", pattern: "horizontal_press", secondary: ["Shoulders", "Arms"], type: "Compound", variants: [
     { label: "Hammer Strength Chest Press", equipment: ["hammer_strength_chest"] },
+  ]},
+  { id: "machine_incline_press", name: "Machine Incline Press", primary: "Chest", pattern: "horizontal_press", secondary: ["Shoulders", "Arms"], type: "Compound", variants: [
     { label: "Hammer Strength Incline Press", equipment: ["hammer_strength_incline"] },
+  ]},
+  { id: "machine_decline_press", name: "Machine Decline Press", primary: "Chest", pattern: "horizontal_press", secondary: ["Arms"], type: "Compound", variants: [
     { label: "Hammer Strength Decline Press", equipment: ["hammer_strength_decline"] },
   ]},
   { id: "chest_fly", name: "Chest Fly", primary: "Chest", pattern: "isolation_chest", secondary: [], type: "Isolation", variants: [
@@ -2166,34 +2175,34 @@ function buildDemoSurveyQuestions(session, prs) {
 /* ── Shared Components ───────────────────────────────────────── */
 
 function PhoneFrame({ children }) {
-  // Stripped-down passthrough wrapper for real-device rendering.
-  // Previously this rendered a fake 375×812 phone bezel with a fake "9:41"
-  // status bar and home indicator — fine for the artifact preview, but on
-  // a real iPhone it produced a phone-in-a-phone effect. Now it just
-  // provides a flex column container; the surrounding outer wrapper sets
-  // the height, and the existing screen flex layout fills it correctly.
-  //
-  // paddingTop: env(safe-area-inset-top) — in PWA mode (saved to home
-  // screen), iOS draws the app under the status bar. Without this, the
-  // first row of every screen collides with the iOS clock and battery
-  // icons. The bottom safe-area is handled inside TabBar instead, so
-  // the TabBar's background can extend to the true bottom edge.
   return (
     <div
       style={{
-        width: "100%",
-        height: "100%",
-        background: COLORS.bg,
-        position: "relative",
-        overflow: "hidden",
+        width: 375, height: 812, borderRadius: 44, background: COLORS.bg,
+        position: "relative", overflow: "hidden",
+        boxShadow: "0 25px 80px rgba(0,0,0,0.6), 0 0 0 2px #333",
         fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-        display: "flex",
-        flexDirection: "column",
-        paddingTop: "env(safe-area-inset-top)",
+        display: "flex", flexDirection: "column",
       }}
     >
+      <div
+        style={{
+          height: 50, display: "flex", alignItems: "center", justifyContent: "space-between",
+          padding: "0 28px", fontSize: 14, fontWeight: 600, color: COLORS.text, flexShrink: 0,
+        }}
+      >
+        <span>9:41</span>
+        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          <svg width="17" height="12" viewBox="0 0 17 12" fill="white"><rect x="0" y="3" width="3" height="9" rx="1" /><rect x="4.5" y="2" width="3" height="10" rx="1" /><rect x="9" y="0" width="3" height="12" rx="1" /><rect x="13.5" y="1" width="3" height="11" rx="1" fillOpacity="0.3" /></svg>
+          <svg width="16" height="12" viewBox="0 0 16 12" fill="white"><path d="M8 2.4C10.6 2.4 13 3.5 14.7 5.3L16 4C14 1.9 11.1 .5 8 .5S2 1.9 0 4L1.3 5.3C3 3.5 5.4 2.4 8 2.4z" fillOpacity="0.3" /><path d="M8 5.4C9.8 5.4 11.4 6.1 12.6 7.3L13.9 6C12.4 4.5 10.3 3.5 8 3.5S3.6 4.5 2.1 6L3.4 7.3C4.6 6.1 6.2 5.4 8 5.4z" fillOpacity="0.6" /><path d="M8 8.4C9 8.4 9.9 8.8 10.5 9.5L8 12 5.5 9.5C6.1 8.8 7 8.4 8 8.4z" /></svg>
+          <svg width="27" height="13" viewBox="0 0 27 13" fill="white"><rect x="0" y="0.5" width="23" height="12" rx="3.5" stroke="white" strokeWidth="1" fill="none" /><rect x="24.5" y="4" width="2" height="5" rx="1" fillOpacity="0.4" /><rect x="1.5" y="2" width="18" height="9" rx="2" fill="white" /></svg>
+        </div>
+      </div>
       <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
         {children}
+      </div>
+      <div style={{ height: 34, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+        <div style={{ width: 134, height: 5, borderRadius: 3, background: "rgba(255,255,255,0.2)" }} />
       </div>
     </div>
   );
@@ -2424,9 +2433,6 @@ function WelcomeScreen({ onGetStarted, onSignIn }) {
   useEffect(() => { setTimeout(() => setLogoV(true), 200); setTimeout(() => setContentV(true), 900); }, []);
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "0 32px", position: "relative" }}>
-      {/* V.20 marker — temporary build indicator. Bump with each push to
-          verify cache isn't serving stale code. Remove before shipping. */}
-      <div style={{ position: "absolute", top: 16, right: 20, color: COLORS.textSecondary, fontSize: 11, fontWeight: 500, letterSpacing: 1, opacity: 0.7 }}>V.20</div>
       <div style={{ position: "absolute", top: "40%", textAlign: "center", opacity: logoV ? 1 : 0, transform: logoV ? "translateY(-50%) scale(1)" : "translateY(-50%) scale(1.08)", transition: "all 0.9s cubic-bezier(0.22,1,0.36,1)" }}>
         <h1 style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 92, fontWeight: 700, color: COLORS.gold, margin: 0, letterSpacing: 8 }}>MYG</h1>
       </div>
@@ -3491,7 +3497,7 @@ const MOCK_WORKOUT_HISTORY = [
   // training log; ids h8–h13 map to session numbers (h7 absent — S7 was
   // pre-workout only, never logged). Durations for S9/S11/S12/S13 are
   // best-effort estimates (timers left running, per D-086). Iso Lateral Row
-  // is logged as a Seated Row variant per the current pre-D-085 taxonomy.
+  // is its own movement per the D-085 taxonomy split.
   // ── Session 13 — Leg Day (user-built, Mode C) · Jun 2 ──
   {
     id: "h13",
@@ -3528,12 +3534,12 @@ const MOCK_WORKOUT_HISTORY = [
         { weight: 0, reps: 9, type: "working" },
         { weight: 0, reps: 9, type: "working" },
       ]},
-      { name: "Seated Row", variantLabel: "Seated Cable Row", sets: [
+      { name: "Seated Cable Row", variantLabel: "Seated Cable Row", sets: [
         { weight: 187, reps: 10, type: "working" },
         { weight: 209, reps: 10, type: "working" },
         { weight: 209, reps: 10, type: "working" },
       ]},
-      { name: "Seated Row", variantLabel: "Iso Lateral Row Machine", sets: [
+      { name: "Iso Lateral Row", variantLabel: "Iso Lateral Row Machine", sets: [
         { weight: 90,  reps: 10, type: "working" },
         { weight: 90,  reps: 10, type: "working" },
         { weight: 115, reps: 10, type: "working" },
@@ -3592,7 +3598,7 @@ const MOCK_WORKOUT_HISTORY = [
         { weight: 30, reps: 10, type: "working" },
         { weight: 30, reps: 10, type: "working" },
       ]},
-      { name: "Machine Press", variantLabel: "Hammer Strength Chest Press", sets: [
+      { name: "Machine Chest Press", variantLabel: "Hammer Strength Chest Press", sets: [
         { weight: 180, reps: 10, type: "working" },
         { weight: 180, reps: 10, type: "working" },
         { weight: 180, reps: 10, type: "working" },
@@ -3616,7 +3622,7 @@ const MOCK_WORKOUT_HISTORY = [
         { weight: 160, reps: 12, type: "working" },
         { weight: 180, reps: 10, type: "working" },
       ]},
-      { name: "Seated Row", variantLabel: "Seated Cable Row", sets: [
+      { name: "Seated Cable Row", variantLabel: "Seated Cable Row", sets: [
         { weight: 160, reps: 12, type: "warmup" },
         { weight: 180, reps: 12, type: "working" },
         { weight: 200, reps: 10, type: "working" },
@@ -3711,7 +3717,7 @@ const MOCK_WORKOUT_HISTORY = [
   // ── Session 6 — Push Day (user-built, Mode C) ──
   // Bench 225×6 confirms the Session 4 grindy 225×5 — anchor moves 205 → 225.
   // Pec Deck volume scheme retired heavy scheme. Five off-card additions:
-  // Dip, Machine Press (n=2), DB Lateral, DB Front, DB Chest Fly.
+  // Dip, Machine Decline Press (n=2), DB Lateral, DB Front, DB Chest Fly.
   {
     id: "h1",
     name: "Push Day",
@@ -3741,7 +3747,7 @@ const MOCK_WORKOUT_HISTORY = [
         { weight: 0, reps: 8, type: "working" },
         { weight: 0, reps: 8, type: "working" },
       ]},
-      { name: "Machine Press", variantLabel: "Hammer Strength Decline Press", sets: [
+      { name: "Machine Decline Press", variantLabel: "Hammer Strength Decline Press", sets: [
         { weight: 225, reps: 8, type: "working" },
         { weight: 225, reps: 8, type: "working" },
         { weight: 225, reps: 8, type: "working" },
@@ -3770,7 +3776,7 @@ const MOCK_WORKOUT_HISTORY = [
   },
 
   // ── Session 5 — Back Day (user-built, Mode C) ──
-  // Bent Row 185 was a missed ramp — anchor remains 205. Seated Row 200×10 PR.
+  // Bent Row 185 was a missed ramp — anchor remains 205. Seated Cable Row 200×10 PR.
   // Back Extension cold-start, 140–150 provisional.
   {
     id: "h2",
@@ -3788,7 +3794,7 @@ const MOCK_WORKOUT_HISTORY = [
         { weight: 180, reps: 10, type: "working" },
         { weight: 180, reps: 10, type: "working" },
       ]},
-      { name: "Seated Row", variantLabel: "Seated Cable Row", sets: [
+      { name: "Seated Cable Row", variantLabel: "Seated Cable Row", sets: [
         { weight: 160, reps: 10, type: "working" },
         { weight: 180, reps: 10, type: "working" },
         { weight: 200, reps: 10, type: "working" },
@@ -3803,7 +3809,7 @@ const MOCK_WORKOUT_HISTORY = [
 
   // ── Session 4 — Push Day (Coach-prescribed Mode A, mid-prescription
   // negotiation: Tyler added Cable Crossover from Coach's rec AND
-  // Machine Press as his own add; dropped Overhead Tricep Extension.)
+  // Machine Decline Press as his own add; dropped Overhead Tricep Extension.)
   // Bench 225×5 grindy PR; Incline DB 75×8 new anchor.
   {
     id: "h3",
@@ -3842,7 +3848,7 @@ const MOCK_WORKOUT_HISTORY = [
         { weight: 135, reps: 12, type: "working" },
         { weight: 135, reps: 8,  type: "working" },
       ]},
-      { name: "Machine Press", variantLabel: "Hammer Strength Decline Press", sets: [
+      { name: "Machine Decline Press", variantLabel: "Hammer Strength Decline Press", sets: [
         { weight: 90,  reps: 10, type: "working" },
         { weight: 180, reps: 10, type: "working" },
         { weight: 180, reps: 10, type: "working" },
@@ -3914,7 +3920,7 @@ const MOCK_WORKOUT_HISTORY = [
         { weight: 160, reps: 10, type: "working" },
         { weight: 180, reps: 10, type: "working" },
       ]},
-      { name: "Seated Row", variantLabel: "Seated Cable Row", sets: [
+      { name: "Seated Cable Row", variantLabel: "Seated Cable Row", sets: [
         { weight: 160, reps: 10, type: "working" },
         { weight: 160, reps: 10, type: "working" },
         { weight: 180, reps: 10, type: "working" },
@@ -4048,17 +4054,17 @@ const MOCK_COACH_OBSERVATIONS = [
       signal: "Deliberate ramp-to-max on Hip Thrust (90→180→270→360→450), Leg Press (225→360→495→585→630), RDL (135→185→222→225), and Bulgarian Split Squat (95→135→155) — confirmed verbally as preferred training style on leg compounds" } },
   { id: "o2", text: "Cold-start calibration on unfamiliar lifts", createdAt: NOW_FOR_SEED - 5 * DAY, tier: 3,
     provenance: { sessions: ["Push Day · May 3", "Pull Day · May 5", "Push Day · May 10", "Push Day · May 17"],
-      signal: "On lifts with no prior anchor data, first set is a sight-light (e.g. Pec Deck 145→175→160, Bicep Curl 80→70, Machine Press 90→180, Back Extension 140→150). Once anchor data exists, works from the anchor with no test-then-settle behavior" } },
+      signal: "On lifts with no prior anchor data, first set is a sight-light (e.g. Pec Deck 145→175→160, Bicep Curl 80→70, Machine Decline Press 90→180, Back Extension 140→150). Once anchor data exists, works from the anchor with no test-then-settle behavior" } },
   { id: "o3", text: "Doesn't like Overhead Tricep Extension as a standing slot", createdAt: NOW_FOR_SEED - 7 * DAY, tier: 2,
     provenance: { sessions: ["Push Day · May 3", "Push Day · May 10"],
       signal: "Skipped on two consecutive Push days. Confirmed verbally as filler — happy to be suggested occasionally but not on the standing card" } },
   { id: "o4", text: "Batch-logs weights after the exercise, not between sets", createdAt: NOW_FOR_SEED - 8 * DAY, tier: 3,
     provenance: { sessions: ["Leg Day · May 8", "Back Day · May 12", "Pull Day · May 26", "Back Day · May 31", "Leg Day · Jun 2"],
       signal: "Rest-timer values between sets frequently 0–10s, then a single large gap before the next exercise — consistent with logging the full exercise at once rather than after each set. Also leaves the session timer running past the workout (S12 ~28h, S13 ~95-min trailing rest) — duration is best-effort only per D-086. Rest values must not be referenced by Coach" } },
-  { id: "o5", text: "Machine Press — keep in occasional rotation on Push", createdAt: NOW_FOR_SEED - 0 * DAY, tier: 2,
+  { id: "o5", text: "Machine press (chest/decline) — keep in occasional rotation on Push", createdAt: NOW_FOR_SEED - 0 * DAY, tier: 2,
     encodedAs: "occasional", encodedAt: new Date("2026-05-31T12:00:00").getTime(), refreshDueAt: new Date("2026-11-30T12:00:00").getTime(),
     provenance: { sessions: ["Push Day · May 10", "Push Day · May 17", "Push Day · May 31"],
-      signal: "Recurring off-card add across Push sessions (HS Decline 180×10 then 225×8; HS Chest Press 180×10 at S11). n=3 inquiry surfaced S11; user selected \"Keep as occasional.\" Encoded at the lift level per D-082 (mixed variants); enters the D-083 rotation pool — surfaces in ~1 of 3-5 Push prescriptions, not every one. 6-month refresh due Nov 30, 2026" } },
+      signal: "Recurring off-card machine-press add across Push sessions (HS Decline 180×10 at S4, 225×8 at S6; HS Chest Press 180×10 at S11). n=3 inquiry surfaced S11; user selected \"Keep as occasional.\" Originally encoded as one Machine Press lift (D-082, mixed variants); the D-085 split now separates these into Machine Chest Press and Machine Decline Press, so the preference spans both and enters the D-083 rotation pool — one surfaces in ~1 of 3-5 Push prescriptions, not every one. 6-month refresh due Nov 30, 2026" } },
 ];
 
 // Benchmark rows render only if isPR or isNew. Each row's achievedAt is the
@@ -4079,7 +4085,7 @@ const MOCK_PROGRESS_PRS = [
   { id: "p30", exerciseName: "DB Bench Press",                 value: "80 × 9",   isPR: false, isNew: true,  achievedAt: _D("2026-05-31") },
   { id: "p31", exerciseName: "Barbell Overhead Press",         value: "135 × 6",  isPR: false, isNew: true,  achievedAt: _D("2026-05-31") },
   { id: "p32", exerciseName: "Tricep Kickback",                value: "30 × 10",  isPR: false, isNew: true,  achievedAt: _D("2026-05-31") },
-  { id: "p33", exerciseName: "Machine Press (HS Chest)",       value: "180 × 10", isPR: false, isNew: true,  achievedAt: _D("2026-05-31") },
+  { id: "p33", exerciseName: "Machine Chest Press",       value: "180 × 10", isPR: false, isNew: true,  achievedAt: _D("2026-05-31") },
   // ── Session 10 · May 26 ──
   { id: "p34", exerciseName: "Bicep Curl (Barbell)",           value: "95 × 10",  isPR: false, isNew: true,  achievedAt: _D("2026-05-26") },
   // ── Session 9 · May 25 ──
@@ -4092,7 +4098,7 @@ const MOCK_PROGRESS_PRS = [
   // ── Session 6 · May 17 ──
   { id: "p1",  exerciseName: "Bench Press (Barbell)",          value: "225 × 6",  isPR: true,  isNew: false, achievedAt: _D("2026-05-17") },
   { id: "p2",  exerciseName: "Pec Deck Chest Fly",             value: "155 × 15", isPR: false, isNew: true,  achievedAt: _D("2026-05-17") },
-  { id: "p3",  exerciseName: "Machine Press (HS Decline)",     value: "225 × 8",  isPR: true,  isNew: false, achievedAt: _D("2026-05-17") },
+  { id: "p3",  exerciseName: "Machine Decline Press",     value: "225 × 8",  isPR: true,  isNew: false, achievedAt: _D("2026-05-17") },
   { id: "p4",  exerciseName: "Dip (Bodyweight)",               value: "BW × 10",  isPR: true,  isNew: false, achievedAt: _D("2026-05-24") },
   { id: "p5",  exerciseName: "DB Lateral Raise",               value: "20 × 15",  isPR: false, isNew: true,  achievedAt: _D("2026-05-17") },
   { id: "p6",  exerciseName: "DB Front Raise",                 value: "20 × 10",  isPR: false, isNew: true,  achievedAt: _D("2026-05-17") },
@@ -8551,11 +8557,12 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
           intro: b.intro,
           outro: b.outro,
           coachWorkout: res.coachWorkout, // carried so Start can export it
+          _toolCalls: (res && res._toolCalls) || null,
         });
       } else if (res && res.kind === "reply") {
-        streamText(res.message, { role: "coach", kind: "text", quickReplies: res.quickReplies || null });
+        streamText(res.message, { role: "coach", kind: "text", quickReplies: res.quickReplies || null, _toolCalls: (res && res._toolCalls) || null });
       } else {
-        streamText(COACH_ERROR_TEXT, { role: "coach", kind: "text" });
+        streamText(COACH_ERROR_TEXT, { role: "coach", kind: "text", _toolCalls: (res && res._toolCalls) || null });
       }
     });
   };
@@ -8596,11 +8603,12 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
           workout: { title: b.title, exercises: b.exercises },
           intro: b.intro, outro: b.outro,
           coachWorkout: res.coachWorkout,
+          _toolCalls: (res && res._toolCalls) || null,
         });
       } else if (res && res.kind === "reply") {
-        streamText(res.message, { role: "coach", kind: "text", quickReplies: res.quickReplies || null });
+        streamText(res.message, { role: "coach", kind: "text", quickReplies: res.quickReplies || null, _toolCalls: (res && res._toolCalls) || null });
       } else {
-        streamText(COACH_ERROR_TEXT, { role: "coach", kind: "text" });
+        streamText(COACH_ERROR_TEXT, { role: "coach", kind: "text", _toolCalls: (res && res._toolCalls) || null });
       }
     });
   };
@@ -13928,7 +13936,6 @@ function TabBar({ active, onTab }) {
         display: "flex", justifyContent: "space-around",
         borderTop: `1px solid ${COLORS.border}`, background: COLORS.bg,
         flexShrink: 0, position: "relative", padding: "8px 0 6px",
-        paddingBottom: "calc(6px + env(safe-area-inset-bottom))",
       }}
     >
       {/* Sliding gold underline. Single-sided accent → no border-radius. */}
@@ -14509,21 +14516,36 @@ export default function MYGFitness() {
       lastWorkout: lastMsg ? lastMsg.coachWorkout : null,
       recentChat, userMessage, fullPool,
     });
+    // Dogfooding (Session 65): capture the tool trace for the copy-debug export.
+    // A spy around runTool records every executor call — name, input, the exact
+    // output the model got back, and how long it took — WITHOUT touching the
+    // callCoach loop (which stays byte-identical for the Node stress harness).
+    // This is the "did Coach actually fetch real data, and what came back"
+    // evidence the front-facing chat can't show. It rides back on the reply as
+    // _toolCalls and is persisted onto the stored Coach message (see sendMessage
+    // / regenerate), then surfaced by buildChatDebug.
+    const toolCalls = [];
     try {
       // Session 62: Coach now has read tools. Executors close over live app
       // state at send time; the loop in callCoach handles the round-trips.
       const toolState = { workoutHistory, customExercises, coachRules, coachObservations, progressPRs };
       const { text } = await callCoach(COACH_SYSTEM_PROMPT, turn, {
         tools: COACH_TOOL_DEFS,
-        runTool: (name, input) => executeCoachTool(name, input, toolState),
+        runTool: (name, input) => {
+          const started = Date.now();
+          const output = executeCoachTool(name, input, toolState);
+          toolCalls.push({ name, input, output, ms: Date.now() - started });
+          return output;
+        },
       });
       // Session 60: the parse ladder moved to the pure parseCoachReply so it
       // can be unit-tested; it also understands the kind:"text" quick-reply
       // envelope (chips ride back on res.quickReplies).
-      return parseCoachReply(text, (obj) => validateCoachWorkout(obj, COACH_LIB_INDEX));
+      const parsed = parseCoachReply(text, (obj) => validateCoachWorkout(obj, COACH_LIB_INDEX));
+      return { ...parsed, _toolCalls: toolCalls };
     } catch (e) {
       console.warn("[coach] turn failed", e);
-      return { kind: "error" };
+      return { kind: "error", _toolCalls: toolCalls };
     }
   };
 
@@ -14563,6 +14585,10 @@ export default function MYGFitness() {
     const messages = ((chat && chat.messages) || []).map((m) => {
       const base = { role: m.role, kind: m.kind || "text", text: m.text || "" };
       if (m.kind === "workout" && m.coachWorkout) base.coachWorkout = m.coachWorkout;
+      if (m.quickReplies && m.quickReplies.length) base.quickReplies = m.quickReplies;
+      // Session 65 dogfooding: the tool trace (what Coach fetched + what came
+      // back), so a pasted transcript shows whether a claimed number is real.
+      if (m._toolCalls && m._toolCalls.length) base.toolCalls = m._toolCalls;
       return base;
     });
     return JSON.stringify({
@@ -15389,7 +15415,7 @@ export default function MYGFitness() {
   };
 
   return (
-    <div style={{ width: "100vw", height: "100vh", background: COLORS.bg }}>
+    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#0a0a0a", padding: "40px 20px" }}>
       <style>{`
         input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 24px; height: 24px; border-radius: 50%; background: #FFD700; cursor: pointer; border: 3px solid #111111; box-shadow: 0 0 8px rgba(255,215,0,0.4); }
         input[type="range"]::-moz-range-thumb { width: 24px; height: 24px; border-radius: 50%; background: #FFD700; cursor: pointer; border: 3px solid #111111; box-shadow: 0 0 8px rgba(255,215,0,0.4); }
