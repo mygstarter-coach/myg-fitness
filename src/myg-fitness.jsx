@@ -9179,26 +9179,29 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
         </div>
       )}
 
-      {/* Quick-reply chips — the user's pre-written answers, floating above
-          the composer (Claude placement). Tap sends the label as a user
-          message via sendMessage. onPointerDown + preventDefault for the same
-          reason as the send button (D-116): onClick would fire after the
-          textarea blur shifts the composer, eating the first tap. */}
+      {/* Quick-reply chips — the user's pre-written answers, stacked
+          vertically above the composer (Claude placement). Vertical so long
+          labels ("Seated Cable Row") never truncate the way a horizontal
+          scroll row clipped them (Session 64 dogfooding). Tap sends the label
+          as a user message via sendMessage. onPointerDown + preventDefault for
+          the same reason as the send button (D-116): onClick would fire after
+          the textarea blur shifts the composer, eating the first tap. */}
       {quickReplies && quickReplies.length > 0 && (
         <div style={{
-          padding: "8px 16px 0", display: "flex", gap: 8,
-          overflowX: "auto", flexShrink: 0, WebkitOverflowScrolling: "touch",
+          padding: "8px 16px 0", display: "flex", flexDirection: "column",
+          gap: 6, flexShrink: 0,
         }}>
           {quickReplies.map((q, qi) => (
             <button
               key={qi}
               onPointerDown={(e) => { e.preventDefault(); sendMessage(q); }}
               style={{
-                flexShrink: 0, padding: "7px 14px", borderRadius: 16,
+                width: "100%", textAlign: "left",
+                padding: "11px 14px", borderRadius: 12,
                 background: "transparent",
                 border: "1px solid rgba(255,215,0,0.35)",
-                color: COLORS.gold, fontSize: 13, fontFamily: "inherit",
-                cursor: "pointer", whiteSpace: "nowrap",
+                color: COLORS.gold, fontSize: 14, fontFamily: "inherit",
+                cursor: "pointer", lineHeight: 1.25,
               }}
             >
               {q}
