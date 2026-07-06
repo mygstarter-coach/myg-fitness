@@ -1070,19 +1070,29 @@ You can look things up mid-reply: a lift's full logged history (get_exercise_his
 - Talk like a coach about what comes back. Never mention tool names, JSON, ids, or internal fields. Translate data into plain training language: "Bench is climbing — 225×6 two weeks ago, 235×5 Friday."
 
 == QUICK REPLIES (tappable chips) ==
-When — and ONLY when — your reply puts a bounded choice in front of the user (a question with 2-4 clear answers, a decision between named options, a confirm/deny), respond as a JSON object instead of plain text:
-{"kind":"text","text":"your message exactly as you would have written it","quickReplies":["First option","Second option"]}
+When — and ONLY when — your reply puts a bounded choice in front of the user (a question with 2-4 clear answers, a decision between named options, a confirm/deny), your ENTIRE reply is this one JSON object and nothing else:
+{"kind":"text","text":"<your full message goes HERE, inside this field>","quickReplies":["First option","Second option"]}
+The message goes ONLY inside the "text" field. Your whole reply starts with { and ends with } — do NOT also write the message as a sentence before or after the object. Writing a loose sentence outside the object breaks the app.
+
+WRONG — a loose sentence, THEN the object (this is the failure that breaks rendering):
+Which exercise do you want to swap out?
+{"kind":"text","text":"Which exercise do you want to swap out?","quickReplies":["Bench Press","Overhead Press"]}
+
+RIGHT — the object only:
+{"kind":"text","text":"Which exercise do you want to swap out?","quickReplies":["Bench Press","Overhead Press"]}
+
 Rules:
 - 2-4 chips, each 1-4 words, each a complete answer the user could have typed. They are the user's answers, not a menu of features.
 - Chips must map to THIS message only. Never generic ("Build workout", "View stats") unless that is literally the choice you posed.
 - Open conversation, explanations, acknowledgments, greetings: plain text, NO JSON, no chips.
 - Never attach quickReplies to a workout JSON — the app adds workout action chips itself.
-- If the user taps "Swap something" after a workout you built, reply with kind:"text" asking which one, with the workout's exercise names as the chips; when they pick, re-issue the full updated CoachWorkout JSON. If they tap "Make it shorter", re-issue a shorter CoachWorkout (fewer exercises/sets), same focus.
+- If the user taps "Swap something" after a workout you built, reply with ONLY the kind:"text" object above — the question in its "text" field, the workout's exercise names as the chips, and NO sentence outside the object. When they pick, re-issue the full updated CoachWorkout JSON. If they tap "Make it shorter", re-issue a shorter CoachWorkout (fewer exercises/sets), same focus.
 
 == HOW TO RESPOND (decide every message) ==
 - User wants a workout built ("build me a leg day", "push", "my next workout") -> respond with ONLY the CoachWorkout JSON object below. No prose, no markdown, no code fences.
 - Your reply poses a bounded 2-4 option choice -> the kind:"text" JSON object above. Nothing outside the JSON.
 - Everything else -> plain conversational text. No JSON, no fences.
+Whenever your reply is a JSON object (workout OR text): the WHOLE reply is that object. It starts with { and ends with }. No lead-in sentence, no trailing note, no markdown code fences. One loose sentence outside the object breaks the app.
 
 == When building a workout ==
 You generate ONE workout from the user's profile, the focus they want (infer it from their message and their split), and ONLY the exercises available to them.
@@ -1591,10 +1601,51 @@ function sanitizeQuickReplies(arr) {
   }
   return out.length ? out : null;
 }
+// Pull the first recognized Coach envelope ({kind:"workout"} or {kind:"text"})
+// out of a reply, even when the model wrapped prose around it (D-131). The
+// contract is "emit ONLY the JSON object" — but LLM structured-output
+// compliance is never 100%, and a whole-string-strict parse turns every slip
+// (a lead-in sentence, a trailing note, an un-stripped fence) into a visible
+// raw-JSON dump. This scans for a balanced, string-aware {...} block that
+// JSON-parses into a known envelope. It is envelope hygiene, NOT content
+// guessing: the extracted object still runs validate() below, so the D-001/§4
+// fail-loud contract on workout CONTENT is untouched — a malformed workout is
+// still a loud error, we just stop mistaking a valid payload for prose because
+// the model added packaging around it. { obj, salvaged } — salvaged=true means
+// prose surrounded the object (logged so dogfooding keeps a compliance rate
+// signal even once users stop seeing the dump).
+function extractCoachEnvelope(clean) {
+  const isEnvelope = (o) => o && (o.kind === "workout" || o.kind === "text");
+  // Fast path: the whole reply is the object (the correct, common case).
+  if (clean.startsWith("{")) {
+    try { const whole = JSON.parse(clean); if (isEnvelope(whole)) return { obj: whole, salvaged: false }; } catch { /* scan below */ }
+  }
+  // Fallback: find the first embedded {...} that parses to an envelope.
+  for (let i = 0; i < clean.length; i++) {
+    if (clean[i] !== "{") continue;
+    let depth = 0, inStr = false, esc = false;
+    for (let j = i; j < clean.length; j++) {
+      const c = clean[j];
+      if (inStr) {
+        if (esc) esc = false; else if (c === "\\") esc = true; else if (c === '"') inStr = false;
+      } else if (c === '"') { inStr = true; }
+      else if (c === "{") { depth++; }
+      else if (c === "}") {
+        depth--;
+        if (depth === 0) {
+          const candidate = clean.slice(i, j + 1);
+          try { const parsed = JSON.parse(candidate); if (isEnvelope(parsed)) return { obj: parsed, salvaged: (i !== 0 || j + 1 !== clean.length) }; } catch { /* keep scanning */ }
+          break; // not an envelope from here; advance i to the next "{"
+        }
+      }
+    }
+  }
+  return { obj: null, salvaged: false };
+}
 function parseCoachReply(rawText, validate) {
   const clean = (rawText || "").replace(/```json/g, "").replace(/```/g, "").trim();
-  let obj = null;
-  if (clean.startsWith("{")) { try { obj = JSON.parse(clean); } catch { obj = null; } }
+  const { obj, salvaged } = extractCoachEnvelope(clean);
+  if (salvaged) console.warn("[coach] recovered a JSON envelope wrapped in prose — model emitted text outside the object (D-131)");
   if (obj && obj.kind === "workout") {
     const v = validate(obj);
     if (!v.ok) { console.warn("[coach] schema violations", v.errors); return { kind: "error" }; }
@@ -1603,8 +1654,11 @@ function parseCoachReply(rawText, validate) {
   if (obj && obj.kind === "text" && typeof obj.text === "string" && obj.text.trim()) {
     return { kind: "reply", message: obj.text.trim(), quickReplies: sanitizeQuickReplies(obj.quickReplies) };
   }
-  const message = obj && typeof obj.message === "string" ? obj.message : clean;
-  return { kind: "reply", message: message || COACH_ERROR_TEXT, quickReplies: null };
+  // No recognized envelope. Preserve the legacy bare-{message} path, else prose.
+  if (clean.startsWith("{")) {
+    try { const o = JSON.parse(clean); if (o && typeof o.message === "string") return { kind: "reply", message: o.message, quickReplies: null }; } catch { /* prose */ }
+  }
+  return { kind: "reply", message: clean || COACH_ERROR_TEXT, quickReplies: null };
 }
 
 
