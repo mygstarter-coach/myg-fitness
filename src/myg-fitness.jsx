@@ -109,6 +109,7 @@ function hydrateActiveWorkout(w) {
 
 function saveSnapshot(state) {
   if (!storageAvailable()) return;
+  if (IMPORT_LOCK) return; // an import just wrote the snapshot; the reload owns storage now
   try {
     const snapshot = {
       v: 1,
@@ -259,6 +260,71 @@ function clearSnapshot() {
     window.localStorage.removeItem(STORAGE_KEY);
   } catch {
     // no-op
+  }
+}
+
+/* ── Data Export / Import (Session 68 — prototype-era data bridge) ──
+   Two jobs, one mechanism:
+   (1) BACKUP — the Vercel prototype persists only to localStorage; one
+       storage purge is total data loss. Export captures the ENTIRE
+       snapshot (coach chats incl. workout cards, active workout,
+       history with prescriptions + deviation receipts + classification,
+       anchors, rules, observation records, prefs) as a JSON envelope
+       the owner saves anywhere. Import restores it.
+   (2) THE DOGFOODING FEED — the export is the app's whole memory in the
+       engines' own vocabulary, so dropping it into the dev project lets
+       future sessions read REAL engine state instead of hand-written
+       logs.
+   FUTURE-PROOF BY CONSTRUCTION: import writes the snapshot to
+   localStorage and reloads — hydration then runs the full migration
+   chain (classification → deviation → observations → anchors, plus any
+   engine added later), so an old export imported after new engines ship
+   is upgraded exactly like old device data. Never parse-and-set state
+   directly; the reload IS the compatibility layer.
+   Real accounts + backend remain the §16 launch item; this is the
+   bridge, DEV-flavored like the other scaffolding. */
+const EXPORT_KIND = "myg_data_export";
+const EXPORT_VERSION = 1;
+// Set while an import is writing the snapshot: saveSnapshot must not
+// race the reload and clobber the imported data with live React state.
+let IMPORT_LOCK = false;
+
+function exportSnapshotText() {
+  if (!storageAvailable()) return null;
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    return JSON.stringify({
+      kind: EXPORT_KIND,
+      exportVersion: EXPORT_VERSION,
+      exportedAt: new Date().toISOString(),
+      snapshot: JSON.parse(raw),
+    }, null, 2);
+  } catch {
+    return null;
+  }
+}
+
+function importSnapshotText(text) {
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return { ok: false, error: "That isn't valid JSON — paste the whole export, start to finish." };
+  }
+  // Accept the envelope OR a bare snapshot (paste tolerance).
+  const snapshot = parsed && parsed.kind === EXPORT_KIND ? parsed.snapshot : parsed;
+  if (!snapshot || typeof snapshot !== "object" || snapshot.v !== 1) {
+    return { ok: false, error: "This doesn't look like a MYG export (missing snapshot signature)." };
+  }
+  if (!storageAvailable()) return { ok: false, error: "Storage is unavailable in this browser." };
+  try {
+    IMPORT_LOCK = true;
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot));
+    return { ok: true };
+  } catch {
+    IMPORT_LOCK = false;
+    return { ok: false, error: "Couldn't write to storage (quota or private mode)." };
   }
 }
 
@@ -1584,6 +1650,13 @@ function coachObservationStatus(o) {
     const refresh = o.refreshDueAt && Date.now() > o.refreshDueAt ? "; refresh due — worth re-checking with the user" : "";
     return `occasional-rotation preference — user chose "keep as occasional"${age}${refresh}`;
   }
+  // Engine-counted records (Session 68, D-071) speak by status. Raw tier
+  // integers and window counters never appear — D-150 principle.
+  if (o.source === "engine") {
+    if (o.status === "inquiry_pending") return "pattern confirmed — seen three or more times; a question for the user is pending, do not pre-empt it";
+    if ((o.occurrences || []).length >= 2) return "asking soon — pattern seen twice; okay to raise when clearly relevant, fades on its own if it stops";
+    return "watching — single occurrence, keep silent";
+  }
   if (o.tier >= 3) {
     const age = o.createdAt ? ` — established ${monthsSince(o.createdAt)} month(s) ago` : "";
     return `standing pattern${age}`;
@@ -1593,15 +1666,19 @@ function coachObservationStatus(o) {
 }
 
 function coachToolObservations(input, state) {
-  const obs = [...(state.coachObservations || [])].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  const obs = [...(state.coachObservations || [])]
+    // Closed / revoked engine records are history, not information —
+    // they never reach Coach (or the user).
+    .filter((o) => !(o && o.source === "engine" && (o.status === "closed" || o.status === "revoked")))
+    .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
   return {
     count: obs.length,
     observations: obs.map((o) => ({
-      note: o.text,
+      note: obsText(o),
       status: coachObservationStatus(o),
       filed_on: o.createdAt ? coachMsToDate(o.createdAt) : null,
-      from_sessions: (o.provenance && o.provenance.sessions) || [],
-      detail: (o.provenance && o.provenance.signal) || null,
+      from_sessions: (obsProvenance(o) && obsProvenance(o).sessions) || [],
+      detail: (obsProvenance(o) && obsProvenance(o).signal) || null,
     })),
   };
 }
@@ -2829,6 +2906,346 @@ function migrateHistoryDeviation(history, customs = []) {
   });
 }
 
+/* ═══════════════════════════════════════════════════════════════════
+   OBSERVATION ENGINE (Session 68 — D-071 cluster realized)
+
+   Counts behavior patterns off the deviation receipts (D-147: the
+   receipts are this engine's event stream). Pure, deterministic, engine-
+   owned — Claude never computes tiers, only reads humanized status via
+   tool (the D-070/D-071 split).
+
+   v1 pattern types (the two the receipts can feed — owner lock S68):
+     off_card_add  — occurrence: target appears in deviation.added[]
+                     opportunity: A/B session whose logged work hits the
+                     target's primary muscle group
+     skip_pattern  — occurrence: target appears in deviation.skipped[]
+                     opportunity: A/B session where target was prescribed
+   BOTH C's are gated out for occurrences AND opportunities (D-081
+   extended by owner lock S68: an abandoned card can neither advance nor
+   decay an observation).
+
+   Tiers (D-024/D-045/D-071): n=1 silent forever (no decay, cost zero);
+   n=2 opens the 4-opportunity decay window — 4 opportunities without
+   recurrence → status "closed" (not even n=1; a fresh occurrence later
+   starts a NEW record); recurrence in-window → n=3 → "inquiry_pending",
+   which persists HEADLESSLY (like stale.surveyPending) until the survey
+   arc builds the ask surface. inquiry_pending does not decay — it earned
+   the ask; D-071 specifies decay for tier 2 only.
+
+   Encoding scope (D-082, owner lock S68): derived from variant
+   consistency across occurrences — all same non-null variant → scope
+   "variant"; ANY mixing (or unknown variants) → scope "lift". No
+   "mostly" cleverness. Recomputed on every occurrence.
+
+   Occasional rotation (D-083, owner lock S68 — floor AND ceiling,
+   "keep it in rotation"): pool = records with encodedAs "occasional".
+   Ceiling: never two matching-family sessions in a row, min gap
+   ROTATION_MIN_GAP matching sessions since last appearance. Floor: at
+   ROTATION_DUE_GAP matching sessions without an appearance the candidate
+   goes "due" — first in line next day with room. Between the bounds it
+   lands when the day has slot room (Coach's call at prescription time —
+   the engine answers ELIGIBILITY only, deterministically; the natural
+   variance comes from the workouts, not RNG). Effective rate ~1-in-3-to-5.
+
+   Record shape (Coach-legible per the schema-editability principle):
+     { schemaVersion, id, source:"engine", type, targets:[{exerciseId,
+       name}], scope, variantLabel, status, tier, occurrences:[{sessionId,
+       date, variantLabel}], windowOpportunities:[{sessionId, date}],
+       encodedAs, encodedAt, refreshDueAt, lastDismissedAt, closedAt,
+       revokedAt, createdAt, updatedAt }
+   tier is stored AND invariant-checked against occurrences.length
+   (D-148 counts-plus-arrays precedent). Coach-authored free-note
+   observations (no `source` field / source "coach") are a different
+   species — this engine never touches them.
+
+   History backfill (owner lock S68, Q4 = TOTAL fresh start): the legacy
+   hand-simulated Machine Press "occasional" record is WIPED and the
+   receipts replay from scratch under final rules — the live engine
+   re-notices, re-counts, and re-asks through the real loop. Replay is
+   SILENT: an n=3 parks as inquiry_pending, nothing fires at hydration.
+   Encoded/dismissed records, when they exist in the future, are TERMINAL
+   to replay (user answers supersede their own counting history — the
+   D-135/D-067 write-provenance principle).
+   ═══════════════════════════════════════════════════════════════════ */
+const OBSERVATION_SCHEMA_VERSION = 1;
+const OBS_DECAY_WINDOW = 4;       // tier-2 opportunities without recurrence → closed (D-071)
+const ROTATION_MIN_GAP = 2;       // ceiling: matching sessions required since last appearance
+const ROTATION_DUE_GAP = 5;       // floor: matching sessions without appearance → due
+const OBS_REFRESH_MONTHS = 6;     // encoded-preference refresh timer (D-071)
+
+// Target identity key — exerciseId when present, lowercased name fallback
+// (nothing is invisible; mirrors the deviation diff's keying).
+function obsTargetKey(exerciseId, name) {
+  return exerciseId || `name:${(name || "").trim().toLowerCase()}`;
+}
+function obsRecordKey(type, exerciseId, name) {
+  return `obs_${type}_${obsTargetKey(exerciseId, name)}`;
+}
+function obsMatchesTarget(o, exerciseId, name) {
+  const k = obsTargetKey(exerciseId, name);
+  return (o.targets || []).some((t) => obsTargetKey(t.exerciseId, t.name) === k);
+}
+
+// D-082 scope from variant consistency: all-same non-null → variant;
+// any mixing or unknowns → lift.
+function obsScopeFromOccurrences(occurrences) {
+  const labels = (occurrences || []).map((x) => x.variantLabel || null);
+  if (labels.length === 0 || labels.some((l) => l === null)) return { scope: "lift", variantLabel: null };
+  const first = labels[0];
+  return labels.every((l) => l === first)
+    ? { scope: "variant", variantLabel: first }
+    : { scope: "lift", variantLabel: null };
+}
+
+// Primary muscle group for a target, via the library (never persisted on
+// the record — the library is the source of truth).
+function obsTargetPrimary(target, customs) {
+  const def = (target.exerciseId && findExerciseById(target.exerciseId, customs)) || findExerciseByName(target.name, customs);
+  return def ? def.primary : null;
+}
+
+/* The fold: one committed session (carrying its deviation receipt) into
+   the observation store. Pure — returns a new array; untouched records
+   keep reference equality (migration idempotency checks rely on this). */
+function applySessionToObservations(observations, session, customs = []) {
+  const obs = Array.isArray(observations) ? observations : [];
+  const dev = session && session.deviation;
+  // Mode gate (D-081 + owner lock S68): A/B only, never either C — no
+  // occurrences, no opportunities. No receipt = no-prescription C.
+  if (!dev || (dev.mode !== "A" && dev.mode !== "B")) return obs;
+
+  const now = Date.now();
+  const sessionRef = { sessionId: session.id, date: session.date };
+
+  // Events this session, keyed by record identity.
+  const events = new Map(); // recordKey → { type, exerciseId, name, variantLabel }
+  for (const ad of dev.added || []) {
+    events.set(obsRecordKey("off_card_add", ad.exerciseId, ad.name),
+      { type: "off_card_add", exerciseId: ad.exerciseId || null, name: ad.name, variantLabel: ad.variant || null });
+  }
+  for (const sk of dev.skipped || []) {
+    events.set(obsRecordKey("skip_pattern", sk.exerciseId, sk.name),
+      { type: "skip_pattern", exerciseId: sk.exerciseId || null, name: sk.name, variantLabel: null });
+  }
+
+  // Primary muscle groups this session actually worked (for off-card-add
+  // opportunity). Working sets only — warmups don't make an opportunity.
+  const workedPrimaries = new Set();
+  for (const ex of session.exercises || []) {
+    const working = (ex.sets || []).filter((s) => s.type !== "warmup").length;
+    if (working === 0) continue;
+    const p = obsTargetPrimary({ exerciseId: ex.exerciseId, name: ex.name }, customs);
+    if (p) workedPrimaries.add(p);
+  }
+  // Names/ids prescribed this session (for skip-pattern opportunity):
+  // everything on the card = kept + skipped.
+  const prescribedKeys = new Set();
+  for (const k of dev.kept || []) prescribedKeys.add(obsTargetKey(k.exerciseId, k.name));
+  for (const s of dev.skipped || []) prescribedKeys.add(obsTargetKey(s.exerciseId, s.name));
+
+  const next = obs.map((o) => {
+    if (!o || o.source !== "engine") return o;                       // Coach-authored: never touched
+    const key = obsRecordKey(o.type, (o.targets && o.targets[0] && o.targets[0].exerciseId) || null,
+      (o.targets && o.targets[0] && o.targets[0].name) || "");
+    // Terminal states: encoded / dismissed-cooldown / closed / revoked
+    // records are never advanced or decayed by the fold. (Encoded =
+    // the user answered; the rotation pool reads them; refresh timers
+    // govern their future — D-135/D-067 provenance principle.)
+    if (o.status !== "watching" && o.status !== "inquiry_pending") return o;
+
+    const ev = events.get(key);
+    if (ev) {
+      // Occurrence — once per session max.
+      const occ = o.occurrences || [];
+      if (occ.length && occ[occ.length - 1].sessionId === session.id) return o;
+      const occurrences = [...occ, { ...sessionRef, variantLabel: ev.variantLabel }];
+      const { scope, variantLabel } = obsScopeFromOccurrences(occurrences);
+      const tier = Math.min(occurrences.length, 3);
+      return {
+        ...o, occurrences, tier, scope, variantLabel,
+        windowOpportunities: [],                                     // recurrence resets the window
+        status: occurrences.length >= 3 ? "inquiry_pending" : "watching",
+        updatedAt: now,
+      };
+    }
+    // No occurrence — was this session an opportunity? Decay applies to
+    // tier 2 only (n=1 lives forever; inquiry_pending earned the ask).
+    if (o.status !== "watching" || (o.occurrences || []).length < 2) return o;
+    const target = (o.targets || [])[0];
+    if (!target) return o;
+    let opportunity = false;
+    if (o.type === "off_card_add") {
+      const p = obsTargetPrimary(target, customs);
+      opportunity = !!p && workedPrimaries.has(p);
+    } else if (o.type === "skip_pattern") {
+      opportunity = prescribedKeys.has(obsTargetKey(target.exerciseId, target.name));
+    }
+    if (!opportunity) return o;
+    const windowOpportunities = [...(o.windowOpportunities || []), sessionRef];
+    if (windowOpportunities.length >= OBS_DECAY_WINDOW) {
+      return { ...o, windowOpportunities, status: "closed", closedAt: now, updatedAt: now };
+    }
+    return { ...o, windowOpportunities, updatedAt: now };
+  });
+
+  // Fresh events with no live record → new n=1 records. (A closed or
+  // revoked record does NOT resurrect — D-071: decay returns to "no
+  // observation"; a fresh occurrence starts a genuinely new count. The
+  // deterministic id would collide with a terminal record still in the
+  // store, so fresh records get a date-suffixed id in that case.)
+  for (const [key, ev] of events) {
+    const live = next.some((o) => o && o.source === "engine" && o.status !== "closed" && o.status !== "revoked"
+      && obsRecordKey(o.type, o.targets[0] && o.targets[0].exerciseId, o.targets[0] && o.targets[0].name) === key
+      && o.type === ev.type);
+    if (live) continue;
+    const idBase = obsRecordKey(ev.type, ev.exerciseId, ev.name);
+    const id = next.some((o) => o && o.id === idBase) ? `${idBase}_${session.date || now}` : idBase;
+    next.push({
+      schemaVersion: OBSERVATION_SCHEMA_VERSION,
+      id,
+      source: "engine",
+      type: ev.type,
+      targets: [{ exerciseId: ev.exerciseId, name: ev.name }],
+      scope: ev.variantLabel ? "variant" : "lift",
+      variantLabel: ev.variantLabel || null,
+      status: "watching",
+      tier: 1,
+      occurrences: [{ ...sessionRef, variantLabel: ev.variantLabel }],
+      windowOpportunities: [],
+      encodedAs: null, encodedAt: null, refreshDueAt: null,
+      lastDismissedAt: null, closedAt: null, revokedAt: null,
+      createdAt: now, updatedAt: now,
+    });
+  }
+  return next;
+}
+
+/* Inquiry resolution (the survey arc will call this; shipped now so the
+   encode path is real and testable — D-083). v1 handles the two
+   resolutions that live INSIDE the observation record: "occasional"
+   (the D-083 soft preference) and "dismiss" (30-day cooldown per
+   §10.10). "standing" / "never" create §12.6 rules — that's engine 3's
+   write path, deliberately not here. */
+function resolveObservationInquiry(o, resolution, nowMs = Date.now()) {
+  if (!o || o.source !== "engine") return o;
+  if (resolution === "occasional") {
+    const refreshDueAt = nowMs + OBS_REFRESH_MONTHS * 30 * 24 * 3600 * 1000;
+    return { ...o, status: "encoded", encodedAs: "occasional", encodedAt: nowMs, refreshDueAt, updatedAt: nowMs };
+  }
+  if (resolution === "dismiss") {
+    return { ...o, status: "watching", lastDismissedAt: nowMs, updatedAt: nowMs };
+  }
+  return o;
+}
+
+/* D-083 rotation pool eligibility — deterministic, engine-owned. Returns
+   every pool member for a session family with its status so Coach (and
+   the tests) can see the whole picture:
+     "due"      — floor hit (ROTATION_DUE_GAP+ matching sessions without
+                  it): first in line for the next day with room
+     "eligible" — ceiling cleared (ROTATION_MIN_GAP+ matching sessions
+                  since last appearance): include if the day has room
+     "resting"  — appeared too recently; do not include
+   Gap counts committed sessions whose classification.family matches,
+   newest→oldest, until the lift last appeared (working sets only). */
+function rotationCandidatesFor(family, history, observations, customs = []) {
+  const pool = (observations || []).filter((o) =>
+    o && o.source === "engine" && o.status === "encoded" && o.encodedAs === "occasional");
+  if (pool.length === 0) return [];
+  const matching = (history || []).filter((s) => s && s.classification && s.classification.family === family);
+  // history is stored newest-first; keep that order for gap counting.
+  const out = [];
+  for (const o of pool) {
+    // Family relevance: at least one target's primary belongs to this family.
+    const relevant = (o.targets || []).some((t) => {
+      const def = (t.exerciseId && findExerciseById(t.exerciseId, customs)) || findExerciseByName(t.name, customs);
+      if (!def) return false;
+      const fams = classifierResolve(def).fams;
+      return Array.isArray(fams) && fams.includes(family);
+    });
+    if (!relevant) continue;
+    let gap = 0;
+    let found = false;
+    for (const s of matching) {
+      const appeared = (s.exercises || []).some((ex) =>
+        (ex.sets || []).some((t) => t.type !== "warmup") && obsMatchesTarget(o, ex.exerciseId, ex.name));
+      if (appeared) { found = true; break; }
+      gap++;
+    }
+    if (!found) gap = matching.length;   // never appeared since encoding: gap = all matching sessions
+    const status = gap >= ROTATION_DUE_GAP ? "due" : gap >= ROTATION_MIN_GAP ? "eligible" : "resting";
+    out.push({
+      names: (o.targets || []).map((t) => t.name),
+      exerciseIds: (o.targets || []).map((t) => t.exerciseId).filter(Boolean),
+      status, gapSessions: gap, observationId: o.id,
+    });
+  }
+  // Due candidates first — the floor outranks everything else in line.
+  return out.sort((a, b) => (a.status === "due" ? 0 : 1) - (b.status === "due" ? 0 : 1));
+}
+
+/* Hydration backfill (D-142 pattern, D-071 flavor — owner locks S68).
+   Runs when the store carries NO engine-source records: wipes the legacy
+   hand-simulated encoded seed (any record with encodedAs but no source —
+   the pre-engine Machine Press "occasional", per the Q4 total-fresh-start
+   lock) and replays the receipt-bearing history oldest→newest through
+   the fold. Silent: n=3s park as inquiry_pending; nothing fires. Value-
+   idempotent: once engine records exist the migration is a no-op; the
+   escape hatch is deleting them (Reset all observations) → next load
+   re-folds. Coach-authored notes pass through untouched. Future encoded
+   records survive as terminal because the fold skips non-watching
+   states. */
+function migrateObservationStore(store, history, customs = []) {
+  const base = Array.isArray(store) ? store : [];
+  if (base.some((o) => o && o.source === "engine")) return base;       // already migrated
+  const kept = base.filter((o) => !(o && o.encodedAs && !o.source));   // wipe legacy encoded seed (Q4)
+  const ordered = [...(history || [])].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  let engineRecords = [];
+  for (const session of ordered) {
+    engineRecords = applySessionToObservations(engineRecords, session, customs);
+  }
+  return [...kept, ...engineRecords];
+}
+
+/* Read-time display text for engine records (D-150 principle: humanized
+   strings derived by pure function, never persisted; names names).
+   Coach-authored records keep their own text. */
+function obsText(o) {
+  if (!o) return "";
+  if (o.source !== "engine") return o.text || "";
+  const name = (o.targets && o.targets[0] && o.targets[0].name) || "an exercise";
+  const label = o.scope === "variant" && o.variantLabel ? `${name} (${o.variantLabel})` : name;
+  if (o.type === "off_card_add") {
+    return o.encodedAs === "occasional"
+      ? `${label} — keep in occasional rotation`
+      : `Keeps adding ${label} off-card`;
+  }
+  return `Keeps skipping ${label} when prescribed`;
+}
+function obsProvenance(o) {
+  if (!o) return null;
+  if (o.source !== "engine") return o.provenance || null;
+  const sessions = (o.occurrences || []).map((x) => x.date).filter(Boolean);
+  const what = o.type === "off_card_add" ? "added off-card" : "skipped though prescribed";
+  const scope = o.scope === "variant" ? ` (consistently the ${o.variantLabel} variant)` : "";
+  return {
+    sessions,
+    signal: `Engine-counted: ${what} in ${(o.occurrences || []).length} session(s)${scope}. Counted from the workout receipts — Coach-prescribed sessions only.`,
+  };
+}
+
+/* User-facing visibility (D-071, the Bible's "n-tier display dissolves"
+   note): engine records surface to the USER only once encoded. n=1/n=2
+   are engine-silent, inquiry_pending waits for the survey arc's ask
+   surface, closed/revoked are history. Coach-authored notes always
+   render. (Coach the LLM sees more via get_observations — watching/
+   pending records DO appear there with keep-silent status strings.) */
+function obsVisibleToUser(o) {
+  if (!o) return false;
+  if (o.source !== "engine") return true;
+  return o.status === "encoded";
+}
+
 /* Demo survey questions for the Finish Flow shell. PLACEHOLDER content —
    the survey UX (D-049: one question per screen, "1 of N", 2-3 options +
    "Other..." escape, no per-question skip) is real and shipping now; the
@@ -2872,34 +3289,34 @@ function buildDemoSurveyQuestions(session, prs) {
 /* ── Shared Components ───────────────────────────────────────── */
 
 function PhoneFrame({ children }) {
-  // Stripped-down passthrough wrapper for real-device rendering.
-  // Previously this rendered a fake 375×812 phone bezel with a fake "9:41"
-  // status bar and home indicator — fine for the artifact preview, but on
-  // a real iPhone it produced a phone-in-a-phone effect. Now it just
-  // provides a flex column container; the surrounding outer wrapper sets
-  // the height, and the existing screen flex layout fills it correctly.
-  //
-  // paddingTop: env(safe-area-inset-top) — in PWA mode (saved to home
-  // screen), iOS draws the app under the status bar. Without this, the
-  // first row of every screen collides with the iOS clock and battery
-  // icons. The bottom safe-area is handled inside TabBar instead, so
-  // the TabBar's background can extend to the true bottom edge.
   return (
     <div
       style={{
-        width: "100%",
-        height: "100%",
-        background: COLORS.bg,
-        position: "relative",
-        overflow: "hidden",
+        width: 375, height: 812, borderRadius: 44, background: COLORS.bg,
+        position: "relative", overflow: "hidden",
+        boxShadow: "0 25px 80px rgba(0,0,0,0.6), 0 0 0 2px #333",
         fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-        display: "flex",
-        flexDirection: "column",
-        paddingTop: "env(safe-area-inset-top)",
+        display: "flex", flexDirection: "column",
       }}
     >
+      <div
+        style={{
+          height: 50, display: "flex", alignItems: "center", justifyContent: "space-between",
+          padding: "0 28px", fontSize: 14, fontWeight: 600, color: COLORS.text, flexShrink: 0,
+        }}
+      >
+        <span>9:41</span>
+        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          <svg width="17" height="12" viewBox="0 0 17 12" fill="white"><rect x="0" y="3" width="3" height="9" rx="1" /><rect x="4.5" y="2" width="3" height="10" rx="1" /><rect x="9" y="0" width="3" height="12" rx="1" /><rect x="13.5" y="1" width="3" height="11" rx="1" fillOpacity="0.3" /></svg>
+          <svg width="16" height="12" viewBox="0 0 16 12" fill="white"><path d="M8 2.4C10.6 2.4 13 3.5 14.7 5.3L16 4C14 1.9 11.1 .5 8 .5S2 1.9 0 4L1.3 5.3C3 3.5 5.4 2.4 8 2.4z" fillOpacity="0.3" /><path d="M8 5.4C9.8 5.4 11.4 6.1 12.6 7.3L13.9 6C12.4 4.5 10.3 3.5 8 3.5S3.6 4.5 2.1 6L3.4 7.3C4.6 6.1 6.2 5.4 8 5.4z" fillOpacity="0.6" /><path d="M8 8.4C9 8.4 9.9 8.8 10.5 9.5L8 12 5.5 9.5C6.1 8.8 7 8.4 8 8.4z" /></svg>
+          <svg width="27" height="13" viewBox="0 0 27 13" fill="white"><rect x="0" y="0.5" width="23" height="12" rx="3.5" stroke="white" strokeWidth="1" fill="none" /><rect x="24.5" y="4" width="2" height="5" rx="1" fillOpacity="0.4" /><rect x="1.5" y="2" width="18" height="9" rx="2" fill="white" /></svg>
+        </div>
+      </div>
       <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
         {children}
+      </div>
+      <div style={{ height: 34, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+        <div style={{ width: 134, height: 5, borderRadius: 3, background: "rgba(255,255,255,0.2)" }} />
       </div>
     </div>
   );
@@ -3130,9 +3547,6 @@ function WelcomeScreen({ onGetStarted, onSignIn }) {
   useEffect(() => { setTimeout(() => setLogoV(true), 200); setTimeout(() => setContentV(true), 900); }, []);
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "0 32px", position: "relative" }}>
-      {/* V.21 marker — temporary build indicator. Bump with each push to
-          verify cache isn't serving stale code. Remove before shipping. */}
-      <div style={{ position: "absolute", top: 16, right: 20, color: COLORS.textSecondary, fontSize: 11, fontWeight: 500, letterSpacing: 1, opacity: 0.7 }}>V.21</div>
       <div style={{ position: "absolute", top: "40%", textAlign: "center", opacity: logoV ? 1 : 0, transform: logoV ? "translateY(-50%) scale(1)" : "translateY(-50%) scale(1.08)", transition: "all 0.9s cubic-bezier(0.22,1,0.36,1)" }}>
         <h1 style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 92, fontWeight: 700, color: COLORS.gold, margin: 0, letterSpacing: 8 }}>MYG</h1>
       </div>
@@ -12680,7 +13094,7 @@ function ProfileTab({
   const isFirstLaunch = (sessionsCount || 0) === 0
     && (!coachRules || coachRules.length === 0)
     && (!progressPRs || progressPRs.length === 0)
-    && (!coachObservations || coachObservations.length === 0);
+    && (!coachObservations || coachObservations.filter(obsVisibleToUser).length === 0);
 
   // Truncation helpers. Each section shows first 3 rows + a link
   // when there are more. Sort by recency for Rules/Observations,
@@ -12693,7 +13107,7 @@ function ProfileTab({
   // the clipboard. Storage / internal identifiers still use the
   // progressPRs name; only user-facing strings are renamed.
   const sortedRules = [...(coachRules || [])].sort((a, b) => b.createdAt - a.createdAt);
-  const sortedObs = [...(coachObservations || [])].sort((a, b) => b.createdAt - a.createdAt);
+  const sortedObs = [...(coachObservations || [])].filter(obsVisibleToUser).sort((a, b) => b.createdAt - a.createdAt);
   const sortedPRs = [...(progressPRs || [])]
     .filter((p) => p.isPR || p.isNew)
     .sort((a, b) => b.achievedAt - a.achievedAt);
@@ -13017,7 +13431,7 @@ function ProfileTab({
             <>
               {visibleObs.map((o) => (
                 <div key={o.id} style={rowLineStyle()}>
-                  <span style={{ ...TYPE.body, flex: 1 }}>{o.text}</span>
+                  <span style={{ ...TYPE.body, flex: 1 }}>{obsText(o)}</span>
                   <span style={{ ...TYPE.meta, whiteSpace: "nowrap", letterSpacing: 1 }}>{formatDaysAgoCap(o.createdAt)}</span>
                 </div>
               ))}
@@ -13129,6 +13543,12 @@ function SettingsSubscreen({
   appVersion = "v2.6",
 }) {
   const [confirmLogout, setConfirmLogout] = useState(false);
+  // Data export/import panels (Session 68). "export" | "import" | null.
+  const [dataPanel, setDataPanel] = useState(null);
+  const [importText, setImportText] = useState("");
+  const [importError, setImportError] = useState(null);
+  const [importArmed, setImportArmed] = useState(false); // two-tap confirm
+  const [copied, setCopied] = useState(false);
   // Rest timer picker modal: "menu" (mode + duration submenu) or null.
   const [timerPickerOpen, setTimerPickerOpen] = useState(false);
   const [timerPickerView, setTimerPickerView] = useState("main"); // "main" | "countdownDuration"
@@ -13330,6 +13750,108 @@ function SettingsSubscreen({
           toggleOn={leaderboardOn}
           onToggle={onChangeLeaderboard}
         />
+
+        {/* ── DATA (Session 68 — export/import bridge) ──
+            Backup for the localStorage-only prototype AND the dogfooding
+            feed for dev sessions. Import overwrites everything and
+            reloads — the reload runs the hydration migration chain, so
+            old exports stay compatible with future engines. */}
+        <div style={headStyle}>DATA</div>
+        <Row
+          label="Export data"
+          desc="Everything — chats, workouts, engine records — as JSON"
+          onClick={() => {
+            setImportError(null); setCopied(false); setImportText("");
+            setDataPanel(dataPanel === "export" ? null : "export");
+          }}
+        />
+        {dataPanel === "export" && (() => {
+          const txt = exportSnapshotText();
+          return (
+            <div style={{ padding: "4px 0 14px" }}>
+              {txt ? (
+                <>
+                  <textarea
+                    readOnly
+                    value={txt}
+                    onFocus={(e) => e.target.select()}
+                    style={{
+                      width: "100%", height: 120, background: "#0d0d0d",
+                      border: `1px solid ${COLORS.border}`, borderRadius: 8,
+                      color: "#9a9a9a", fontSize: 10, fontFamily: "ui-monospace, monospace",
+                      padding: 10, resize: "none", boxSizing: "border-box",
+                    }}
+                  />
+                  <button
+                    onClick={async () => {
+                      try { await navigator.clipboard.writeText(txt); setCopied(true); }
+                      catch { setCopied(false); }
+                    }}
+                    style={{
+                      marginTop: 8, width: "100%", padding: 11, borderRadius: 8,
+                      background: copied ? "transparent" : COLORS.goldHighlight,
+                      border: `1px solid ${COLORS.gold}`, color: COLORS.gold,
+                      fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
+                    }}
+                  >
+                    {copied ? "Copied ✓" : "Copy to clipboard"}
+                  </button>
+                  <div style={{ fontSize: 10, color: "#555", marginTop: 8, lineHeight: 1.5, fontFamily: "-apple-system, system-ui, sans-serif" }}>
+                    Save this anywhere safe. Paste it into a dev session to share your real training data, or re-import it here after a reset.
+                  </div>
+                </>
+              ) : (
+                <div style={{ fontSize: 12, color: "#777", padding: "8px 2px", fontFamily: "-apple-system, system-ui, sans-serif" }}>
+                  Nothing saved yet — the app snapshots automatically once you use it.
+                </div>
+              )}
+            </div>
+          );
+        })()}
+        <Row
+          label="Import data"
+          desc="Restore a previous export — replaces everything"
+          onClick={() => {
+            setImportError(null); setCopied(false); setImportText(""); setImportArmed(false);
+            setDataPanel(dataPanel === "import" ? null : "import");
+          }}
+        />
+        {dataPanel === "import" && (
+          <div style={{ padding: "4px 0 14px" }}>
+            <textarea
+              value={importText}
+              onChange={(e) => { setImportText(e.target.value); setImportError(null); setImportArmed(false); }}
+              placeholder="Paste a MYG export here…"
+              style={{
+                width: "100%", height: 120, background: "#0d0d0d",
+                border: `1px solid ${importError ? "#663333" : COLORS.border}`, borderRadius: 8,
+                color: "#c8c8c8", fontSize: 10, fontFamily: "ui-monospace, monospace",
+                padding: 10, resize: "none", boxSizing: "border-box",
+              }}
+            />
+            {importError && (
+              <div style={{ fontSize: 11, color: "#cc4444", marginTop: 6, fontFamily: "-apple-system, system-ui, sans-serif" }}>{importError}</div>
+            )}
+            <button
+              onClick={() => {
+                if (!importText.trim()) { setImportError("Paste an export first."); return; }
+                if (!importArmed) { setImportArmed(true); return; }
+                const res = importSnapshotText(importText);
+                if (!res.ok) { setImportError(res.error); setImportArmed(false); return; }
+                window.location.reload();
+              }}
+              style={{
+                marginTop: 8, width: "100%", padding: 11, borderRadius: 8,
+                background: "transparent",
+                border: `1px solid ${importArmed ? "#cc4444" : COLORS.border}`,
+                color: importArmed ? "#cc4444" : "#aaa",
+                fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
+              }}
+            >
+              {importArmed ? "Tap again — replaces ALL current data and reloads" : "Import & reload"}
+            </button>
+          </div>
+        )}
 
         {/* Logout button — restores the path lost when Coach's File
             displaced settings to this sub-screen. Same red-border /
@@ -14016,7 +14538,7 @@ function ObservationsSubscreen({ coachObservations, onAskCoach, onDeleteObservat
   // honest menu (Ask Coach / Delete), not a delete-only shortcut — the
   // delete-only ⋯ was a long-standing glyph-honesty wart (Bible §6.5).
   const [menuOpenId, setMenuOpenId] = useState(null);
-  const sorted = [...(coachObservations || [])].sort((a, b) => b.createdAt - a.createdAt);
+  const sorted = [...(coachObservations || [])].filter(obsVisibleToUser).sort((a, b) => b.createdAt - a.createdAt);
 
   // Font scale matches the bumped Profile landing.
   const TYPE = {
@@ -14061,7 +14583,7 @@ function ObservationsSubscreen({ coachObservations, onAskCoach, onDeleteObservat
           justifyContent: "space-between", alignItems: "baseline",
           borderBottom: "1px solid #1a1a1a", gap: 14, position: "relative",
         }}>
-          <span style={{ ...TYPE.body, flex: 1 }}>{o.text}</span>
+          <span style={{ ...TYPE.body, flex: 1 }}>{obsText(o)}</span>
           <span style={{ ...TYPE.meta, whiteSpace: "nowrap" }}>{formatDaysAgoCap(o.createdAt)}</span>
           <button
             onClick={() => setMenuOpenId(menuOpenId === o.id ? null : o.id)}
@@ -15023,7 +15545,6 @@ function TabBar({ active, onTab }) {
         display: "flex", justifyContent: "space-around",
         borderTop: `1px solid ${COLORS.border}`, background: COLORS.bg,
         flexShrink: 0, position: "relative", padding: "8px 0 6px",
-        paddingBottom: "calc(6px + env(safe-area-inset-bottom))",
       }}
     >
       {/* Sliding gold underline. Single-sided accent → no border-radius. */}
@@ -15309,12 +15830,19 @@ export default function MYGFitness() {
   const [pendingCoachSeed, setPendingCoachSeed] = useState(null);
 
   const askCoachAboutObservation = (obs) => {
-    const tierPhrase = obs.tier >= 3
-      ? "Coach is treating this as a standing pattern (seen 3+ times)."
-      : "Coach has noticed this a couple of times and may ask about it (not yet a standing pattern).";
-    const prov = obs.provenance;
+    // Session 68: engine records phrase confidence by status (encoded
+    // preference), Coach-authored notes keep the D-045 tier phrasing.
+    const tierPhrase = obs.source === "engine"
+      ? (obs.encodedAs === "occasional"
+        ? "This is an encoded preference — the user chose \"keep as occasional\" when asked."
+        : "Engine-counted pattern from the workout receipts.")
+      : (obs.tier >= 3
+        ? "Coach is treating this as a standing pattern (seen 3+ times)."
+        : "Coach has noticed this a couple of times and may ask about it (not yet a standing pattern).");
+    const prov = obsProvenance(obs);
+    const displayText = obsText(obs);
     const contextLines = [
-      `OBSERVATION: "${obs.text}"`,
+      `OBSERVATION: "${displayText}"`,
       `CONFIDENCE TIER (D-045): n=${obs.tier}. ${tierPhrase}`,
       prov ? `TRIGGERING SIGNAL: ${prov.signal}` : null,
       prov && prov.sessions && prov.sessions.length
@@ -15322,7 +15850,7 @@ export default function MYGFitness() {
         : null,
     ].filter(Boolean).join("\n");
     setPendingCoachSeed({
-      question: `Can you explain this observation you made about my training — what it means, where it came from, and why it matters?\n\n“${obs.text}”`,
+      question: `Can you explain this observation you made about my training — what it means, where it came from, and why it matters?\n\n“${displayText}”`,
       context: contextLines,
     });
     setAppSubScreen(null);
@@ -15437,7 +15965,17 @@ export default function MYGFitness() {
   const [coachRotation, setCoachRotation] = useState(validateStoredRotation(h.coachRotation));
   const [rotationCursor, setRotationCursor] = useState(Number.isInteger(h.rotationCursor) ? h.rotationCursor : 0);
   const [coachRules, setCoachRules] = useState(h.coachRules !== null && h.coachRules !== undefined ? h.coachRules : MOCK_COACH_RULES);
-  const [coachObservations, setCoachObservations] = useState(h.coachObservations !== null && h.coachObservations !== undefined ? h.coachObservations : MOCK_COACH_OBSERVATIONS);
+  // Observation engine (Session 68, D-071): hydration backfill — when
+  // the store has no engine records, wipe the legacy hand-simulated
+  // "occasional" seed (Q4 total-fresh-start lock) and replay the
+  // deviation-receipt history through the fold. Runs on the SAME
+  // post-migration history as the anchor backfill (initialHistory ref).
+  // Value-idempotent: engine records present → no-op.
+  const [coachObservations, setCoachObservations] = useState(() => migrateObservationStore(
+    h.coachObservations !== null && h.coachObservations !== undefined ? h.coachObservations : MOCK_COACH_OBSERVATIONS,
+    initialHistory.current,
+    h.customExercises || []
+  ));
   // Post-workout questions pin (Finish Flow session). Shape:
   //   { id, sessionId, sessionName, sessionDate, createdAt,
   //     questions: [{id,text,options,obsLabel}], answered: [{id,question,answer}] }
@@ -15829,6 +16367,9 @@ export default function MYGFitness() {
     // Anchor engine (Session 66, D-070): the silent commit is still a
     // commit — a save-current-&-start-new session folds like any other.
     setAnchors((a) => applySessionToAnchors(a || [], session, customExercises));
+    // Observation engine (Session 68, D-071): same contract — every
+    // commit folds, silently, off the session's deviation receipt.
+    setCoachObservations((o) => applySessionToObservations(o || [], session, customExercises));
     if (session.fromCoach) setRotationCursor((c) => c + 1);
     // A newer completed session makes any unanswered pin stale. The
     // silent path doesn't generate new questions (the user is mid-flow
@@ -15922,6 +16463,9 @@ export default function MYGFitness() {
       // into the anchor store, deterministically and silently. §10.6 /
       // D-062 — engine work fires on Finish, not on chat-open.
       setAnchors((a) => applySessionToAnchors(a || [], finishedSession, customExercises));
+      // Observation engine (Session 68, D-071): the fold fires on
+      // Finish (§10.6 / D-062 — engine work on commit, not chat-open).
+      setCoachObservations((o) => applySessionToObservations(o || [], finishedSession, customExercises));
       if (finishedSession.fromCoach) setRotationCursor((c) => c + 1);
       const prs = detectSessionPRs(finishedSession, workoutHistory);
       const qs = buildDemoSurveyQuestions(finishedSession, prs);
@@ -16015,7 +16559,14 @@ export default function MYGFitness() {
     setPlanGoal("build_muscle");
     setPlanDaysPerWeek(6);
     setCoachRules(MOCK_COACH_RULES);
-    setCoachObservations(MOCK_COACH_OBSERVATIONS);
+    // Observation engine (Session 68): re-seed = re-fold. The mock
+    // history is migrated locally (classification → deviation) so the
+    // fold sees receipts, exactly as the next hydration would.
+    setCoachObservations(migrateObservationStore(
+      MOCK_COACH_OBSERVATIONS,
+      migrateHistoryDeviation(migrateHistoryClassification(MOCK_WORKOUT_HISTORY, []), []),
+      []
+    ));
     setPendingCoachQuestions(null);
     setProgressPRs(MOCK_PROGRESS_PRS);
     setBodyStats(MOCK_BODY_STATS);
@@ -16553,7 +17104,7 @@ export default function MYGFitness() {
   };
 
   return (
-    <div style={{ width: "100vw", height: "100vh", background: COLORS.bg }}>
+    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#0a0a0a", padding: "40px 20px" }}>
       <style>{`
         input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 24px; height: 24px; border-radius: 50%; background: #FFD700; cursor: pointer; border: 3px solid #111111; box-shadow: 0 0 8px rgba(255,215,0,0.4); }
         input[type="range"]::-moz-range-thumb { width: 24px; height: 24px; border-radius: 50%; background: #FFD700; cursor: pointer; border: 3px solid #111111; box-shadow: 0 0 8px rgba(255,215,0,0.4); }
