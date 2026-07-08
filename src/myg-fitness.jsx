@@ -170,6 +170,11 @@ function saveSnapshot(state) {
       // Post-workout questions pin (Finish Flow session).
       pendingCoachQuestions: state.pendingCoachQuestions || null,
       progressPRs: Array.isArray(state.progressPRs) ? state.progressPRs : [],
+      // anchors: the D-070 anchor store (Session 66). Engine-maintained
+      // on finish-workout commit; Coach-legible records (see the ANCHOR
+      // ENGINE section). Absent from a snapshot = pre-S66 snapshot →
+      // hydration backfills by replaying workoutHistory through the fold.
+      anchors: Array.isArray(state.anchors) ? state.anchors : [],
       bodyStats: state.bodyStats && typeof state.bodyStats === "object" ? state.bodyStats : null,
       // Coach's File metadata. lastUpdatedAt is shown in the signed footer
       // ("— C, updated 2d ago"). fileOpenedAt is shown on first-launch
@@ -233,6 +238,9 @@ function loadSnapshot() {
         && Array.isArray(parsed.pendingCoachQuestions.answered)
         ? parsed.pendingCoachQuestions : null,
       progressPRs: Array.isArray(parsed.progressPRs) ? parsed.progressPRs : null,
+      // null (not []) when the snapshot predates the anchor store — the
+      // hydration path reads null as "backfill by replaying history".
+      anchors: Array.isArray(parsed.anchors) ? parsed.anchors : null,
       bodyStats: parsed.bodyStats && typeof parsed.bodyStats === "object" ? migrateBodyStats(parsed.bodyStats) : null,
       coachFileOpenedAt: typeof parsed.coachFileOpenedAt === "number" ? parsed.coachFileOpenedAt : null,
       coachFileLastUpdatedAt: typeof parsed.coachFileLastUpdatedAt === "number" ? parsed.coachFileLastUpdatedAt : null,
@@ -925,8 +933,20 @@ function recentSessionsBlock(workoutHistory) {
   const sessions = (workoutHistory || []).slice(0, 8);
   if (sessions.length === 0) return "(none — this is a cold start, no history)";
   return sessions.map((s, i) => {
+    // D-132: reason over the CLASSIFICATION (derived from movement content),
+    // never the user-editable name. The name is shown only when the user
+    // renamed the session, so Coach can mirror their vocabulary in chat
+    // without treating it as the session's identity.
+    const cls = s.classification || null;
+    const identity = cls && cls.displayName ? cls.displayName : (s.name || "Workout");
+    const renamed = cls && cls.displayName && s.name && s.name !== cls.displayName
+      ? ` (user calls it "${s.name}")` : "";
+    const strays = cls && cls.strays && cls.strays.length ? ` [also touched: ${cls.strays.join(", ")}]` : "";
     const exs = (s.exercises || []).map((e) => e.variantLabel ? `${e.name} — ${e.variantLabel}` : e.name).join(", ");
-    return `Session ${i + 1} — ${s.name || "Workout"}:\n  ${exs}`;
+    // Session 67 (D-032): one-line receipt headline in the glance. The
+    // full named receipt lives behind get_session_detail.
+    const card = s.deviation ? `\n  Card check: ${humanizeDeviation(s.deviation)}` : "";
+    return `Session ${i + 1} — ${identity}${renamed}${strays}:\n  ${exs}${card}`;
   }).join("\n");
 }
 
@@ -1197,13 +1217,14 @@ function buildActiveWorkoutFromCoach(coachWorkout, workoutHistory, customExercis
   return {
     exercises: newExercises,
     workoutName: (typeof coachWorkout.workoutName === "string" && coachWorkout.workoutName.trim())
-      ? coachWorkout.workoutName.trim() : deriveWorkoutName(newExercises, now),
+      ? coachWorkout.workoutName.trim() : deriveWorkoutName(newExercises, now, customs),
     startTime: now, restTimer: null, nameWasEdited: true,
     // ── Finish Flow inputs (this session) ──
     // fromCoach drives the D-100 rotation-cursor advance-on-completion.
     // prescription is the D-013 stored-separately snapshot of what Coach
-    // prescribed — the future D-032 prescribed-vs-logged diff consumes it,
-    // and classifySessionMode() reads it today for the A/B/C tag. Both
+    // prescribed — frozen HERE, at the golden Start Workout button (owner
+    // lock S67): everything the user changes after this moment is what
+    // the D-032 deviation diff measures at commit. Both
     // ride the activeWorkout through the localStorage snapshot (the
     // serializer spreads ...w) and are copied onto the committed session
     // at Finish.
@@ -1301,7 +1322,7 @@ User's new message: ${ctx.userMessage}`;
 // mid-turn via the tool-use loop in callCoach. Executors are pure
 // (input, state) → plain object so the Node harness tests them without
 // React. state = { workoutHistory, customExercises, coachRules,
-// coachObservations, progressPRs }.
+// coachObservations, progressPRs, anchors }.
 //
 // Locked rules (Session 62):
 // - Fail loud, never guess: unknown ids/dates return a structured error
@@ -1348,7 +1369,7 @@ const COACH_TOOL_DEFS = [
   },
   {
     name: "get_benchmarks",
-    description: "The user's recorded bests: all-time PRs and first-logged baselines per lift, with dates.",
+    description: "The user's recorded bests and current working levels: all-time PRs and first-logged baselines per lift with dates, plus the current working weight per lift and variant with its status.",
     input_schema: { type: "object", properties: {} },
   },
 ];
@@ -1447,6 +1468,7 @@ function coachToolExerciseHistory(input, state) {
       matches.push({
         date: session.date,
         session_name: session.name,
+        session_type: session.classification ? session.classification.displayName : null,
         variant: ex.variantLabel,
         sets: (ex.sets || []).map((s) => ({ weight: s.weight, reps: s.reps, type: s.type })),
         best: coachBestWorkingSet(ex.sets),
@@ -1456,10 +1478,22 @@ function coachToolExerciseHistory(input, state) {
   matches.sort((a, b) => String(a.date).localeCompare(String(b.date)));
   const recent = matches.slice(-lastN);
   const trends = coachVariantTrends(matches, lastN);
+  // Current working levels from the anchor store (Session 66, D-129 —
+  // now that the D-070 engine exists, the humanized anchor_status string
+  // is real computed state, per variant, never raw internals).
+  const levels = (state.anchors || [])
+    .filter((a) => a.exerciseId === exDef.id)
+    .map((a) => ({
+      variant: a.variant,
+      current_working_level: describeAnchorLevel(a),
+      anchor_status: humanizeAnchorStatus(a),
+      as_of: a.lastEvaluatedAt || null,
+    }));
   return {
     exercise: exDef.name,
     sessions_on_record: matches.length,
     showing_most_recent: recent.length,
+    current_working_levels: levels.length ? levels : null,
     history: recent.map(({ best, ...rest }) => rest),
     trend_note: "Best working set per session, oldest → newest, tracked separately per variant — different variants are different lifts, never compare across them.",
     trends: trends.length ? trends : (matches.length === 0 ? ["Never logged."] : []),
@@ -1475,19 +1509,36 @@ function coachSessionToDetail(s) {
       volume += (Number(t.weight) || 0) * (Number(t.reps) || 0);
     }
   }
-  const source = s.fromCoach
-    ? s.mode === "A"
-      ? "coach-prescribed, followed as written"
-      : s.mode === "B"
-      ? "coach-prescribed, user adjusted it"
-      : "coach-prescribed"
+  // Session 67 (D-032): the deviation receipt is the source of truth for
+  // "what happened vs the card". Names names (Q7 lock) — the humanized
+  // string is derived at read time, never persisted. Legacy fallback
+  // covers only never-backfilled shapes.
+  const source = s.deviation
+    ? humanizeDeviation(s.deviation)
+    : s.fromCoach
+    ? "coach-prescribed"
     : "no prescription on record — the user's own session, treat it as canonical, not a deviation";
+  const dev = s.deviation || null;
   return {
     session_id: s.id,
     name: s.name,
+    // D-132: what the session actually was, derived from its movement
+    // content — the name above is user-editable display text, not identity.
+    session_type: s.classification && s.classification.displayName ? s.classification.displayName : null,
+    muscle_groups_trained: s.classification ? s.classification.groupsHit : null,
+    outside_focus_work: s.classification && s.classification.strays && s.classification.strays.length ? s.classification.strays : null,
     date: s.date,
     duration_min: s.durationSec ? Math.round(s.durationSec / 60) : null,
     source,
+    prescription_vs_logged: dev
+      ? {
+          summary: humanizeDeviation(dev),
+          did_as_prescribed: dev.kept.map((k) => k.variantSwapped ? `${k.name} (as ${k.loggedVariant} instead of ${k.prescribedVariant} — user's variant call)` : k.name),
+          skipped: dev.skipped.map((k) => k.name),
+          added_off_card: dev.added.map((k) => (k.variant ? `${k.name} (${k.variant})` : k.name)),
+          likely_swaps: dev.replacements.map((r) => `${r.addedName} in place of ${r.skippedName}`),
+        }
+      : null,
     coach_notes_at_prescription: (s.prescription && s.prescription.programmingNotes) || null,
     total_working_sets: workingSets,
     total_volume_lb: Math.round(volume),
@@ -1508,7 +1559,7 @@ function coachToolSessionDetail(input, state) {
   if (!found.length) {
     return {
       error: wantId ? `No session with id "${wantId}".` : `No session logged on ${wantDate}.`,
-      recent_sessions: hist.slice(0, 10).map((s) => ({ session_id: s.id, date: s.date, name: s.name })),
+      recent_sessions: hist.slice(0, 10).map((s) => ({ session_id: s.id, date: s.date, name: s.name, session_type: s.classification ? s.classification.displayName : null })),
     };
   }
   return { sessions: found.map(coachSessionToDetail) };
@@ -1557,6 +1608,18 @@ function coachToolObservations(input, state) {
 
 function coachToolBenchmarks(input, state) {
   const rows = [...(state.progressPRs || [])].sort((a, b) => (b.achievedAt || 0) - (a.achievedAt || 0));
+  // Working levels ≠ PRs (D-070: anchors track current working capacity,
+  // PRs are lifetime trophies). Both surface here so Coach reasons from
+  // today's real level, not an old best.
+  const levels = [...(state.anchors || [])]
+    .sort((a, b) => String(b.lastEvaluatedAt || "").localeCompare(String(a.lastEvaluatedAt || "")))
+    .map((a) => ({
+      exercise: a.exerciseName,
+      variant: a.variant,
+      current_working_level: describeAnchorLevel(a),
+      anchor_status: humanizeAnchorStatus(a),
+      as_of: a.lastEvaluatedAt || null,
+    }));
   return {
     count: rows.length,
     benchmarks: rows.map((p) => ({
@@ -1565,6 +1628,8 @@ function coachToolBenchmarks(input, state) {
       kind: p.isPR ? "all-time PR" : "first-logged baseline",
       achieved_on: p.achievedAt ? coachMsToDate(p.achievedAt) : null,
     })),
+    current_working_levels: levels.length ? levels : null,
+    working_level_note: "current_working_levels are the user's present working capacity per lift and variant — distinct from all-time PRs above. Speak from these for today's training, never quote the internal status bookkeeping verbatim.",
   };
 }
 
@@ -2074,6 +2139,398 @@ function sessionVolume(sets) {
   return sets.reduce((sum, s) => sum + s.weight * s.reps, 0);
 }
 
+/* ── ANCHOR ENGINE (Session 66 — D-070 state machine + D-087 cap-12 +
+   D-134 STALE slot + D-135 behavior auto-resolve + D-136 value nudge) ──
+
+   Deterministic, headless, pure. Runs on finish-workout COMMIT (both
+   commit paths) and as a one-time hydration backfill that replays the
+   whole workout history through the same fold (cold-start = migration,
+   the D-141 pattern). Claude/Coach NEVER computes any of this — Coach
+   reads humanized status strings via tools (§12.7 division of labor).
+
+   THE RECORD (Coach-legible/editable per the post-S17 owner constraint:
+   self-describing names, human-readable values, no composite-key or
+   integer-tier encoding, write provenance for the step-3 write path):
+
+     {
+       schemaVersion: 1,
+       exerciseId: "incline_press",      // library/custom id — identity
+       variantKey: "dumbbells",          // engine key (variantKey()) — identity
+       exerciseName: "Incline Press",    // legibility convenience
+       variant: "Dumbbells",             // library variant label, verbatim
+       weightLb: 70,                     // 0 on reps-only bodyweight anchors
+       reps: 8,
+       status: "provisional" | "confirmed" | "stale",
+       consecutiveMisses: 0,             // confirmed-state debounce counter
+       establishedAt: "YYYY-MM-DD",      // date the CURRENT value was set
+       lastEvaluatedAt: "YYYY-MM-DD",    // date this lift was last worked
+       lastHitAt: "YYYY-MM-DD" | null,   // last clean in-band HIT
+       stale: null | { firedAt, surveyPending },  // D-134 slot; step 3 consumes
+       closedLoopPending: false,         // fires once on stale→confirmed (D-070)
+       bodyweightMode: null | "reps_only",
+       lastEditedBy: "engine",           // "engine" | "coach" | "user"
+       history: [                        // bounded audit trail, newest first
+         { sessionId, date, weight, reps,
+           result: "hit"|"miss"|"beat"|"cold_start",
+           transition: null | "created" | "confirmed" | "reanchored_up" |
+                       "reanchored_down" | "stale_fired" |
+                       "stale_auto_resolved" | "recovered" }
+       ]
+     }
+
+   Store facts, derive math: NO e1RM or delta is ever written to the
+   record (D-087 — a cap change must auto-correct everything; stored
+   formula output would rot). Weight/reps/result/transition is the full
+   audit trail; anything numeric derives on demand. */
+
+const ANCHOR_DEAD_BAND = 0.03;     // ±3% on rep-capped Epley (D-070)
+const ANCHOR_STALE_MISSES = 3;     // confirmed-miss debounce → STALE
+const ANCHOR_HISTORY_LIMIT = 10;   // bounded per-record audit trail
+
+/* Raw (uncapped) Epley — the D-136 tie-break only. Two sets can be
+   capped-equal (33×15 vs 33×12) while one is plainly "more"; the raw
+   score orders them so the value nudge is up-only within the band. */
+function anchorRawScore(weight, reps) {
+  if (!weight || !reps) return 0;
+  return weight * (1 + reps / 30);
+}
+
+/* Resolve one logged session-exercise to anchor identity. Mirrors
+   resolveSessionExercise (name-first, per app convention) but also
+   returns the variant's bodyweight flag + display fields the record
+   needs. Unresolvable → null (degrade quietly, like the classifier). */
+function anchorResolveExercise(sessionEx, customs = []) {
+  const exDef = findExerciseByName(sessionEx.name, customs);
+  if (!exDef || !Array.isArray(exDef.variants) || exDef.variants.length === 0) return null;
+  const variant =
+    exDef.variants.find((v) => v.label === sessionEx.variantLabel) ||
+    exDef.variants[0];
+  return {
+    exerciseId: exDef.id,
+    exerciseName: exDef.name,
+    variantKey: variantKey(variant),
+    variantLabel: variant.label,
+    variantIsBodyweight: !!variant.bodyweight,
+  };
+}
+
+/* Working sets for anchor purposes: not warmup, not drop (Bible §9
+   D-070 — stricter than the classifier, which only excludes warmups),
+   and reps must be a positive number. */
+function anchorWorkingSets(sets) {
+  return (sets || []).filter(
+    (s) => s.type !== "warmup" && s.type !== "drop" && Number(s.reps) > 0
+  );
+}
+
+/* Best working set of a list, per mode.
+   - reps_only: most reps (weight ignored; stored as 0).
+   - weighted: highest cap-12 Epley among sets with weight > 0; capped
+     ties break to the raw score so 33×15 outranks 33×12. Returns null
+     when the session has no comparable working set for the mode —
+     a weighted anchor is never evaluated against a bodyweight-only
+     session (mixing scales is the D-130 sin). */
+function anchorBestWorkingSet(sets, repsOnly) {
+  const working = anchorWorkingSets(sets);
+  if (!working.length) return null;
+  if (repsOnly) {
+    let best = working[0];
+    for (const s of working) if (Number(s.reps) > Number(best.reps)) best = s;
+    return { weight: 0, reps: Number(best.reps) };
+  }
+  const weighted = working.filter((s) => Number(s.weight) > 0);
+  if (!weighted.length) return null;
+  let best = weighted[0];
+  for (const s of weighted) {
+    const cap = e1rm(Number(s.weight), Number(s.reps)) - e1rm(Number(best.weight), Number(best.reps));
+    if (cap > 0) best = s;
+    else if (cap === 0 && anchorRawScore(Number(s.weight), Number(s.reps)) > anchorRawScore(Number(best.weight), Number(best.reps))) best = s;
+  }
+  return { weight: Number(best.weight), reps: Number(best.reps) };
+}
+
+/* HIT / MISS / BEAT against the stored anchor value (D-070, unified via
+   cap-12 e1RM; reps-only lifts compare reps directly per the S66 lock:
+   same = hit, more = beat, fewer = miss). */
+function anchorClassify(record, best) {
+  if (record.bodyweightMode === "reps_only") {
+    if (best.reps === record.reps) return "hit";
+    return best.reps > record.reps ? "beat" : "miss";
+  }
+  const anchorScore = e1rm(record.weightLb, record.reps);
+  if (!anchorScore) return "beat"; // degenerate stored value — treat as replaceable
+  const delta = (e1rm(best.weight, best.reps) - anchorScore) / anchorScore;
+  if (delta > ANCHOR_DEAD_BAND) return "beat";
+  if (delta < -ANCHOR_DEAD_BAND) return "miss";
+  return "hit";
+}
+
+/* D-136 value nudge on a HIT: up-only within the band. The value moves
+   to today's set only when today is plainly higher (raw-Epley order);
+   an in-band-lower set is noise and the stored value holds. Down moves
+   happen ONLY via the out-of-band miss → debounce → STALE path. */
+function anchorNudgedValue(record, best) {
+  if (record.bodyweightMode === "reps_only") return null; // hit = same reps, nothing to nudge
+  if (anchorRawScore(best.weight, best.reps) > anchorRawScore(record.weightLb, record.reps)) {
+    return { weightLb: best.weight, reps: best.reps };
+  }
+  return null;
+}
+
+function anchorPushHistory(record, entry) {
+  return [entry, ...(record.history || [])].slice(0, ANCHOR_HISTORY_LIMIT);
+}
+
+/* One evaluation: fold today's best working set into one anchor record.
+   Returns the NEW record (never mutates). meta = { sessionId, date }.
+   This is the D-070 transition table verbatim, with two later locks
+   composed in: D-135 replaces the old "STALE + MISS → counter++" row
+   (behavior auto-resolves an unanswered STALE on the first re-work),
+   and D-136 governs the value on every HIT. */
+function evaluateAnchor(record, best, meta) {
+  const result = anchorClassify(record, best);
+  const base = { ...record, lastEvaluatedAt: meta.date, lastEditedBy: "engine" };
+  const entry = { sessionId: meta.sessionId, date: meta.date, weight: best.weight, reps: best.reps, result, transition: null };
+
+  if (record.status === "stale") {
+    if (result === "hit") {
+      // Genuine recovery at the stale value → CONFIRMED + closed-loop
+      // event (D-070). The proposal was never needed; Coach acknowledges
+      // once. Value follows the D-136 nudge rule.
+      entry.transition = "recovered";
+      const nudged = anchorNudgedValue(record, best);
+      return {
+        ...base,
+        ...(nudged ? { ...nudged, establishedAt: meta.date } : {}),
+        status: "confirmed",
+        consecutiveMisses: 0,
+        stale: null,
+        closedLoopPending: true,
+        lastHitAt: meta.date,
+        history: anchorPushHistory(record, entry),
+      };
+    }
+    if (result === "beat") {
+      entry.transition = "reanchored_up";
+      return {
+        ...base,
+        weightLb: best.weight, reps: best.reps,
+        status: "provisional", consecutiveMisses: 0, stale: null,
+        establishedAt: meta.date,
+        history: anchorPushHistory(record, entry),
+      };
+    }
+    // D-135: the unanswered STALE is resolved by behavior — re-anchor to
+    // the worked level, re-enter provisional (humility: behavior-inferred),
+    // exit STALE, no re-nag. Sustained training at a level IS the answer.
+    entry.transition = "stale_auto_resolved";
+    return {
+      ...base,
+      weightLb: best.weight, reps: best.reps,
+      status: "provisional", consecutiveMisses: 0, stale: null,
+      establishedAt: meta.date,
+      history: anchorPushHistory(record, entry),
+    };
+  }
+
+  if (record.status === "provisional") {
+    if (result === "hit") {
+      entry.transition = "confirmed";
+      const nudged = anchorNudgedValue(record, best);
+      return {
+        ...base,
+        ...(nudged ? { ...nudged, establishedAt: meta.date } : {}),
+        status: "confirmed", consecutiveMisses: 0,
+        lastHitAt: meta.date,
+        history: anchorPushHistory(record, entry),
+      };
+    }
+    // Provisional motion is silent self-correction in both directions.
+    entry.transition = result === "beat" ? "reanchored_up" : "reanchored_down";
+    return {
+      ...base,
+      weightLb: best.weight, reps: best.reps,
+      status: "provisional", consecutiveMisses: 0,
+      establishedAt: meta.date,
+      history: anchorPushHistory(record, entry),
+    };
+  }
+
+  // CONFIRMED
+  if (result === "hit") {
+    const nudged = anchorNudgedValue(record, best);
+    return {
+      ...base,
+      ...(nudged ? { ...nudged, establishedAt: meta.date } : {}),
+      consecutiveMisses: 0, // a hit breaks any miss streak
+      lastHitAt: meta.date,
+      history: anchorPushHistory(record, entry),
+    };
+  }
+  if (result === "beat") {
+    entry.transition = "reanchored_up";
+    return {
+      ...base,
+      weightLb: best.weight, reps: best.reps,
+      status: "provisional", consecutiveMisses: 0,
+      establishedAt: meta.date,
+      history: anchorPushHistory(record, entry),
+    };
+  }
+  // CONFIRMED + MISS → debounce. Value does NOT walk back (that's the
+  // whole point of confirmed); three consecutive misses → STALE, which
+  // fires the D-134 survey slot exactly once.
+  const misses = (record.consecutiveMisses || 0) + 1;
+  if (misses >= ANCHOR_STALE_MISSES) {
+    entry.transition = "stale_fired";
+    return {
+      ...base,
+      status: "stale",
+      consecutiveMisses: misses,
+      stale: { firedAt: meta.date, surveyPending: true },
+      history: anchorPushHistory(record, entry),
+    };
+  }
+  return {
+    ...base,
+    consecutiveMisses: misses,
+    history: anchorPushHistory(record, entry),
+  };
+}
+
+/* Create a brand-new provisional anchor from a lift's first logged
+   session (D-070's cold-start row; subsumes D-046). */
+function createAnchor(resolved, best, meta, repsOnly) {
+  return {
+    schemaVersion: 1,
+    exerciseId: resolved.exerciseId,
+    variantKey: resolved.variantKey,
+    exerciseName: resolved.exerciseName,
+    variant: resolved.variantLabel,
+    weightLb: best.weight,
+    reps: best.reps,
+    status: "provisional",
+    consecutiveMisses: 0,
+    establishedAt: meta.date,
+    lastEvaluatedAt: meta.date,
+    lastHitAt: null,
+    stale: null,
+    closedLoopPending: false,
+    bodyweightMode: repsOnly ? "reps_only" : null,
+    lastEditedBy: "engine",
+    history: [{ sessionId: meta.sessionId, date: meta.date, weight: best.weight, reps: best.reps, result: "cold_start", transition: "created" }],
+  };
+}
+
+/* Fold ONE committed session into the anchor store. Pure: returns a new
+   array. Duplicate cards of the same (exerciseId, variantKey) in one
+   session merge their sets — one evaluation per lift per session. */
+function applySessionToAnchors(anchors, session, customs = []) {
+  if (!session || !Array.isArray(session.exercises)) return anchors || [];
+  const meta = { sessionId: session.id, date: session.date };
+  // Group working material per anchor identity.
+  const byKey = new Map();
+  for (const ex of session.exercises) {
+    const resolved = anchorResolveExercise(ex, customs);
+    if (!resolved) continue; // unresolvable — excluded, degrade quietly
+    const k = `${resolved.exerciseId}\u0000${resolved.variantKey}`;
+    const slot = byKey.get(k) || { resolved, sets: [] };
+    slot.sets = slot.sets.concat(ex.sets || []);
+    byKey.set(k, slot);
+  }
+  if (byKey.size === 0) return anchors || [];
+
+  const out = [...(anchors || [])];
+  for (const { resolved, sets } of byKey.values()) {
+    const idx = out.findIndex(
+      (a) => a.exerciseId === resolved.exerciseId && a.variantKey === resolved.variantKey
+    );
+    const existing = idx >= 0 ? out[idx] : null;
+    if (existing) {
+      const best = anchorBestWorkingSet(sets, existing.bodyweightMode === "reps_only");
+      if (!best) continue; // no comparable working set for this anchor's mode
+      out[idx] = evaluateAnchor(existing, best, meta);
+    } else {
+      // Mode is decided at creation: a bodyweight-flagged variant whose
+      // best set carries no load seeds reps-only; added load (weighted
+      // dips) seeds a normal weighted anchor. total_load mode deferred.
+      const weightedBest = anchorBestWorkingSet(sets, false);
+      if (weightedBest) {
+        out.push(createAnchor(resolved, weightedBest, meta, false));
+      } else if (resolved.variantIsBodyweight) {
+        const repsBest = anchorBestWorkingSet(sets, true);
+        if (repsBest) out.push(createAnchor(resolved, repsBest, meta, true));
+      }
+      // else: no working sets at all, or zero-weight sets on a non-
+      // bodyweight variant (placeholder logging) — no anchor is seeded.
+    }
+  }
+  return out;
+}
+
+/* Cold-start backfill (the Q1 lock): replay the ENTIRE workout history
+   through the same fold, oldest → newest, and return the resulting
+   store. Runs at hydration when no anchor store exists — for Tyler's
+   real 17-session history, for seed data on a fresh install, and for
+   any future import. Idempotent at the call site (an existing store is
+   never re-folded). History arrays are newest-first; a date sort with
+   reverse-index tie-break reconstructs commit order for same-day
+   sessions. Fire-once flags: closedLoopPending is CLEARED at the end
+   (stale-dated praise is noise); a genuinely-still-STALE anchor keeps
+   its state and its pending survey slot truthfully — D-135 handles it
+   silently on the next re-work, step 3 surveys it if it never is. */
+function foldHistoryIntoAnchors(history, customs = []) {
+  if (!Array.isArray(history)) return [];
+  const ordered = history
+    .map((s, i) => ({ s, i }))
+    .sort((a, b) => {
+      const d = String((a.s && a.s.date) || "").localeCompare(String((b.s && b.s.date) || ""));
+      if (d !== 0) return d;
+      return b.i - a.i; // newest-first array: higher index = committed earlier
+    })
+    .map((x) => x.s);
+  let anchors = [];
+  for (const session of ordered) anchors = applySessionToAnchors(anchors, session, customs);
+  return anchors.map((a) => (a.closedLoopPending ? { ...a, closedLoopPending: false } : a));
+}
+
+/* ── Coach-facing read surface (D-129 — the humanized anchor_status
+   strings, derived at read time by this pure function, NEVER stored).
+   Raw vocabulary (provisional/confirmed/stale, counters, e1RM, band
+   percentages) never leaks into a string Coach could quote. ── */
+function humanizeAnchorStatus(record) {
+  if (!record) return null;
+  if (record.status === "provisional") return "anchor still being calibrated";
+  if (record.status === "stale") {
+    const n = record.consecutiveMisses || ANCHOR_STALE_MISSES;
+    return `user has been below anchor for ${n} sessions — proposal queued`;
+  }
+  // confirmed
+  if (record.closedLoopPending) {
+    // Sessions spent under, derived from the bounded audit trail: misses
+    // immediately preceding the recovery entry.
+    let under = 0;
+    const hist = record.history || [];
+    for (let i = 1; i < hist.length; i++) {
+      if (hist[i].result === "miss") under++;
+      else break;
+    }
+    return `anchor recovered after ${under > 0 ? under : "several"} sessions under — acknowledge once`;
+  }
+  const c = record.consecutiveMisses || 0;
+  if (c === 0) return "user hit anchor cleanly last session";
+  if (c === 1) return "user was just below anchor last session";
+  return "user has been just below anchor for two sessions";
+}
+
+/* Human-readable current level for tool returns: real logged values
+   only ("70 lb × 8", "12 reps (bodyweight)"). */
+function describeAnchorLevel(record) {
+  if (!record) return null;
+  if (record.bodyweightMode === "reps_only") return `${record.reps} reps (bodyweight)`;
+  return `${record.weightLb} lb × ${record.reps}`;
+}
+
 /* Heaviest weight across a session (ties broken by most reps at that weight). */
 function sessionTopSet(sets) {
   let best = null;
@@ -2167,23 +2624,209 @@ function detectSessionPRs(session, history) {
   return prs;
 }
 
-/* Mode classification (D-047, naive v1). The real prescribed-vs-logged
-   diff (D-032) is a future session; this stores enough to tell the modes
-   apart. C = no prescription on the session (user-built). A = prescription
-   present and the logged library-exercise set matches it exactly (variant
-   swaps still count as A per S13 dogfooding — we compare exercise ids,
-   not variants). B = prescription present, exercises deviated. */
-function classifySessionMode(session) {
+/* ═══════════════════════════════════════════════════════════════════
+   DEVIATION DIFF ENGINE (Session 67 — D-032 realized)
+
+   The receipt model (owner lock): the diff between the prescription
+   snapshot (frozen at the golden Start Workout button, D-126) and what
+   the user actually logged is computed ONCE at commit and persisted on
+   the session as `session.deviation`. Never recomputed — snapshot
+   semantics like classification (D-137), NOT derived-not-stored like
+   e1RM (D-087): the diff is a comparison of two frozen artifacts, and
+   the observation engine (D-071, next session) folds over these records
+   as a stable event log. Escape hatch = the D-142 pattern: strip the
+   records, hydration backfill re-derives them.
+
+   Record shape (Coach-legible per the schema-editability principle —
+   self-describing names, real exercise names, no internal vocabulary):
+     { schemaVersion, computedAt, mode, modeReason,
+       prescribedCount, keptCount, skippedCount, addedCount,
+       kept:     [{ exerciseId, name, variantSwapped,
+                    prescribedVariant, loggedVariant,
+                    prescribedSetCount, loggedWorkingSetCount }],
+       skipped:  [{ exerciseId, name, slot }],
+       added:    [{ exerciseId, name, variant }],
+       replacements: [{ skippedName, addedName, basis }] }
+
+   Mode rule (D-047 made mechanical, owner-locked S67):
+     A ("followed")        — skippedCount ≤ 1. Skip one, you still did
+                             the workout. Adds NEVER demote (S11).
+     C ("card_abandoned")  — keptCount/prescribedCount < 0.5. Kept less
+                             than half the card = a different workout.
+     B ("deviated")        — everything between.
+   Calibration points from the training log: S1 6/7→A, S10 4/5→A,
+   S11 5/6+4 adds→A, S3 4/6→B, S8 3/7→C.
+   Sessions with NO prescription carry deviation:null + mode "C" — the
+   other C ("no card"), distinguished by the record's absence. Variant
+   swaps count as KEPT (user's call per §8), recorded but never a
+   deviation. Exercise-level only (Q5 lock) — rep grading is engine 4's.
+
+   Off-card ADD and SKIP counters (D-071/D-081) fire only when mode is
+   A or B — but that is the OBSERVATION engine's rule. This engine just
+   records the truth, including on abandoned cards, so the future
+   post-workout survey can ask the informed question.
+   ═══════════════════════════════════════════════════════════════════ */
+const DEVIATION_SCHEMA_VERSION = 1;
+
+function computeDeviationDiff(session, customs = []) {
   const p = session && session.prescription;
-  if (!p || !Array.isArray(p.prescribedExercises)) return "C";
-  const prescribedIds = new Set(
-    p.prescribedExercises
-      .filter((pe) => pe.ref && pe.ref.kind === "library")
-      .map((pe) => pe.ref.exerciseId)
-  );
-  const loggedIds = new Set((session.exercises || []).map((ex) => ex.exerciseId).filter(Boolean));
-  if (prescribedIds.size === loggedIds.size && [...prescribedIds].every((id) => loggedIds.has(id))) return "A";
-  return "B";
+  if (!p || !Array.isArray(p.prescribedExercises) || p.prescribedExercises.length === 0) return null;
+
+  // Logged side: dedupe by exerciseId (logged twice = did it once, Q6
+  // lock); null-id exercises key by name so nothing is invisible.
+  const logged = new Map();
+  for (const ex of session.exercises || []) {
+    const key = ex.exerciseId || `name:${(ex.name || "").trim().toLowerCase()}`;
+    if (!logged.has(key)) {
+      logged.set(key, {
+        exerciseId: ex.exerciseId || null,
+        name: ex.name,
+        variantLabel: ex.variantLabel || null,
+        workingSets: (ex.sets || []).filter((t) => t.type !== "warmup").length,
+      });
+    } else {
+      logged.get(key).workingSets += (ex.sets || []).filter((t) => t.type !== "warmup").length;
+    }
+  }
+
+  const kept = [];
+  const skipped = [];
+  const matchedKeys = new Set();
+
+  for (const pe of p.prescribedExercises) {
+    const ref = pe.ref || {};
+    let key = null, exId = null, name = null;
+    if (ref.kind === "library") {
+      exId = ref.exerciseId;
+      key = exId;
+      const def = findExerciseById(exId, customs);
+      name = def ? def.name : (exId || "Unknown exercise");
+    } else {
+      // Fallback-kind seatbelt (Q6 lock): Coach is library-only today,
+      // but if the schema's off-library door ever opens, match by name;
+      // unmatched files honestly as skipped. Never crashes the diff.
+      name = ref.name || "Unknown exercise";
+      key = `name:${name.trim().toLowerCase()}`;
+    }
+    const hit = logged.get(key);
+    if (hit) {
+      matchedKeys.add(key);
+      const prescribedVariant = ref.kind === "library" && ref.variant ? ref.variant : null;
+      kept.push({
+        exerciseId: exId,
+        name,
+        variantSwapped: !!(prescribedVariant && hit.variantLabel && prescribedVariant !== hit.variantLabel),
+        prescribedVariant,
+        loggedVariant: hit.variantLabel,
+        prescribedSetCount: (pe.sets || []).filter((s) => s.setType !== "warmup").length,
+        loggedWorkingSetCount: hit.workingSets,
+      });
+    } else {
+      skipped.push({ exerciseId: exId, name, slot: pe.slot || null });
+    }
+  }
+
+  const added = [];
+  for (const [key, ex] of logged) {
+    if (!matchedKeys.has(key)) {
+      added.push({ exerciseId: ex.exerciseId, name: ex.name, variant: ex.variantLabel });
+    }
+  }
+
+  // Replacement inference (owner lock, Q4): a skipped X paired with an
+  // added Y counts as a LIKELY SWAP when Y is on X's alternatives list —
+  // the strict D-019 filter (same primary + same movement pattern),
+  // reused verbatim. Greedy one-to-one; labeled a guess; the raw
+  // skipped/added facts stay recorded either way.
+  const replacements = [];
+  const usedAdds = new Set();
+  for (const sk of skipped) {
+    const skDef = sk.exerciseId ? findExerciseById(sk.exerciseId, customs) : null;
+    if (!skDef || !skDef.pattern) continue;
+    for (const ad of added) {
+      if (usedAdds.has(ad)) continue;
+      const adDef = ad.exerciseId ? findExerciseById(ad.exerciseId, customs) : findExerciseByName(ad.name, customs);
+      if (adDef && adDef.pattern === skDef.pattern && adDef.primary === skDef.primary) {
+        usedAdds.add(ad);
+        replacements.push({
+          skippedName: sk.name,
+          addedName: ad.name,
+          basis: "inferred — same muscle group and movement pattern",
+        });
+        break;
+      }
+    }
+  }
+
+  const prescribedCount = kept.length + skipped.length;
+  const keptCount = kept.length;
+  const skippedCount = skipped.length;
+  let mode, modeReason;
+  if (prescribedCount > 0 && keptCount / prescribedCount < 0.5) {
+    mode = "C"; modeReason = "card_abandoned";
+  } else if (skippedCount <= 1) {
+    mode = "A"; modeReason = "followed";
+  } else {
+    mode = "B"; modeReason = "deviated";
+  }
+
+  return {
+    schemaVersion: DEVIATION_SCHEMA_VERSION,
+    computedAt: new Date().toISOString(),
+    mode,
+    modeReason,
+    prescribedCount,
+    keptCount,
+    skippedCount,
+    addedCount: added.length,
+    kept,
+    skipped,
+    added,
+    replacements,
+  };
+}
+
+/* Coach-facing headline (D-143 pattern: derived at read time by a pure
+   function, NEVER persisted; names names per the S67 Q7 lock — a
+   scoreboard without names is not information). No internal vocabulary
+   (no "Mode A/B/C", no field names) in anything Coach could quote. */
+function humanizeDeviation(dev) {
+  if (!dev) return null;
+  const names = (arr) => arr.map((x) => x.name).join(", ");
+  const parts = [];
+  if (dev.modeReason === "card_abandoned") {
+    parts.push(`Coach gave a card but the user went their own direction — kept only ${dev.keptCount} of ${dev.prescribedCount} prescribed`);
+  } else if (dev.modeReason === "deviated") {
+    parts.push(`Worked off the card but reshaped it — kept ${dev.keptCount} of ${dev.prescribedCount} prescribed`);
+  } else {
+    parts.push(`Followed the card — did ${dev.keptCount} of ${dev.prescribedCount} prescribed`);
+  }
+  if (dev.skipped.length) parts.push(`Skipped: ${names(dev.skipped)}`);
+  if (dev.added.length) parts.push(`Added off-card: ${names(dev.added)}`);
+  for (const r of dev.replacements) parts.push(`${r.addedName} likely replaced ${r.skippedName} (same muscle + movement pattern)`);
+  const swaps = dev.kept.filter((k) => k.variantSwapped);
+  if (swaps.length) parts.push(`Variant choice (user's call, not a deviation): ${swaps.map((k) => `${k.name} done as ${k.loggedVariant}`).join("; ")}`);
+  return parts.join(". ") + ".";
+}
+
+/* Hydration backfill (the S67 receipt lock — D-142 pattern, D-032 flavor).
+   Coach-sourced sessions committed since dev S61 carry the prescription
+   snapshot but no deviation record; this fills them in, and OVERWRITES
+   the naive D-126 mode tag with the engine-computed one (the naive tag
+   was explicitly provisional — replacing it completes D-126, it doesn't
+   rewrite history). Idempotent: a session with a deviation record passes
+   through untouched; no-prescription sessions just get mode "C" ensured. */
+function migrateHistoryDeviation(history, customs = []) {
+  if (!Array.isArray(history)) return history;
+  return history.map((s) => {
+    if (!s || typeof s !== "object") return s;
+    if (s.deviation !== undefined && s.deviation !== null) return s;
+    if (!s.prescription) {
+      return s.mode === "C" && s.deviation === null ? s : { ...s, mode: "C", deviation: null };
+    }
+    const deviation = computeDeviationDiff(s, customs);
+    return { ...s, deviation, mode: deviation ? deviation.mode : "C" };
+  });
 }
 
 /* Demo survey questions for the Finish Flow shell. PLACEHOLDER content —
@@ -2229,34 +2872,34 @@ function buildDemoSurveyQuestions(session, prs) {
 /* ── Shared Components ───────────────────────────────────────── */
 
 function PhoneFrame({ children }) {
+  // Stripped-down passthrough wrapper for real-device rendering.
+  // Previously this rendered a fake 375×812 phone bezel with a fake "9:41"
+  // status bar and home indicator — fine for the artifact preview, but on
+  // a real iPhone it produced a phone-in-a-phone effect. Now it just
+  // provides a flex column container; the surrounding outer wrapper sets
+  // the height, and the existing screen flex layout fills it correctly.
+  //
+  // paddingTop: env(safe-area-inset-top) — in PWA mode (saved to home
+  // screen), iOS draws the app under the status bar. Without this, the
+  // first row of every screen collides with the iOS clock and battery
+  // icons. The bottom safe-area is handled inside TabBar instead, so
+  // the TabBar's background can extend to the true bottom edge.
   return (
     <div
       style={{
-        width: 375, height: 812, borderRadius: 44, background: COLORS.bg,
-        position: "relative", overflow: "hidden",
-        boxShadow: "0 25px 80px rgba(0,0,0,0.6), 0 0 0 2px #333",
+        width: "100%",
+        height: "100%",
+        background: COLORS.bg,
+        position: "relative",
+        overflow: "hidden",
         fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-        display: "flex", flexDirection: "column",
+        display: "flex",
+        flexDirection: "column",
+        paddingTop: "env(safe-area-inset-top)",
       }}
     >
-      <div
-        style={{
-          height: 50, display: "flex", alignItems: "center", justifyContent: "space-between",
-          padding: "0 28px", fontSize: 14, fontWeight: 600, color: COLORS.text, flexShrink: 0,
-        }}
-      >
-        <span>9:41</span>
-        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-          <svg width="17" height="12" viewBox="0 0 17 12" fill="white"><rect x="0" y="3" width="3" height="9" rx="1" /><rect x="4.5" y="2" width="3" height="10" rx="1" /><rect x="9" y="0" width="3" height="12" rx="1" /><rect x="13.5" y="1" width="3" height="11" rx="1" fillOpacity="0.3" /></svg>
-          <svg width="16" height="12" viewBox="0 0 16 12" fill="white"><path d="M8 2.4C10.6 2.4 13 3.5 14.7 5.3L16 4C14 1.9 11.1 .5 8 .5S2 1.9 0 4L1.3 5.3C3 3.5 5.4 2.4 8 2.4z" fillOpacity="0.3" /><path d="M8 5.4C9.8 5.4 11.4 6.1 12.6 7.3L13.9 6C12.4 4.5 10.3 3.5 8 3.5S3.6 4.5 2.1 6L3.4 7.3C4.6 6.1 6.2 5.4 8 5.4z" fillOpacity="0.6" /><path d="M8 8.4C9 8.4 9.9 8.8 10.5 9.5L8 12 5.5 9.5C6.1 8.8 7 8.4 8 8.4z" /></svg>
-          <svg width="27" height="13" viewBox="0 0 27 13" fill="white"><rect x="0" y="0.5" width="23" height="12" rx="3.5" stroke="white" strokeWidth="1" fill="none" /><rect x="24.5" y="4" width="2" height="5" rx="1" fillOpacity="0.4" /><rect x="1.5" y="2" width="18" height="9" rx="2" fill="white" /></svg>
-        </div>
-      </div>
       <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
         {children}
-      </div>
-      <div style={{ height: 34, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-        <div style={{ width: 134, height: 5, borderRadius: 3, background: "rgba(255,255,255,0.2)" }} />
       </div>
     </div>
   );
@@ -2487,6 +3130,9 @@ function WelcomeScreen({ onGetStarted, onSignIn }) {
   useEffect(() => { setTimeout(() => setLogoV(true), 200); setTimeout(() => setContentV(true), 900); }, []);
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "0 32px", position: "relative" }}>
+      {/* V.21 marker — temporary build indicator. Bump with each push to
+          verify cache isn't serving stale code. Remove before shipping. */}
+      <div style={{ position: "absolute", top: 16, right: 20, color: COLORS.textSecondary, fontSize: 11, fontWeight: 500, letterSpacing: 1, opacity: 0.7 }}>V.21</div>
       <div style={{ position: "absolute", top: "40%", textAlign: "center", opacity: logoV ? 1 : 0, transform: logoV ? "translateY(-50%) scale(1)" : "translateY(-50%) scale(1.08)", transition: "all 0.9s cubic-bezier(0.22,1,0.36,1)" }}>
         <h1 style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 92, fontWeight: 700, color: COLORS.gold, margin: 0, letterSpacing: 8 }}>MYG</h1>
       </div>
@@ -3547,11 +4193,192 @@ const SET_TYPES = [
    happened (per Bible: data model captures executed, not prescribed).
    Sets carry the type so the recap sheet can render warmups correctly. */
 const MOCK_WORKOUT_HISTORY = [
-  // Most-recent-first. S8–S13 (May 24 – Jun 2) added from the dogfooding
-  // training log; ids h8–h13 map to session numbers (h7 absent — S7 was
+  // Most-recent-first. S8–S17 (May 24 – Jul 5) added from the dogfooding
+  // training log; ids h8–h17 map to session numbers (h7 absent — S7 was
   // pre-workout only, never logged). Durations for S9/S11/S12/S13 are
-  // best-effort estimates (timers left running, per D-086). Iso Lateral Row
-  // is its own movement per the D-085 taxonomy split.
+  // best-effort estimates (timers left running, per D-086); S14 (~11h47m) and
+  // S16 (~508 min) are stored null by the D-121 plausibility guard. S15 (67m)
+  // and S17 (86m) are plausible. Iso Lateral Row / Machine Decline Press are
+  // their own movements per the D-085 split.
+  // ── Session 17 — Full Body (user-built, Mode C) · Jul 5 ──
+  // App auto-named "Full Body" — MISFIRE: this is a Push day (chest+shoulders+
+  // triceps), should be "Push Day" (3-muscle-push → Full Body classifier bug,
+  // D-006/D-132; owner deferring the fix). Dip is bodyweight (0 lbs volume).
+  {
+    id: "h17",
+    name: "Full Body",
+    date: "2026-07-05",
+    durationSec: 5160, // 86 min — plausible
+    exercises: [
+      { name: "Bench Press", variantLabel: "Barbell", sets: [
+        { weight: 135, reps: 8,  type: "warmup" },
+        { weight: 185, reps: 8,  type: "working" },
+        { weight: 205, reps: 8,  type: "working" },
+        { weight: 205, reps: 6,  type: "working" },
+        { weight: 155, reps: 10, type: "working" },
+      ]},
+      { name: "Incline Bench Press", variantLabel: "Dumbbells", sets: [
+        { weight: 70, reps: 8, type: "working" },
+        { weight: 70, reps: 6, type: "working" },
+        { weight: 70, reps: 7, type: "working" },
+      ]},
+      { name: "Overhead Press", variantLabel: "Smith Machine", sets: [
+        { weight: 135, reps: 8, type: "warmup" },
+        { weight: 155, reps: 6, type: "working" },
+        { weight: 155, reps: 6, type: "working" },
+      ]},
+      { name: "Chest Fly", variantLabel: "Pec Deck", sets: [
+        { weight: 130, reps: 15, type: "working" },
+        { weight: 150, reps: 15, type: "working" },
+        { weight: 165, reps: 11, type: "working" },
+      ]},
+      { name: "Lateral Raise", variantLabel: "Lateral Raise Machine", sets: [
+        { weight: 80, reps: 12, type: "working" },
+        { weight: 80, reps: 12, type: "working" },
+        { weight: 90, reps: 12, type: "working" },
+      ]},
+      { name: "Tricep Pushdown", variantLabel: "Cable (High Pulley)", sets: [
+        { weight: 135, reps: 12, type: "working" },
+        { weight: 120, reps: 12, type: "working" },
+        { weight: 120, reps: 12, type: "working" },
+      ]},
+      { name: "Dip", variantLabel: "Dip Station", sets: [
+        { weight: 0, reps: 8, type: "working" },
+        { weight: 0, reps: 9, type: "working" },
+        { weight: 0, reps: 9, type: "working" },
+      ]},
+      { name: "Skull Crusher", variantLabel: "Dumbbells", sets: [
+        { weight: 25, reps: 12, type: "working" },
+        { weight: 25, reps: 6,  type: "working" },
+        { weight: 25, reps: 6,  type: "working" },
+      ]},
+      { name: "Front Raise", variantLabel: "Dumbbells", sets: [
+        { weight: 25, reps: 10, type: "working" },
+      ]},
+    ],
+  },
+  // ── Session 16 — Back & Arms (user-built, Mode C) · Jul 1 ──
+  // App auto-named "Back & Arms" — composite back+biceps day, muscle-list
+  // name (the namer doesn't map content → canonical Pull split; see log).
+  // Date stamped correctly (Jul 1). Pull-Up is bodyweight (0 lbs volume).
+  {
+    id: "h16",
+    name: "Back & Arms",
+    date: "2026-07-01",
+    durationSec: null, // ~508 min left-running timer → stored null (D-121 guard)
+    exercises: [
+      { name: "Bent-Over Row", variantLabel: "Barbell", sets: [
+        { weight: 135, reps: 8, type: "warmup" },
+        { weight: 185, reps: 8, type: "working" },
+        { weight: 225, reps: 8, type: "working" },
+      ]},
+      { name: "Pull-Up", variantLabel: "Pull-Up Bar", sets: [
+        { weight: 0, reps: 8, type: "working" },
+        { weight: 0, reps: 8, type: "working" },
+        { weight: 0, reps: 8, type: "working" },
+        { weight: 0, reps: 8, type: "working" },
+      ]},
+      { name: "Bicep Curl", variantLabel: "Barbell", sets: [
+        { weight: 95, reps: 8, type: "working" },
+        { weight: 95, reps: 8, type: "working" },
+        { weight: 95, reps: 8, type: "working" },
+      ]},
+      { name: "Back Extension", variantLabel: "Hyperextension Bench", sets: [
+        { weight: 25, reps: 10, type: "working" },
+        { weight: 25, reps: 10, type: "working" },
+      ]},
+    ],
+  },
+  // ── Session 15 — Chest & Shoulders (user-built, Mode C) · Jun 28 ──
+  // App auto-named "Chest & Shoulders" — correct (first non-"Full Body"
+  // multi-muscle auto-name; coherent 2-group day, no triceps). Displayed date
+  // was "Jun 29"; stored as workout-start 6/28 per D-086/D-121 (see log flag).
+  {
+    id: "h15",
+    name: "Chest & Shoulders",
+    date: "2026-06-28",
+    durationSec: 4020, // 67 min — plausible, timer streak broken
+    exercises: [
+      { name: "Incline Bench Press", variantLabel: "Barbell", sets: [
+        { weight: 135, reps: 10, type: "warmup" },
+        { weight: 155, reps: 10, type: "working" },
+        { weight: 165, reps: 8,  type: "working" },
+        { weight: 165, reps: 8,  type: "working" },
+      ]},
+      { name: "Machine Chest Press", variantLabel: "Hammer Strength Chest Press", sets: [
+        { weight: 225, reps: 8,  type: "working" },
+        { weight: 225, reps: 10, type: "working" },
+        { weight: 275, reps: 8,  type: "working" },
+      ]},
+      { name: "Machine Shoulder Press", variantLabel: "Hammer Strength Shoulder Press", sets: [
+        { weight: 135, reps: 10, type: "warmup" },
+        { weight: 205, reps: 8,  type: "working" },
+        { weight: 205, reps: 7,  type: "working" },
+      ]},
+      { name: "Cable Crossover", variantLabel: "Cable Crossover", sets: [
+        { weight: 33, reps: 12, type: "working" },
+        { weight: 33, reps: 10, type: "working" },
+        { weight: 33, reps: 8,  type: "working" },
+      ]},
+      { name: "Lateral Raise", variantLabel: "Cable (Low Pulley)", sets: [
+        { weight: 20, reps: 12, type: "working" },
+        { weight: 20, reps: 15, type: "working" },
+        { weight: 30, reps: 8,  type: "working" },
+      ]},
+    ],
+  },
+  // ── Session 14 — Push Day (user-built, Mode C) · Jun 21 ──
+  // Device auto-named "Full Body" (D-006 classifier residual on a user-built
+  // Push day); stored under the corrected focus name per mock convention.
+  {
+    id: "h14",
+    name: "Push Day",
+    date: "2026-06-21",
+    durationSec: null, // ~11h47m left-running timer → stored null (D-121 guard)
+    exercises: [
+      { name: "Bench Press", variantLabel: "Barbell", sets: [
+        { weight: 135, reps: 10, type: "warmup" },
+        { weight: 205, reps: 8,  type: "working" },
+        { weight: 205, reps: 7,  type: "working" },
+        { weight: 205, reps: 9,  type: "working" },
+      ]},
+      { name: "Incline Bench Press", variantLabel: "Dumbbells", sets: [
+        { weight: 60, reps: 10, type: "working" },
+        { weight: 65, reps: 8,  type: "working" },
+        { weight: 65, reps: 8,  type: "working" },
+      ]},
+      { name: "Lateral Raise", variantLabel: "Dumbbells", sets: [
+        { weight: 15, reps: 15, type: "working" },
+        { weight: 15, reps: 15, type: "working" },
+        { weight: 20, reps: 15, type: "working" },
+      ]},
+      { name: "Front Raise", variantLabel: "Dumbbells", sets: [
+        { weight: 15, reps: 10, type: "working" },
+        { weight: 15, reps: 15, type: "working" },
+        { weight: 20, reps: 15, type: "working" },
+      ]},
+      { name: "Skull Crusher", variantLabel: "Dumbbells", sets: [
+        { weight: 15, reps: 15, type: "working" },
+        { weight: 15, reps: 15, type: "working" },
+        { weight: 20, reps: 15, type: "working" },
+      ]},
+      { name: "Cable Crossover", variantLabel: "Cable Crossover", sets: [
+        { weight: 33, reps: 15, type: "working" },
+        { weight: 33, reps: 12, type: "working" },
+        { weight: 33, reps: 12, type: "working" },
+      ]},
+      { name: "Machine Decline Press", variantLabel: "Hammer Strength Decline Press", sets: [
+        { weight: 225, reps: 8,  type: "working" },
+        { weight: 225, reps: 8,  type: "working" },
+        { weight: 225, reps: 12, type: "working" },
+      ]},
+      { name: "Tricep Pushdown", variantLabel: "Cable (High Pulley)", sets: [
+        { weight: 120, reps: 15, type: "working" },
+        { weight: 135, reps: 15, type: "working" },
+        { weight: 135, reps: 15, type: "working" },
+      ]},
+    ],
+  },
   // ── Session 13 — Leg Day (user-built, Mode C) · Jun 2 ──
   {
     id: "h13",
@@ -4127,6 +4954,10 @@ const MOCK_COACH_OBSERVATIONS = [
 // Anchors are deduped to the most-recent occurrence per (exercise, variant).
 const _D = (iso) => new Date(iso + "T12:00:00").getTime();
 const MOCK_PROGRESS_PRS = [
+  // ── Session 17 · Jul 5 ──
+  { id: "p41", exerciseName: "Overhead Press (Smith)",         value: "155 × 6",  isPR: false, isNew: true,  achievedAt: _D("2026-07-05") },
+  // ── Session 15 · Jun 28 ──
+  { id: "p40", exerciseName: "Machine Shoulder Press",         value: "205 × 8",  isPR: false, isNew: true,  achievedAt: _D("2026-06-28") },
   // ── Session 13 · Jun 2 ──
   { id: "p24", exerciseName: "Leg Extension",                  value: "195 × 15", isPR: true,  isNew: false, achievedAt: _D("2026-06-02") },
   { id: "p25", exerciseName: "Bulgarian Split Squat (Smith)",  value: "225 × 8",  isPR: false, isNew: true,  achievedAt: _D("2026-06-02") },
@@ -4139,7 +4970,7 @@ const MOCK_PROGRESS_PRS = [
   { id: "p30", exerciseName: "DB Bench Press",                 value: "80 × 9",   isPR: false, isNew: true,  achievedAt: _D("2026-05-31") },
   { id: "p31", exerciseName: "Barbell Overhead Press",         value: "135 × 6",  isPR: false, isNew: true,  achievedAt: _D("2026-05-31") },
   { id: "p32", exerciseName: "Tricep Kickback",                value: "30 × 10",  isPR: false, isNew: true,  achievedAt: _D("2026-05-31") },
-  { id: "p33", exerciseName: "Machine Chest Press",       value: "180 × 10", isPR: false, isNew: true,  achievedAt: _D("2026-05-31") },
+  { id: "p33", exerciseName: "Machine Chest Press",       value: "275 × 8",  isPR: true,  isNew: false, achievedAt: _D("2026-06-28") },
   // ── Session 10 · May 26 ──
   { id: "p34", exerciseName: "Bicep Curl (Barbell)",           value: "95 × 10",  isPR: false, isNew: true,  achievedAt: _D("2026-05-26") },
   // ── Session 9 · May 25 ──
@@ -4147,15 +4978,15 @@ const MOCK_PROGRESS_PRS = [
   { id: "p36", exerciseName: "Preacher Curl (EZ Bar)",         value: "80 × 8",   isPR: false, isNew: true,  achievedAt: _D("2026-05-25") },
   { id: "p37", exerciseName: "Back Extension (Hyperext.)",     value: "45 × 8",   isPR: false, isNew: true,  achievedAt: _D("2026-05-25") },
   // ── Session 8 · May 24 ──
-  { id: "p38", exerciseName: "Machine Lateral Raise",          value: "85 × 12",  isPR: false, isNew: true,  achievedAt: _D("2026-05-24") },
+  { id: "p38", exerciseName: "Machine Lateral Raise",          value: "90 × 12",  isPR: true,  isNew: false, achievedAt: _D("2026-07-05") },
   { id: "p39", exerciseName: "DB Skull Crusher",               value: "25 × 12",  isPR: false, isNew: true,  achievedAt: _D("2026-05-24") },
   // ── Session 6 · May 17 ──
   { id: "p1",  exerciseName: "Bench Press (Barbell)",          value: "225 × 6",  isPR: true,  isNew: false, achievedAt: _D("2026-05-17") },
   { id: "p2",  exerciseName: "Pec Deck Chest Fly",             value: "155 × 15", isPR: false, isNew: true,  achievedAt: _D("2026-05-17") },
-  { id: "p3",  exerciseName: "Machine Decline Press",     value: "225 × 8",  isPR: true,  isNew: false, achievedAt: _D("2026-05-17") },
+  { id: "p3",  exerciseName: "Machine Decline Press",     value: "225 × 12", isPR: true,  isNew: false, achievedAt: _D("2026-06-21") },
   { id: "p4",  exerciseName: "Dip (Bodyweight)",               value: "BW × 10",  isPR: true,  isNew: false, achievedAt: _D("2026-05-24") },
   { id: "p5",  exerciseName: "DB Lateral Raise",               value: "20 × 15",  isPR: false, isNew: true,  achievedAt: _D("2026-05-17") },
-  { id: "p6",  exerciseName: "DB Front Raise",                 value: "20 × 10",  isPR: false, isNew: true,  achievedAt: _D("2026-05-17") },
+  { id: "p6",  exerciseName: "DB Front Raise",                 value: "25 × 10",  isPR: true,  isNew: false, achievedAt: _D("2026-07-05") },
   { id: "p7",  exerciseName: "DB Chest Fly",                   value: "20 × 15",  isPR: false, isNew: true,  achievedAt: _D("2026-05-17") },
   // ── Session 5 · May 12 ──
   { id: "p8",  exerciseName: "Seated Cable Row",               value: "209 × 10", isPR: true,  isNew: false, achievedAt: _D("2026-05-31") },
@@ -4164,7 +4995,7 @@ const MOCK_PROGRESS_PRS = [
   { id: "p10", exerciseName: "Incline DB Press",               value: "75 × 8",   isPR: false, isNew: true,  achievedAt: _D("2026-05-10") },
   { id: "p11", exerciseName: "Cable Crossover",                value: "33 × 12",  isPR: false, isNew: true,  achievedAt: _D("2026-05-10") },
   { id: "p12", exerciseName: "DB Overhead Press",              value: "55 × 8",   isPR: true,  isNew: false, achievedAt: _D("2026-05-10") },
-  { id: "p13", exerciseName: "Cable Lateral Raise",            value: "25 × 10",  isPR: true,  isNew: false, achievedAt: _D("2026-05-10") },
+  { id: "p13", exerciseName: "Cable Lateral Raise",            value: "30 × 8",   isPR: true,  isNew: false, achievedAt: _D("2026-06-28") },
   { id: "p14", exerciseName: "Tricep Pushdown",                value: "135 × 12", isPR: true,  isNew: false, achievedAt: _D("2026-05-10") },
   // ── Session 3 · May 8 ──
   { id: "p15", exerciseName: "Hip Thrust (Machine)",           value: "450 × 8",  isPR: false, isNew: true,  achievedAt: _D("2026-05-08") },
@@ -4172,7 +5003,7 @@ const MOCK_PROGRESS_PRS = [
   { id: "p17", exerciseName: "Romanian Deadlift (Barbell)",    value: "225 × 8",  isPR: false, isNew: true,  achievedAt: _D("2026-05-08") },
   { id: "p18", exerciseName: "Leg Press (45°)",                value: "630 × 8",  isPR: false, isNew: true,  achievedAt: _D("2026-05-08") },
   // ── Session 2 · May 5 ──
-  { id: "p19", exerciseName: "Bent-Over Row (Barbell)",        value: "225 × 6",  isPR: true,  isNew: false, achievedAt: _D("2026-05-26") },
+  { id: "p19", exerciseName: "Bent-Over Row (Barbell)",        value: "225 × 8",  isPR: true,  isNew: false, achievedAt: _D("2026-07-01") },
   { id: "p20", exerciseName: "Lat Pulldown (Cable)",           value: "180 × 10", isPR: false, isNew: true,  achievedAt: _D("2026-05-05") },
   { id: "p21", exerciseName: "Pull-Up (Bodyweight)",           value: "BW × 9",   isPR: true,  isNew: false, achievedAt: _D("2026-05-31") },
   { id: "p22", exerciseName: "Face Pull",                      value: "60 × 10",  isPR: false, isNew: true,  achievedAt: _D("2026-05-05") },
@@ -4222,17 +5053,216 @@ const MOCK_BODY_STATS = {
    - 3+ groups → "Full Body"
    Push/Pull are not auto-detected — those are programming concepts the
    user can name manually if they prefer. */
-function deriveWorkoutName(exercises, fallbackDate = new Date()) {
+/* ── Content classifier (D-006 / D-132, this session) ─────────────────
+   ONE engine, two consumers: it names user-built workouts AND writes the
+   structured classification Coach + engines read. The user can rename a
+   session freely — the classification stays with Coach (never derived
+   from the name; always derived from logged movement content).
+
+   Locked design (owner, this session):
+   - Family membership keys on (primary, pattern) — the library's "Arms"
+     primary conflates biceps (pull) and triceps (push); pattern resolves.
+   - Exclusivity, not coverage: a chest+shoulders day with no triceps is
+     still a Push Day. Gap-detection is Coach's job, not the title's.
+   - Core / Cardio / olympic / conditioning are NEUTRAL — never break
+     classification. Neutral-by-primary runs FIRST (catches Superman:
+     lower-back pattern under Core primary).
+   - Deadlift-family (hinge_compound) is DUAL pull+legs — fits both days,
+     breaks neither. Back Extension (hinge_accessory, Back) likewise.
+   - Dominance tolerance: >=80% of non-warmup working sets in one family
+     claims the day (stray curls on push day stay recorded in `strays`).
+   - Most-specific-name-wins: Back Day > Pull Day > Upper Body Day.
+   - Unresolvable exercises (removed library ids) are excluded from the
+     math — classification is derived convenience, never a mutation, so
+     it degrades quietly rather than failing loud. */
+
+const CLASSIFIER_DOMINANCE = 0.8;
+const CLASSIFIER_NEUTRAL_PATTERNS = new Set([
+  "conditioning", "cardio_steady", "carry", "olympic",
+  "isolation_abs", "isolation_obliques",
+]);
+
+/* (primary, pattern) -> { fams: ["push"|"pull"|"legs"] | null (neutral),
+   displayGroup } */
+function classifierResolve(def) {
+  const { primary, pattern } = def;
+  if (primary === "Core" || primary === "Cardio" || primary === "Full Body") {
+    return { fams: null, displayGroup: primary };
+  }
+  if (pattern && CLASSIFIER_NEUTRAL_PATTERNS.has(pattern)) {
+    return { fams: null, displayGroup: primary };
+  }
+  switch (pattern) {
+    case "isolation_triceps":  return { fams: ["push"], displayGroup: "Arms" };
+    case "isolation_biceps":   return { fams: ["pull"], displayGroup: "Arms" };
+    case "isolation_forearms": return { fams: ["pull"], displayGroup: "Arms" };
+    case "isolation_rear_delt":return { fams: ["pull"], displayGroup: primary }; // Face Pull (Back), Rear Delt Fly (Shoulders)
+    case "isolation_traps":    return { fams: ["pull"], displayGroup: "Back" };
+    case "isolation_lats":     return { fams: ["pull"], displayGroup: "Back" };
+    case "isolation_lower_back": return { fams: ["pull", "legs"], displayGroup: "Back" };
+    case "isolation_front_delt":
+    case "isolation_side_delt": return { fams: ["push"], displayGroup: "Shoulders" };
+    case "hinge_compound":     return { fams: ["pull", "legs"], displayGroup: primary }; // Deadlift/RDL/GM (Legs), Rack Pull (Back) — owner dual call
+    case "hinge_accessory":
+      return primary === "Back"
+        ? { fams: ["pull", "legs"], displayGroup: "Back" } // Back Extension
+        : { fams: ["legs"], displayGroup: "Legs" };        // Hip Thrust, Glute Bridge
+  }
+  switch (primary) {
+    case "Chest":     return { fams: ["push"], displayGroup: "Chest" };
+    case "Shoulders": return { fams: ["push"], displayGroup: "Shoulders" };
+    case "Back":      return { fams: ["pull"], displayGroup: "Back" };
+    case "Legs":      return { fams: ["legs"], displayGroup: "Legs" };
+    case "Arms": // Close-Grip Bench: press pattern under Arms primary
+      if (pattern && pattern.includes("press")) return { fams: ["push"], displayGroup: "Arms" };
+      return { fams: ["push", "pull"], displayGroup: "Arms" }; // pattern-less custom "Arms" — counts for both, breaks neither
+  }
+  return { fams: null, displayGroup: primary || "Other" };
+}
+
+/* Core engine. exercises: [{ exerciseId?, name, primary?, sets: [{type}] }]
+   — accepts BOTH active-workout and history-session exercise shapes.
+   Returns the Coach-legible classification record (Bible schema principle:
+   self-describing fields, human-readable values). */
+function classifyWorkoutContent(exercises, customs = []) {
+  const rows = [];
+  for (const ex of (exercises || [])) {
+    const def =
+      (ex.exerciseId && findExerciseById(ex.exerciseId, customs)) ||
+      findExerciseByName(ex.name, customs) ||
+      (ex.primary ? { primary: ex.primary, pattern: null } : null);
+    if (!def) continue; // unresolvable — excluded, degrade quietly
+    const workingSets = (ex.sets || []).filter((s) => s.type !== "warmup").length;
+    if (workingSets === 0) continue;
+    rows.push({ ...classifierResolve(def), sets: workingSets });
+  }
+
+  const legacyName = (rs) => {
+    const gs = [...new Set(rs.map((r) => r.displayGroup))];
+    if (gs.length === 0) return null;
+    if (gs.length === 1) return `${gs[0]} Day`;
+    if (gs.length === 2) return `${gs[0]} & ${gs[1]}`;
+    return "Full Body";
+  };
+
+  const active = rows.filter((r) => r.fams !== null);
+  const totalSets = active.reduce((a, r) => a + r.sets, 0);
+
+  if (totalSets === 0) {
+    // Pure-neutral session (core-only, cardio-only) or nothing resolvable.
+    const name = legacyName(rows);
+    return {
+      family: rows.length ? "neutral" : "unknown",
+      displayName: name || "Workout",
+      groupsHit: [...new Set(rows.map((r) => r.displayGroup))],
+      dominantShare: null,
+      strays: [],
+    };
+  }
+
+  const share = (fam) =>
+    active.reduce((a, r) => a + (r.fams.includes(fam) ? r.sets : 0), 0) / totalSets;
+  const shares = { push: share("push"), pull: share("pull"), legs: share("legs") };
+  const upperShare =
+    active.reduce((a, r) => a + (r.fams.includes("push") || r.fams.includes("pull") ? r.sets : 0), 0) / totalSets;
+
+  const groups = [...new Set(active.map((r) => r.displayGroup))];
+  const straysFor = (fam) =>
+    [...new Set(active.filter((r) => !r.fams.includes(fam)).map((r) => r.displayGroup))];
+
+  // 1. Single display group — most specific name wins. Family tie-break
+  //    prefers the group's natural family so display and classification
+  //    never disagree (deadlift-only: Legs Day + legs, not + pull).
+  if (groups.length === 1) {
+    const g = groups[0];
+    const NATURAL = { Chest: "push", Shoulders: "push", Back: "pull", Legs: "legs" };
+    let fam;
+    if (g === "Arms") fam = "arms";
+    else {
+      const ranked = Object.entries(shares).sort((a, b) => b[1] - a[1]);
+      const top = ranked.filter(([, s]) => s === ranked[0][1]).map(([f]) => f);
+      fam = top.includes(NATURAL[g]) ? NATURAL[g] : ranked[0][0];
+    }
+    return { family: fam, displayName: `${g} Day`, groupsHit: groups, dominantShare: 1, strays: [] };
+  }
+
+  // 2. Family dominance (>=80% of working sets)
+  const dominant = Object.entries(shares)
+    .filter(([, s]) => s >= CLASSIFIER_DOMINANCE)
+    .sort((a, b) => b[1] - a[1]);
+  if (dominant.length) {
+    const [fam, s] = dominant[0];
+    const label = { push: "Push Day", pull: "Pull Day", legs: "Legs Day" }[fam];
+    return { family: fam, displayName: label, groupsHit: groups, dominantShare: Math.round(s * 100) / 100, strays: straysFor(fam) };
+  }
+
+  // 3. Upper Body tier — push+pull content, no meaningful legs
+  if (upperShare >= CLASSIFIER_DOMINANCE) {
+    const lowerStrays = [...new Set(active.filter((r) => !(r.fams.includes("push") || r.fams.includes("pull"))).map((r) => r.displayGroup))];
+    return { family: "upper", displayName: "Upper Body Day", groupsHit: groups, dominantShare: Math.round(upperShare * 100) / 100, strays: lowerStrays };
+  }
+
+  // 4. Fallback — muscle list / genuine Full Body
+  return {
+    family: groups.length === 2 ? "mixed" : "full_body",
+    displayName: legacyName(active),
+    groupsHit: groups,
+    dominantShare: null,
+    strays: [],
+  };
+}
+
+/* What the OLD (pre-classifier) namer would emit for this content —
+   used ONLY by the one-time history migration to detect never-renamed
+   sessions safely (exact match => auto-name => safe to rewrite). */
+function legacyDeriveWorkoutName(exercises, customs = []) {
+  const primaries = [];
+  for (const ex of (exercises || [])) {
+    const def =
+      (ex.exerciseId && findExerciseById(ex.exerciseId, customs)) ||
+      findExerciseByName(ex.name, customs) ||
+      (ex.primary ? { primary: ex.primary } : null);
+    if (def) primaries.push(def.primary);
+  }
+  const groups = [...new Set(primaries)];
+  if (groups.length === 0) return null;
+  if (groups.length === 1) return `${groups[0]} Day`;
+  if (groups.length === 2) return `${groups[0]} & ${groups[1]}`;
+  return "Full Body";
+}
+
+function deriveWorkoutName(exercises, fallbackDate = new Date(), customs = []) {
   if (exercises.length === 0) {
     const month = fallbackDate.toLocaleDateString("en-US", { month: "short", day: "numeric" });
     const hr = fallbackDate.getHours();
     const tod = hr < 12 ? "Morning" : hr < 17 ? "Afternoon" : "Evening";
     return `${month} · ${tod}`;
   }
-  const groups = [...new Set(exercises.map((e) => e.primary))];
-  if (groups.length === 1) return `${groups[0]} Day`;
-  if (groups.length === 2) return `${groups[0]} & ${groups[1]}`;
-  return "Full Body";
+  return classifyWorkoutContent(exercises, customs).displayName;
+}
+
+/* One-time history migration (this session). Backfills classification on
+   every session that lacks one, and corrects display names retroactively —
+   but ONLY where the stored name exactly matches what the OLD namer would
+   have produced for that content (proof the user never hand-typed it).
+   Owner call: rewrite the historical misfires so vocabulary is consistent
+   going forward; never touch a name the user chose. Idempotent — sessions
+   that already carry a classification pass through untouched. */
+function migrateHistoryClassification(history, customs = []) {
+  if (!Array.isArray(history)) return history;
+  let changed = false;
+  const out = history.map((s) => {
+    if (!s || s.classification) return s;
+    const classification = classifyWorkoutContent(s.exercises || [], customs);
+    let name = s.name;
+    const legacy = legacyDeriveWorkoutName(s.exercises || [], customs);
+    if (!s.nameWasEdited && legacy && s.name === legacy && classification.displayName) {
+      name = classification.displayName;
+    }
+    changed = true;
+    return { ...s, name, classification };
+  });
+  return changed ? out : history;
 }
 
 /* Format seconds as mm:ss or h:mm:ss for the live workout timer. */
@@ -13993,6 +15023,7 @@ function TabBar({ active, onTab }) {
         display: "flex", justifyContent: "space-around",
         borderTop: `1px solid ${COLORS.border}`, background: COLORS.bg,
         flexShrink: 0, position: "relative", padding: "8px 0 6px",
+        paddingBottom: "calc(6px + env(safe-area-inset-bottom))",
       }}
     >
       {/* Sliding gold underline. Single-sided accent → no border-radius. */}
@@ -14356,7 +15387,37 @@ export default function MYGFitness() {
   // user has logged nothing yet). Only fall back to the mock when no
   // snapshot exists at all. That way logout (which clears the snapshot)
   // brings back the mock demo data, as discussed.
-  const [workoutHistory, setWorkoutHistory] = useState(h.workoutHistory !== null && h.workoutHistory !== undefined ? h.workoutHistory : MOCK_WORKOUT_HISTORY);
+  // Computed ONCE (ref pattern, same rationale as `hydrated` above) so the
+  // workoutHistory initializer and the Session-66 anchor backfill both see
+  // the SAME post-migration history — the anchor fold must run on
+  // D-141-migrated sessions, not the raw snapshot.
+  const initialHistory = useRef(null);
+  if (initialHistory.current === null) {
+    // Migration chain: classification backfill (S65, D-141) → deviation
+    // backfill (S67, D-032). The deviation pass fills the receipt on
+    // Coach-sourced sessions that carry a prescription snapshot (stored
+    // since dev S61) but predate the engine, overwriting their naive
+    // D-126 mode tags with engine-computed ones. Idempotent both passes.
+    initialHistory.current = migrateHistoryDeviation(
+      migrateHistoryClassification(
+        h.workoutHistory !== null && h.workoutHistory !== undefined ? h.workoutHistory : MOCK_WORKOUT_HISTORY,
+        h.customExercises || []
+      ),
+      h.customExercises || []
+    );
+  }
+  const [workoutHistory, setWorkoutHistory] = useState(initialHistory.current);
+  // ── Anchor store (Session 66, D-070 cluster) ──
+  // Engine-maintained working-capacity records, one per (exercise,
+  // variant). Cold-start = hydration backfill: when the snapshot has no
+  // store (pre-S66 snapshot, fresh install, logout-reset seed data), the
+  // entire history replays through the deterministic fold — the Q1 lock.
+  // Idempotent: an existing store is used as-is, never re-folded.
+  const [anchors, setAnchors] = useState(() => (
+    Array.isArray(h.anchors)
+      ? h.anchors
+      : foldHistoryIntoAnchors(initialHistory.current, h.customExercises || [])
+  ));
   const [openHistoryId, setOpenHistoryId] = useState(null);
 
   // ── Coach's File state (Bible §6.5, v26) ──
@@ -14437,6 +15498,7 @@ export default function MYGFitness() {
       coachObservations,
       pendingCoachQuestions,
       progressPRs,
+      anchors,
       bodyStats,
       coachFileOpenedAt,
       coachFileLastUpdatedAt,
@@ -14467,6 +15529,7 @@ export default function MYGFitness() {
     coachObservations,
     pendingCoachQuestions,
     progressPRs,
+    anchors,
     bodyStats,
     coachFileOpenedAt,
     coachFileLastUpdatedAt,
@@ -14479,7 +15542,7 @@ export default function MYGFitness() {
     const now = new Date();
     setActiveWorkout({
       exercises: [],
-      workoutName: deriveWorkoutName([], now),
+      workoutName: deriveWorkoutName([], now, customExercises),
       startTime: now,
       // restTimerMode and countdown target now live on App-level prefs
       // (restTimerModePref / restCountdownTargetPref) so they persist
@@ -14542,7 +15605,7 @@ export default function MYGFitness() {
     }
     setActiveWorkout({
       exercises: newExercises,
-      workoutName: deriveWorkoutName(newExercises, now),
+      workoutName: deriveWorkoutName(newExercises, now, customExercises),
       startTime: now,
       restTimer: null,
       nameWasEdited: false,
@@ -14585,7 +15648,7 @@ export default function MYGFitness() {
     try {
       // Session 62: Coach now has read tools. Executors close over live app
       // state at send time; the loop in callCoach handles the round-trips.
-      const toolState = { workoutHistory, customExercises, coachRules, coachObservations, progressPRs };
+      const toolState = { workoutHistory, customExercises, coachRules, coachObservations, progressPRs, anchors };
       const { text } = await callCoach(COACH_SYSTEM_PROMPT, turn, {
         tools: COACH_TOOL_DEFS,
         runTool: (name, input) => {
@@ -14672,7 +15735,7 @@ export default function MYGFitness() {
       // the name. We do this here (in the lift) so it stays consistent
       // regardless of which subtree triggered the update.
       if (patch.exercises && !next.nameWasEdited) {
-        next.workoutName = deriveWorkoutName(patch.exercises, prev.startTime);
+        next.workoutName = deriveWorkoutName(patch.exercises, prev.startTime, customExercises);
       }
       return next;
     });
@@ -14740,7 +15803,17 @@ export default function MYGFitness() {
           .map((s) => ({ weight: s.weight, reps: s.reps, type: s.type, rir: s.rir })),
       })).filter((ex) => ex.sets.length > 0),
     };
-    session.mode = classifySessionMode(session);
+    // Deviation diff engine (Session 67, D-032): the receipt is written
+    // HERE, once, at commit — both commit paths share this builder. The
+    // real A/B/C mode tag is a product of the diff (D-126 completed).
+    session.deviation = computeDeviationDiff(session, customExercises);
+    session.mode = session.deviation ? session.deviation.mode : "C";
+    // D-132: the Coach-legible classification, derived from logged movement
+    // content at commit. Independent of session.name — a user rename never
+    // touches this. nameWasEdited persists so future consumers can tell
+    // auto-names from hand-typed ones without the exact-match heuristic.
+    session.classification = classifyWorkoutContent(session.exercises, customExercises);
+    session.nameWasEdited = !!aw.nameWasEdited;
     return session;
   };
 
@@ -14753,6 +15826,9 @@ export default function MYGFitness() {
     const session = buildSessionFromActiveWorkout(activeWorkout);
     if (!session || session.exercises.length === 0) return false;
     setWorkoutHistory((h) => [session, ...h]);
+    // Anchor engine (Session 66, D-070): the silent commit is still a
+    // commit — a save-current-&-start-new session folds like any other.
+    setAnchors((a) => applySessionToAnchors(a || [], session, customExercises));
     if (session.fromCoach) setRotationCursor((c) => c + 1);
     // A newer completed session makes any unanswered pin stale. The
     // silent path doesn't generate new questions (the user is mid-flow
@@ -14842,6 +15918,10 @@ export default function MYGFitness() {
   const commitFinishedSession = () => {
     if (finishedSession && finishedSession.exercises.length > 0) {
       setWorkoutHistory((h) => [finishedSession, ...h]);
+      // Anchor engine (Session 66, D-070): every committed session folds
+      // into the anchor store, deterministically and silently. §10.6 /
+      // D-062 — engine work fires on Finish, not on chat-open.
+      setAnchors((a) => applySessionToAnchors(a || [], finishedSession, customExercises));
       if (finishedSession.fromCoach) setRotationCursor((c) => c + 1);
       const prs = detectSessionPRs(finishedSession, workoutHistory);
       const qs = buildDemoSurveyQuestions(finishedSession, prs);
@@ -14926,6 +16006,7 @@ export default function MYGFitness() {
     setRestTimerModePref("countup");
     setRestCountdownTargetPref(90);
     setWorkoutHistory(MOCK_WORKOUT_HISTORY);
+    setAnchors(foldHistoryIntoAnchors(MOCK_WORKOUT_HISTORY, []));
     setOnboardingComplete(false);
     setCustomExercises([]);
     setExerciseSort({ mode: "alpha", dir: "asc" });
@@ -15472,7 +16553,7 @@ export default function MYGFitness() {
   };
 
   return (
-    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#0a0a0a", padding: "40px 20px" }}>
+    <div style={{ width: "100vw", height: "100vh", background: COLORS.bg }}>
       <style>{`
         input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 24px; height: 24px; border-radius: 50%; background: #FFD700; cursor: pointer; border: 3px solid #111111; box-shadow: 0 0 8px rgba(255,215,0,0.4); }
         input[type="range"]::-moz-range-thumb { width: 24px; height: 24px; border-radius: 50%; background: #FFD700; cursor: pointer; border: 3px solid #111111; box-shadow: 0 0 8px rgba(255,215,0,0.4); }
