@@ -1632,11 +1632,15 @@ function coachToolSessionDetail(input, state) {
 }
 
 function coachToolRules(input, state) {
-  const rules = (state.coachRules || []).map((r) =>
-    typeof r === "string"
-      ? { rule: r, added_on: null }
-      : { rule: r.text, added_on: r.createdAt ? coachMsToDate(r.createdAt) : null }
-  );
+  const rules = (state.coachRules || []).map((r) => {
+    if (typeof r === "string") return { rule: r, added_on: null };
+    const out = { rule: r.text, added_on: r.createdAt ? coachMsToDate(r.createdAt) : null };
+    // D-084 humanized adherence status (Session 69). Only tracked rules
+    // carry one; counters and thresholds never appear in the return.
+    const status = coachRuleStatus(r);
+    if (status) out.adherence = status;
+    return out;
+  });
   return { count: rules.length, rules };
 }
 
@@ -2668,6 +2672,12 @@ function formatDurationMin(sec) {
    sets are skipped (no e1RM without a load). */
 function detectSessionPRs(session, history) {
   if (!session || !session.exercises || session.exercises.length === 0) return [];
+  // Per-VARIANT keying (Session 69 fix, live-export bug: "PR" fired on a
+  // first-ever Smith-variant Bent-Over Row against Barbell history).
+  // PRs are per (exercise, variant) — the Bible's PR ≠ Anchor lock and
+  // the anchor store both already key this way; different variants are
+  // different lifts, never compared (D-085 discriminator, D-130 sin).
+  const prKey = (ex) => `${ex.name}::${ex.variantLabel || ""}`;
   const maxByEx = new Map();
   for (const w of (history || [])) {
     for (const ex of (w.exercises || [])) {
@@ -2677,7 +2687,7 @@ function detectSessionPRs(session, history) {
         const reps = Number(s.reps);
         if (!Number.isFinite(w_lb) || !Number.isFinite(reps) || w_lb <= 0 || reps <= 0) continue;
         const e1 = e1rm(w_lb, reps);
-        if (e1 > (maxByEx.get(ex.name) || 0)) maxByEx.set(ex.name, e1);
+        if (e1 > (maxByEx.get(prKey(ex)) || 0)) maxByEx.set(prKey(ex), e1);
       }
     }
   }
@@ -2685,8 +2695,8 @@ function detectSessionPRs(session, history) {
   for (const ex of session.exercises) {
     if (!ex.name) continue;
     let best = null;
-    let bestE1 = maxByEx.get(ex.name) || 0;
-    const prior = maxByEx.get(ex.name) || 0;
+    let bestE1 = maxByEx.get(prKey(ex)) || 0;
+    const prior = maxByEx.get(prKey(ex)) || 0;
     for (const s of (ex.sets || [])) {
       const w_lb = Number(s.weight);
       const reps = Number(s.reps);
@@ -3244,6 +3254,242 @@ function obsVisibleToUser(o) {
   if (!o) return false;
   if (o.source !== "engine") return true;
   return o.status === "encoded";
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   RULE ADHERENCE ENGINE (Session 69 — D-084 realized)
+
+   The anchor STALE machine relabeled for user-authored rules (§12.6).
+   Pure, deterministic, engine-owned — Claude reads a humanized adherence
+   status via tool, never computes it (the D-070/D-071 split).
+
+   Structured rule schema (S69 locks, the D-001-cluster rule piece):
+     rule: { id, text, createdAt,            ← user-owned, engine never edits
+             schemaVersion,
+             predicate: {                     ← machine-evaluable (D-084/D-094)
+               kind: "require_on_day" | "exclude",
+               triggerFamilies: ["pull"|...] | null,
+               targets: [{ exerciseId, name }, ...],   ← MULTI-MOVEMENT (D-156)
+               trackAdherence: bool
+             } | null,                        ← null = free-text, honored by
+                                                voice only, untracked
+             adherence: { consecutiveMisses, reaffirmations, checkPending,
+                          lastEvaluatedAt, lastReaffirmedAt,
+                          history: [{sessionId, date, result, finishedWith}] }
+                        | null }              ← engine-written bookkeeping
+
+   S69 owner locks (Q1–Q6):
+   - Q1 STRICT trigger: only sessions whose classification.family is in
+     triggerFamilies touch the counter. Mixed/upper days are invisible —
+     they can't accuse, they don't reset. (D-094 literal-not-familial.)
+   - Q2 GATED on the rule's birthday: a session counts only if dated on/
+     after the rule's creation DAY — you can't miss a rule that didn't
+     exist. (The historical miss-miss-hit arc lives in the test suite
+     synthetically; the live device replays from 2026-07-08.)
+   - Q3 PRESENCE, not position: any target logged with a working set on
+     a trigger day resets the counter, any variant (D-029 lift scope).
+     "Finish with" ordering is voice-level color only — the engine
+     records finishedWith on hits so Coach CAN mention placement, but
+     placement never makes a miss.
+   - Q4 EXCLUSIONS UNTRACKED in v1: "Don't program deadlifts" migrates
+     to a structured predicate (the prescription side reads it
+     mechanically) but carries no counter. A one-off violation is not a
+     pattern; consecutive-miss machinery doesn't fit the shape. If the
+     user tires of a ban, they delete the rule.
+   - Q5 ANY-MATCH targets: one-of-the-list satisfies a requirement (and
+     would violate an exclusion). First case: "Machine Press, any
+     variant" spans machine_chest_press + machine_decline_press (D-156).
+   - Q6 THE MACHINE: mode-INDEPENDENT (A, B, and C all count — the rule
+     is about the user's day, not Coach's card; unlike the observation
+     engine's A/B gate). Base threshold 3 consecutive trigger-day misses
+     (matches anchor STALE). At threshold: set checkPending ONCE, park
+     headlessly (like stale.surveyPending / inquiry_pending) until the
+     survey arc builds the ask surface. "Keep it" = reaffirmation:
+     +2 to the bar, counter CONTINUES (insistence buys longer silence;
+     a hit still resets to zero). A hit while a check is pending clears
+     it silently — the behavior was the answer (D-135 spirit). Coach
+     proposes, NEVER auto-retires: deletion is user-owned, always.
+   ═══════════════════════════════════════════════════════════════════ */
+const RULE_SCHEMA_VERSION = 1;
+const RULE_ADHERENCE_THRESHOLD = 3;  // base consecutive trigger-day misses → check (D-084, matches anchor STALE)
+const RULE_LEASH_STEP = 2;           // each "keep it" raises the bar by this much
+const RULE_HISTORY_LIMIT = 10;       // bounded per-rule audit trail, like anchors
+
+function ruleEffectiveThreshold(rule) {
+  const r = (rule && rule.adherence && rule.adherence.reaffirmations) || 0;
+  return RULE_ADHERENCE_THRESHOLD + r * RULE_LEASH_STEP;
+}
+
+/* Q2 birthday gate at DAY granularity: session.date is the workout-start
+   date (D-086), rule.createdAt is epoch ms — a rule created mid-day
+   counts the same day's session (the live 2026-07-08 break). */
+function ruleSessionOnOrAfterCreation(sessionDate, createdAt) {
+  if (!sessionDate || !Number.isFinite(createdAt)) return false;
+  const d = new Date(createdAt);
+  const created = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  return sessionDate >= created;
+}
+
+/* ANY-match target presence (Q3/Q5): does the logged session contain any
+   rule target with at least one working set, any variant? Keys mirror
+   the deviation diff (exerciseId-first, name fallback — nothing is
+   invisible). Returns finishedWith (was a target the LAST exercise with
+   working sets?) as voice-level color, never a pass/fail input. */
+function ruleTargetsInSession(rule, session) {
+  const keyOf = (exId, name) => exId || `name:${(name || "").trim().toLowerCase()}`;
+  const targetKeys = new Set(((rule.predicate && rule.predicate.targets) || [])
+    .map((t) => keyOf(t.exerciseId, t.name)));
+  let present = false, lastWorkingKey = null;
+  for (const ex of (session && session.exercises) || []) {
+    const hasWorking = (ex.sets || []).some((s) => s.type !== "warmup");
+    if (!hasWorking) continue;
+    const k = keyOf(ex.exerciseId, ex.name);
+    lastWorkingKey = k;
+    if (targetKeys.has(k)) present = true;
+  }
+  return { present, finishedWith: present && targetKeys.has(lastWorkingKey) };
+}
+
+/* The fold: one committed session into the rule store. Pure — returns a
+   new array only when something changed; untouched rules keep reference
+   equality (migration idempotency relies on this). Runs on BOTH commit
+   paths, every mode. */
+function applySessionToRuleAdherence(rules, session) {
+  if (!Array.isArray(rules) || !session) return rules || [];
+  const fam = session.classification && session.classification.family;
+  if (!fam) return rules;
+  let changed = false;
+  const next = rules.map((rule) => {
+    const p = rule && rule.predicate;
+    if (!p || p.kind !== "require_on_day" || !p.trackAdherence) return rule;  // Q4: exclusions + free-text pass through
+    if (!Array.isArray(p.triggerFamilies) || !p.triggerFamilies.includes(fam)) return rule;  // Q1 strict
+    if (!ruleSessionOnOrAfterCreation(session.date, rule.createdAt)) return rule;            // Q2 gated
+    const a = rule.adherence || {
+      consecutiveMisses: 0, reaffirmations: 0, checkPending: null,
+      lastEvaluatedAt: null, lastReaffirmedAt: null, history: [],
+    };
+    if ((a.history || []).some((h) => h.sessionId === session.id)) return rule;  // one evaluation per session max
+    const { present, finishedWith } = ruleTargetsInSession(rule, session);
+    const entry = {
+      sessionId: session.id, date: session.date,
+      result: present ? "hit" : "miss",
+      finishedWith: present ? finishedWith : null,
+    };
+    let adherence;
+    if (present) {
+      // Hit: reset the streak; a pending check resolves silently — the
+      // behavior was the answer (D-135 spirit). Reaffirmations persist:
+      // insistence is durable signal.
+      adherence = {
+        ...a, consecutiveMisses: 0, checkPending: null,
+        lastEvaluatedAt: session.date,
+        history: [entry, ...(a.history || [])].slice(0, RULE_HISTORY_LIMIT),
+      };
+    } else {
+      const misses = (a.consecutiveMisses || 0) + 1;
+      const fires = !a.checkPending && misses >= ruleEffectiveThreshold(rule);
+      adherence = {
+        ...a, consecutiveMisses: misses,
+        checkPending: a.checkPending || (fires ? { firedAt: session.date, missesAtFire: misses } : null),
+        lastEvaluatedAt: session.date,
+        history: [entry, ...(a.history || [])].slice(0, RULE_HISTORY_LIMIT),
+      };
+    }
+    changed = true;
+    return { ...rule, adherence };
+  });
+  return changed ? next : rules;
+}
+
+/* "Keep it" resolution (the survey arc will call this; shipped now so
+   the leash path is real and testable — same pattern as
+   resolveObservationInquiry). The counter CONTINUES from where it was;
+   the raised bar (+RULE_LEASH_STEP) is what buys the longer silence.
+   There is deliberately no "drop" here — the engine never retires a
+   user rule; deletion goes through the user-owned affordances. */
+function resolveRuleAdherenceCheck(rule, resolution, nowMs = Date.now()) {
+  const a = rule && rule.adherence;
+  if (!a || !a.checkPending || resolution !== "keep") return rule;
+  return {
+    ...rule,
+    adherence: {
+      ...a, checkPending: null,
+      reaffirmations: (a.reaffirmations || 0) + 1,
+      lastReaffirmedAt: nowMs,
+    },
+  };
+}
+
+/* Structured-rule migration (S69). Exact-text keyed: the two real
+   free-text rules get machine-evaluable predicates; any other free-text
+   rule gets predicate:null — kept, honored by voice, untracked (the
+   honest "not all rules structure cleanly" path from D-084). Tracked
+   rules then silently backfill by replaying committed history oldest→
+   newest through the fold, gated by each rule's own birthday (Q2).
+   Silent: a threshold crossed in replay parks as checkPending, nothing
+   fires at hydration. Idempotent: a rule already carrying schemaVersion
+   is never touched; an unchanged store returns reference-equal. */
+const RULE_TEXT_PREDICATES = {
+  "Finish every Pull/Back day with Back Extension": {
+    kind: "require_on_day",
+    triggerFamilies: ["pull"],
+    targets: [{ exerciseId: "back_extension", name: "Back Extension" }],
+    trackAdherence: true,
+  },
+  "Don't program deadlifts": {
+    kind: "exclude",
+    triggerFamilies: null,
+    targets: [{ exerciseId: "deadlift", name: "Deadlift" }],
+    trackAdherence: false,
+  },
+};
+function migrateRuleStore(rules, history) {
+  if (!Array.isArray(rules)) return rules;
+  const ordered = [...(history || [])].reverse(); // store is newest-first; replay oldest-first
+  let changed = false;
+  const next = rules.map((rule) => {
+    if (!rule || typeof rule !== "object" || rule.schemaVersion !== undefined) return rule;
+    changed = true;
+    const pred = RULE_TEXT_PREDICATES[rule.text] || null;
+    let structured = {
+      ...rule,
+      schemaVersion: RULE_SCHEMA_VERSION,
+      predicate: pred ? { ...pred, targets: pred.targets.map((t) => ({ ...t })) } : null,
+      adherence: null,
+    };
+    if (pred && pred.trackAdherence) {
+      let arr = [structured];
+      for (const s of ordered) arr = applySessionToRuleAdherence(arr, s);
+      structured = arr[0];
+    }
+    return structured;
+  });
+  return changed ? next : rules;
+}
+
+/* D-084 humanized adherence status for the Coach read surface. Raw
+   counters, thresholds, and internal vocabulary never appear (D-150
+   principle) — Coach learns posture, not mechanics. Returns null for
+   untracked rules (nothing to add beyond the rule text). */
+function coachRuleStatus(rule) {
+  const p = rule && rule.predicate;
+  if (!p || !p.trackAdherence) return null;
+  const famLabel = { pull: "Pull/Back", push: "Push", legs: "Legs" };
+  const days = (p.triggerFamilies || []).map((f) => famLabel[f] || f).join("/") + " day";
+  const a = rule.adherence;
+  if (!a || !a.lastEvaluatedAt) return `active — no ${days} logged since this rule was added`;
+  if (a.checkPending) {
+    return `hasn't been part of the user's last few ${days}s — a check-in with the user is pending, do not pre-empt it`;
+  }
+  if ((a.consecutiveMisses || 0) > 0) {
+    const n = a.consecutiveMisses;
+    return `active, but not done on the last ${n === 1 ? days : n + " " + days + "s"} — stay silent about the gap unless the user raises it`;
+  }
+  const last = (a.history || [])[0];
+  const placement = last && last.result === "hit" && last.finishedWith === false
+    ? " (done mid-session rather than as the closer — fine, placement is the user's call)"
+    : "";
+  return `active and being followed — honored on the most recent ${days}${placement}`;
 }
 
 /* Demo survey questions for the Finish Flow shell. PLACEHOLDER content —
@@ -5990,6 +6236,24 @@ function ActiveLogger({
   const reorderDragRef = useRef(null);
   useEffect(() => { reorderDragRef.current = reorderDrag; }, [reorderDrag]);
 
+  // While a reorder drag is live, block browser-native panning. The card
+  // header's touchAction: "pan-y" (needed so a normal scroll can start on
+  // the header) still permits native vertical scrolling during the drag —
+  // the §15-documented competition — and touch-action can't be changed
+  // mid-gesture, so the browser scrolls the list underneath the card
+  // transform and fights the rAF auto-scroll ("screen stops scrolling",
+  // Session 70 device bug). A non-passive document-level touchmove
+  // preventDefault for the duration of the drag hands scrolling entirely
+  // to the auto-scroll loop below. Keyed on the boolean so the listener
+  // attaches once per drag, not per pointermove.
+  const reorderActive = !!reorderDrag;
+  useEffect(() => {
+    if (!reorderActive) return undefined;
+    const blockNativeScroll = (e) => { e.preventDefault(); };
+    document.addEventListener("touchmove", blockNativeScroll, { passive: false });
+    return () => document.removeEventListener("touchmove", blockNativeScroll);
+  }, [reorderActive]);
+
   // Auto-scroll the list when the dragged card is near the top or bottom.
   // Active only during a drag; tick at ~30fps via rAF.
   const autoScrollRafRef = useRef(null);
@@ -6047,6 +6311,13 @@ function ActiveLogger({
 
   const onReorderStart = (uid, originIdx, pointerY, cardEl) => {
     if (!cardEl) return;
+    // Belt-and-braces alongside the container's -webkit-user-select none:
+    // if iOS managed to start a text selection during the long-press,
+    // drop it now so the drag can't extend it (Session 70 device bug).
+    try {
+      const sel = window.getSelection && window.getSelection();
+      if (sel && sel.removeAllRanges) sel.removeAllRanges();
+    } catch (_) { /* noop */ }
     const rect = cardEl.getBoundingClientRect();
     // Snapshot every sibling's baseline rect so reflow math is stable
     // even after siblings start visually shifting.
@@ -6361,6 +6632,16 @@ function ActiveLogger({
       // at the first wall (done OR another typed-present value).
       const cascade = (field) => {
         if (!(field in patch)) return;
+        // A checkbox placeholder-commit (toggleSetDone) patches the field
+        // value with `${field}UserEdited` explicitly forced false — the
+        // set becomes a WALL but is NOT a source. It must not cascade at
+        // all: `filling` below would read false and the walk would run as
+        // a DELETE, wiping the seeded gray placeholders of every eligible
+        // set underneath ("checking a box erased my suggestions" bug,
+        // Session 70). Only genuine typing (fill) or genuine clearing
+        // (delete) propagates; toggleSetDone is the only caller that
+        // forces the flag in a patch.
+        if (patch[`${field}UserEdited`] === false) return;
         const src = sets[setIdx];
         if (!src || src.type === "warmup") return;
         const filling = isSource(src, field);
@@ -7238,6 +7519,16 @@ function ActiveLogger({
           overflowY: "auto",
           minHeight: 0,
           transition: "padding-bottom 0.2s ease",
+          // The logger is a data-entry surface — nothing in it is meant to
+          // be text-selected. The card-level userSelect:"none" was
+          // unprefixed, which iOS Safari ignores, so the reorder long-press
+          // started a native text selection and the drag extended it (blue
+          // highlights everywhere, Session 70 device bug). Prefixed +
+          // inherited from here; touchCallout kills the iOS long-press
+          // magnifier/menu on the same gesture.
+          userSelect: "none",
+          WebkitUserSelect: "none",
+          WebkitTouchCallout: "none",
         }}
       >
         {exercises.length === 0 && (
@@ -15964,7 +16255,16 @@ export default function MYGFitness() {
   // a "next"-sourced Coach workout start.
   const [coachRotation, setCoachRotation] = useState(validateStoredRotation(h.coachRotation));
   const [rotationCursor, setRotationCursor] = useState(Number.isInteger(h.rotationCursor) ? h.rotationCursor : 0);
-  const [coachRules, setCoachRules] = useState(h.coachRules !== null && h.coachRules !== undefined ? h.coachRules : MOCK_COACH_RULES);
+  // Rule engine (Session 69, D-084): hydration migration — free-text
+  // rules gain their structured predicates (exact-text keyed) and
+  // tracked rules silently backfill adherence by replaying the SAME
+  // post-migration history as the anchor/observation backfills
+  // (initialHistory ref). Idempotent: structured rules are never
+  // re-touched; unchanged stores return reference-equal.
+  const [coachRules, setCoachRules] = useState(() => migrateRuleStore(
+    h.coachRules !== null && h.coachRules !== undefined ? h.coachRules : MOCK_COACH_RULES,
+    initialHistory.current
+  ));
   // Observation engine (Session 68, D-071): hydration backfill — when
   // the store has no engine records, wipe the legacy hand-simulated
   // "occasional" seed (Q4 total-fresh-start lock) and replay the
@@ -16370,6 +16670,10 @@ export default function MYGFitness() {
     // Observation engine (Session 68, D-071): same contract — every
     // commit folds, silently, off the session's deviation receipt.
     setCoachObservations((o) => applySessionToObservations(o || [], session, customExercises));
+    // Rule engine (Session 69, D-084): mode-independent by design — a
+    // silent commit is a real training day and counts for/against
+    // standing rules like any other.
+    setCoachRules((r) => applySessionToRuleAdherence(r || [], session));
     if (session.fromCoach) setRotationCursor((c) => c + 1);
     // A newer completed session makes any unanswered pin stale. The
     // silent path doesn't generate new questions (the user is mid-flow
@@ -16466,6 +16770,10 @@ export default function MYGFitness() {
       // Observation engine (Session 68, D-071): the fold fires on
       // Finish (§10.6 / D-062 — engine work on commit, not chat-open).
       setCoachObservations((o) => applySessionToObservations(o || [], finishedSession, customExercises));
+      // Rule engine (Session 69, D-084): adherence counts on every
+      // committed session, all modes — the rule is about the user's
+      // day, not Coach's card.
+      setCoachRules((r) => applySessionToRuleAdherence(r || [], finishedSession));
       if (finishedSession.fromCoach) setRotationCursor((c) => c + 1);
       const prs = detectSessionPRs(finishedSession, workoutHistory);
       const qs = buildDemoSurveyQuestions(finishedSession, prs);
