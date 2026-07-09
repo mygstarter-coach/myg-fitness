@@ -6268,12 +6268,36 @@ function ActiveLogger({
       const scroller = scrollRef.current;
       if (!drag || !scroller) return;
       const rect = scroller.getBoundingClientRect();
-      const EDGE = 60; // px from edge that triggers auto-scroll
-      const SPEED = 8; // px per frame
+      // Proportional edge scrolling (Session 70 — flat 8px/frame was too
+      // slow on device). Speed ramps with how deep the finger sits in the
+      // edge zone: MIN entering the zone, MAX at (or past) the container
+      // edge, where the finger parks during a long drag.
+      const EDGE = 90;      // px from edge that triggers auto-scroll
+      const MIN_SPEED = 6;  // px per frame at the zone boundary
+      const MAX_SPEED = 28; // px per frame at the container edge
       let dy = 0;
-      if (drag.pointerY < rect.top + EDGE) dy = -SPEED;
-      else if (drag.pointerY > rect.bottom - EDGE) dy = SPEED;
-      if (dy !== 0) scroller.scrollTop += dy;
+      if (drag.pointerY < rect.top + EDGE) {
+        const depth = Math.min(1, (rect.top + EDGE - drag.pointerY) / EDGE);
+        dy = -(MIN_SPEED + (MAX_SPEED - MIN_SPEED) * depth);
+      } else if (drag.pointerY > rect.bottom - EDGE) {
+        const depth = Math.min(1, (drag.pointerY - (rect.bottom - EDGE)) / EDGE);
+        dy = MIN_SPEED + (MAX_SPEED - MIN_SPEED) * depth;
+      }
+      if (dy !== 0) {
+        const before = scroller.scrollTop;
+        scroller.scrollTop += dy;
+        // Feed the accumulated scroll back into the drag state so the
+        // dragged card stays pinned under the stationary finger and the
+        // drop-target math stays in the start-of-drag frame ("card gets
+        // left behind at the top", Session 70 device bug). Only when the
+        // scroll actually moved — at the scroll bounds nothing changes.
+        if (scroller.scrollTop !== before) {
+          const nowTop = scroller.scrollTop;
+          setReorderDrag((prev) => (prev
+            ? { ...prev, scrollDelta: nowTop - prev.startScrollTop }
+            : prev));
+        }
+      }
       autoScrollRafRef.current = requestAnimationFrame(tick);
     };
     autoScrollRafRef.current = requestAnimationFrame(tick);
@@ -6287,7 +6311,10 @@ function ActiveLogger({
   // computation stays stable even as siblings visually shift during reflow.
   const computeTargetIdx = (drag) => {
     if (!drag || !drag.siblingRects) return drag ? drag.originIdx : -1;
-    const draggedCenterY = drag.cardRect.top + (drag.pointerY - drag.startY) + drag.cardHeight / 2;
+    // scrollDelta converts the pointer-tracked card position back into the
+    // start-of-drag frame the sibling snapshot lives in (Session 70).
+    const draggedCenterY = drag.cardRect.top + (drag.pointerY - drag.startY)
+      + (drag.scrollDelta || 0) + drag.cardHeight / 2;
     // Walk baseline rects (already in DOM order, dragged card excluded).
     // Each entry: { uid, top, height, idx }. We find the slot the dragged
     // card's center falls into. With N siblings there are N+1 possible
@@ -6340,6 +6367,16 @@ function ActiveLogger({
       cardHeight: rect.height,
       cardRect: { top: rect.top, left: rect.left, width: rect.width },
       siblingRects,
+      // Scroll bookkeeping (Session 70): everything above is snapshotted in
+      // start-of-drag viewport coordinates. When the auto-scroll loop moves
+      // the list mid-drag, the dragged card (still in document flow) rides
+      // along with the content while the finger's pointerY doesn't change —
+      // so the card drifts off the finger and the drop math goes stale by
+      // the same amount. scrollDelta (current scrollTop − startScrollTop)
+      // is the single correction term: the card transform and both
+      // draggedCenterY computations add it to stay in the start frame.
+      startScrollTop: scroller ? scroller.scrollTop : 0,
+      scrollDelta: 0,
     });
   };
   const onReorderMove = (pointerY) => {
@@ -8070,9 +8107,15 @@ function ExerciseCard({
   // Computed every render; cheap (one find + a couple of comparisons).
   const reorderVisual = (() => {
     if (!reorderDrag) return { translateY: 0, isDragged: false };
+    // scrollDelta (Session 70): while the auto-scroll loop moves the list,
+    // this card — still in document flow — rides along with the content.
+    // Adding the accumulated scroll keeps the dragged card pinned under
+    // the finger, and keeps the displacement comparison in the same
+    // start-of-drag frame as the sibling rect snapshot.
+    const scrollDelta = reorderDrag.scrollDelta || 0;
     if (reorderDrag.uid === exercise.uid) {
       return {
-        translateY: reorderDrag.pointerY - reorderDrag.startY,
+        translateY: reorderDrag.pointerY - reorderDrag.startY + scrollDelta,
         isDragged: true,
       };
     }
@@ -8080,6 +8123,7 @@ function ExerciseCard({
     if (!sibling) return { translateY: 0, isDragged: false };
     const draggedCenterY = reorderDrag.cardRect.top
       + (reorderDrag.pointerY - reorderDrag.startY)
+      + scrollDelta
       + reorderDrag.cardHeight / 2;
     const siblingMidY = sibling.top + sibling.height / 2;
     if (sibling.idx > reorderDrag.originIdx) {
