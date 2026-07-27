@@ -1095,7 +1095,12 @@ async function callCoach(systemPrompt, userMessage, opts = {}) {
   let exhaustedNoteSent = false;
   for (let round = 0; ; round++) {
     const body = {
-      model: "claude-sonnet-4-6", max_tokens: 2000,
+      // S75: 2000 truncated legitimate workout replies — a pretty-printed
+      // 7-exercise card is ~1,400-1,500 tokens, 9 exercises ~1,800, before
+      // programmingNotes. max_tokens is a ceiling, not a cost: short replies
+      // pay only for what they emit. 4000 clears the largest legal card with
+      // margin; prose discipline is the prompt's job, not this number's.
+      model: "claude-sonnet-4-6", max_tokens: 4000,
       system: systemPrompt, messages,
     };
     if (useTools) body.tools = tools;
@@ -1153,7 +1158,7 @@ Voice rules:
 - You honor the user's Active Rules absolutely. If the user states a NEW standing rule in chat, honor it for this conversation and acknowledge it — but do not claim you saved it to their file (you can't yet); tell them it holds while you're talking and to add it in Coach's File to make it permanent.
 
 == YOUR TOOLS (the user's real data) ==
-You can look things up mid-reply: a lift's full logged history (get_exercise_history — takes the exercise id from AVAILABLE, verbatim), a past session by exact date or id (get_session_detail), the user's standing rules with dates (get_user_rules_full), what's on file about how they train (get_observations), and their recorded bests (get_benchmarks).
+You can look things up mid-reply: a lift's full logged history (get_exercise_history — takes the exercise id from AVAILABLE, verbatim), a past session by exact date or id (get_session_detail), the user's standing rules with dates (get_user_rules_full), the observation records with their occurrences and provenance (get_observations — the headline observations already ride in ON FILE below; fetch only when you need the detail underneath), and their recorded bests (get_benchmarks).
 - Use them whenever the user asks about their own history, numbers, trends, records, a past session, or what you know about them — and before making ANY claim about their data. Never guess or invent a number a tool can fetch.
 - Don't fetch what this message already gives you (profile, rules text, recent session shapes are above). Fetch when you need the detail underneath — sets, weights, dates, trends.
 - A tool error is information: fix the input (pick the right id from AVAILABLE) and retry once, or tell the user plainly that nothing is on record. Never present a guess as data.
@@ -1184,6 +1189,7 @@ Rules:
 - Your reply poses a bounded 2-4 option choice -> the kind:"text" JSON object above. Nothing outside the JSON.
 - Everything else -> plain conversational text. No JSON, no fences.
 Whenever your reply is a JSON object (workout OR text): the WHOLE reply is that object. It starts with { and ends with }. No lead-in sentence, no trailing note, no markdown code fences. One loose sentence outside the object breaks the app.
+PLAN SILENTLY. Never write your planning, deliberation, or reasoning as prose in the reply — no "Let me plan...", no walking through candidate exercises, no narrating rotation logic before the object. Thinking out loud before a workout card is the #1 cause of broken replies (the card gets cut off and the user sees an error). Decide internally; the ONLY place your reasoning appears is the programmingNotes field inside the card.
 
 == When building a workout ==
 You generate ONE workout from the user's profile, the focus they want (infer it from their message and their split), and ONLY the exercises available to them.
@@ -1228,6 +1234,7 @@ The only hard rule:
 Beyond that, treat movements by their role:
 - STAPLE COMPOUNDS (e.g. barbell bench, squat, barbell row, overhead press) are the lifts the user PROGRESSES on. Program them REGULARLY — a given staple should recur roughly every 2-3 sessions for its focus, because a user can only build strength on a lift they train consistently. Do NOT rotate a staple out just because it appeared recently; rotate it only to avoid a back-to-back repeat, then bring it back. A great staple done every 2nd-3rd session is correct; a great staple appearing once in six sessions is WRONG. Most variety should come from which staple leads and from the accessory slots — not from benching the user away from barbell bench.
 - ROTATE THE LEAD across sessions: do not open with the same compound every time. If the user benched first last session, open with incline or another press this time, and feel free to vary the order of the compounds session to session. The lead movement and variant must never be identical two sessions running. On a composite day (Upper, Full Body, Push, Pull) it is fine to open with the primary press most sessions, but occasionally lead with a different movement category — a row or a shoulder press rather than a chest press — for variety.
+- IMPLEMENT VARIETY WITHIN A SESSION (soft default, not a rule): when two movements in one session share a pattern — two presses, two rows — prefer different implements for them. After barbell flat bench, a dumbbell or machine incline beats a second barbell press: different range of motion and stabilizer demand, and the same joints aren't loaded through an identical fixed path twice. Override freely when the user asks for it or their history shows they run both.
 - ACCESSORIES & ISOLATION: vary the MOVEMENT for variety only where real alternatives exist. When a muscle has just one suitable isolation (quads -> Leg Extension, hamstrings -> Leg Curl, side delts -> Lateral Raise), keep using it every session — that is correct programming, not repetition. For every exercise pick the single most natural variant for it, and use ONLY a variant label that is listed under that exact exercise. Never swap a variant just to be different, and NEVER pair an exercise with a variant that belongs to a different exercise.
 
 Mention the rotation choice in programmingNotes (e.g. "leading with front squat this session since the last two opened on back squat").
@@ -1354,6 +1361,22 @@ function availableAll(equipSet, library) {
 function buildCoachTurn(state, ctx) {
   const goalLabel = COACH_GOAL_LABELS[state.planGoal] || state.planGoal || "Build Muscle";
   const rulesText = (state.coachRules || []).map((r) => "- " + (typeof r === "string" ? r : r.text)).join("\n") || "(none)";
+  // S75 (Option A, owner call): the user-visible observation set rides on
+  // EVERY turn, like rules — Coach must never build a workout blind to what's
+  // on file (live failure: OHTE prescribed on 2026-07-26 because the retry
+  // turn happened not to call get_observations). Deterministic beats
+  // instructed: the app decides what Coach sees, not the model's tool
+  // judgment. Only the curated visible set rides (obsVisibleToUser — legacy
+  // Coach-authored notes + engine-ENCODED records); the engine's silent
+  // n=1/n=2 tallies never do, which is what keeps this block small as
+  // observations multiply. get_observations remains the depth tool
+  // (occurrences, provenance, watching/pending records).
+  const obsText_ = typeof obsText === "function" ? obsText : (o) => (o && o.text) || "";
+  const obsLines = (state.coachObservations || [])
+    .filter(obsVisibleToUser)
+    .map((o) => "- " + obsText_(o))
+    .filter((s) => s.length > 2)
+    .join("\n") || "(none yet)";
   const splitText = (ctx.rotation || []).map((d) => d.label).join(" → ") || "(no split set)";
   const lastW = ctx.lastWorkout;
   const lastText = lastW
@@ -1368,6 +1391,9 @@ Days/week: ${state.planDaysPerWeek}
 
 == ACTIVE RULES (obey absolutely) ==
 ${rulesText}
+
+== ON FILE — HOW THEY TRAIN (account for these in every workout you build; use get_observations only for the detail underneath) ==
+${obsLines}
 
 == THEIR SPLIT ==
 ${splitText}
@@ -4434,34 +4460,34 @@ Return STRICT JSON mapping each id to its rewritten stem, e.g. {"q_1":"...","q_2
 /* ── Shared Components ───────────────────────────────────────── */
 
 function PhoneFrame({ children }) {
-  // Stripped-down passthrough wrapper for real-device rendering.
-  // Previously this rendered a fake 375×812 phone bezel with a fake "9:41"
-  // status bar and home indicator — fine for the artifact preview, but on
-  // a real iPhone it produced a phone-in-a-phone effect. Now it just
-  // provides a flex column container; the surrounding outer wrapper sets
-  // the height, and the existing screen flex layout fills it correctly.
-  //
-  // paddingTop: env(safe-area-inset-top) — in PWA mode (saved to home
-  // screen), iOS draws the app under the status bar. Without this, the
-  // first row of every screen collides with the iOS clock and battery
-  // icons. The bottom safe-area is handled inside TabBar instead, so
-  // the TabBar's background can extend to the true bottom edge.
   return (
     <div
       style={{
-        width: "100%",
-        height: "100%",
-        background: COLORS.bg,
-        position: "relative",
-        overflow: "hidden",
+        width: 375, height: 812, borderRadius: 44, background: COLORS.bg,
+        position: "relative", overflow: "hidden",
+        boxShadow: "0 25px 80px rgba(0,0,0,0.6), 0 0 0 2px #333",
         fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-        display: "flex",
-        flexDirection: "column",
-        paddingTop: "env(safe-area-inset-top)",
+        display: "flex", flexDirection: "column",
       }}
     >
+      <div
+        style={{
+          height: 50, display: "flex", alignItems: "center", justifyContent: "space-between",
+          padding: "0 28px", fontSize: 14, fontWeight: 600, color: COLORS.text, flexShrink: 0,
+        }}
+      >
+        <span>9:41</span>
+        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          <svg width="17" height="12" viewBox="0 0 17 12" fill="white"><rect x="0" y="3" width="3" height="9" rx="1" /><rect x="4.5" y="2" width="3" height="10" rx="1" /><rect x="9" y="0" width="3" height="12" rx="1" /><rect x="13.5" y="1" width="3" height="11" rx="1" fillOpacity="0.3" /></svg>
+          <svg width="16" height="12" viewBox="0 0 16 12" fill="white"><path d="M8 2.4C10.6 2.4 13 3.5 14.7 5.3L16 4C14 1.9 11.1 .5 8 .5S2 1.9 0 4L1.3 5.3C3 3.5 5.4 2.4 8 2.4z" fillOpacity="0.3" /><path d="M8 5.4C9.8 5.4 11.4 6.1 12.6 7.3L13.9 6C12.4 4.5 10.3 3.5 8 3.5S3.6 4.5 2.1 6L3.4 7.3C4.6 6.1 6.2 5.4 8 5.4z" fillOpacity="0.6" /><path d="M8 8.4C9 8.4 9.9 8.8 10.5 9.5L8 12 5.5 9.5C6.1 8.8 7 8.4 8 8.4z" /></svg>
+          <svg width="27" height="13" viewBox="0 0 27 13" fill="white"><rect x="0" y="0.5" width="23" height="12" rx="3.5" stroke="white" strokeWidth="1" fill="none" /><rect x="24.5" y="4" width="2" height="5" rx="1" fillOpacity="0.4" /><rect x="1.5" y="2" width="18" height="9" rx="2" fill="white" /></svg>
+        </div>
+      </div>
       <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
         {children}
+      </div>
+      <div style={{ height: 34, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+        <div style={{ width: 134, height: 5, borderRadius: 3, background: "rgba(255,255,255,0.2)" }} />
       </div>
     </div>
   );
@@ -4746,9 +4772,6 @@ function WelcomeScreen({ onGetStarted, onSignIn }) {
   useEffect(() => { setTimeout(() => setLogoV(true), 200); setTimeout(() => setContentV(true), 900); }, []);
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "0 32px", position: "relative" }}>
-      {/* V.22 marker — temporary build indicator. Bump with each push to
-          verify cache isn't serving stale code. Remove before shipping. */}
-      <div style={{ position: "absolute", top: 16, right: 20, color: COLORS.textSecondary, fontSize: 11, fontWeight: 500, letterSpacing: 1, opacity: 0.7 }}>V.22</div>
       <div style={{ position: "absolute", top: "40%", textAlign: "center", opacity: logoV ? 1 : 0, transform: logoV ? "translateY(-50%) scale(1)" : "translateY(-50%) scale(1.08)", transition: "all 0.9s cubic-bezier(0.22,1,0.36,1)" }}>
         <h1 style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 92, fontWeight: 700, color: COLORS.gold, margin: 0, letterSpacing: 8 }}>MYG</h1>
       </div>
@@ -11103,7 +11126,7 @@ function buildCoachGreeting({ userName, now, workoutHistory, coachRotation, rota
   return pool.length ? pick(pool) : `What's the plan?`;
 }
 
-function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFocused, onAppendMessage, onUpdateLastMessage, onRespondAsCoach, onStartCoachWorkout, onBuildDebug, onNewChat, onSwitchChat, onDeleteChat, onRenameChat, pendingSeed, onSeedConsumed, workoutHistory, coachRotation, rotationCursor, planDaysPerWeek, planGoal, selectedEquipment, pendingQuestions, onAnswerQuestion, onDismissSurvey }) {
+function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFocused, onAppendMessage, onUpdateMessage, genChatId, onGenStart, onGenEnd, onGenIsCurrent, onRespondAsCoach, onStartCoachWorkout, onBuildDebug, onNewChat, onSwitchChat, onDeleteChat, onRenameChat, pendingSeed, onSeedConsumed, workoutHistory, coachRotation, rotationCursor, planDaysPerWeek, planGoal, selectedEquipment, pendingQuestions, onAnswerQuestion, onDismissSurvey }) {
   // Bible §4.7: hard cap on user message length. Keeps one chat message
   // within a single API call's budget and prevents runaway prompts. The
   // counter only appears in the last 100 chars so it doesn't distract
@@ -11116,7 +11139,16 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
   // no spinner. Fires the moment a user message is sent; clears the moment
   // the FIRST streamed token of the Coach reply lands (per §6.3 streaming
   // spec — thinking indicator only covers the pre-first-token window).
-  const [isThinking, setIsThinking] = useState(false);
+  // S75: isThinking is DERIVED from App-level generation state, not local —
+  // local state died on tab switch, so returning mid-generation showed no
+  // indicator and left the composer unlocked (double-send risk, live-hit
+  // 2026-07-26). The App owns "a generation is in flight for chat X"; this
+  // component just reads it, so it survives unmount/remount for free.
+  const isThinking = !!(genChatId && chat && genChatId === chat.id);
+  // Local fake-thinking for the observation-explain MOCK only (seed effect):
+  // that path has no real generation, just a canned delay, and always runs
+  // in a freshly-mounted tab — component-local is correct for it.
+  const [seedThinking, setSeedThinking] = useState(false);
   // True while the mock Coach reply is mid-stream (between first-token and
   // final-token). Used to gate the send button so the user can't fire a
   // second message on top of a streaming one. The bubble renderer reads
@@ -11275,7 +11307,13 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
   // Guards the async generation against a chat switch mid-flight: holds the
   // chat id the in-flight generation is for. Nulled on chat switch; the
   // resolve handler drops its result if this no longer matches.
-  const activeGenChatRef = useRef(null);
+  // S75: the drop-if-chat-switched guard moved to App level (onGenIsCurrent)
+  // so it survives remounts; the old component-local activeGenChatRef went
+  // permanently stale after a tab switch. streamTargetRef tracks the message
+  // an active word-burst is writing into — {chatId, msgId, fullText} — so
+  // cancelStream can FINALIZE it (full text, streaming:false) instead of
+  // stranding a half-revealed bubble with streaming stuck true.
+  const streamTargetRef = useRef(null);
   // Textarea ref for auto-grow. We measure scrollHeight on every input
   // change and resize up to a max. Past the max it scrolls internally.
   const textareaRef = useRef(null);
@@ -11363,7 +11401,12 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
   // canSend gates both the button visual and the send call. Disabled while
   // Coach is thinking or streaming so the user can't fire a second message
   // on top of an in-flight reply.
-  const canSend = isOnline && !isThinking && !isStreaming && input.trim().length > 0 && input.length <= MAX_MESSAGE_CHARS;
+  // S75: tailStreaming reads the PERSISTED flag on the last message — after a
+  // remount mid-word-burst the local isStreaming is freshly false, but the
+  // message itself still says streaming:true until the (still-running) old
+  // burst finishes. Locking on it prevents sending into a mid-reveal chat.
+  const tailStreaming = !!(messages.length && messages[messages.length - 1] && messages[messages.length - 1].streaming === true);
+  const canSend = isOnline && !isThinking && !isStreaming && !tailStreaming && input.trim().length > 0 && input.length <= MAX_MESSAGE_CHARS;
 
   // ── Quick-reply chips (Session 60) ─────────────────────────────────
   // Claude-style tappable answers, rendered above the composer — the user's
@@ -11383,7 +11426,7 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
   // as the footer fade-in) and when offline.
   const greetingDue = walkRotation(resolveRotation(coachRotation, planDaysPerWeek), rotationCursor);
   let quickReplies = null;
-  if (isOnline && !isThinking && !isStreaming) {
+  if (isOnline && !isThinking && !isStreaming && !tailStreaming) {
     const lastM = messages.length ? messages[messages.length - 1] : null;
     if (showFirstRunNudge) {
       quickReplies = null; // owner call: no "Build today's session" chip
@@ -11413,6 +11456,19 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
       clearInterval(streamIntervalRef.current);
       streamIntervalRef.current = null;
     }
+    // S75: killing the reveal timers used to leave the message frozen at a
+    // partial prefix with streaming:true — a permanently broken bubble (a
+    // workout card stuck mid-stream never renders its Start button). The
+    // reveal is cosmetic; the full text already exists. So cancellation
+    // FINALIZES: write the complete text and flip streaming off, via the
+    // id-scoped mutator so it lands on the right message in the right chat
+    // no matter what the user is looking at now.
+    const t = streamTargetRef.current;
+    if (t) {
+      streamTargetRef.current = null;
+      onUpdateMessage(t.chatId, t.msgId, { text: t.fullText, streaming: false });
+    }
+    setIsStreaming(false);
   };
 
   // Streaming helper. Given the FULL final text and the metadata for the
@@ -11434,15 +11490,24 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
   // the workout card still works unchanged.
   //
   // If the user switches chats mid-stream, cancelStream() fires via the
-  // chat-switch useEffect and kills the pending timer before it can clobber
-  // the wrong chat. (onUpdateLastMessage is also chat-id-scoped on the App
-  // side, so even a race wouldn't leak across chats.)
+  // chat-switch useEffect and FINALIZES the in-flight message (S75) — full
+  // text written, streaming flipped off — via the id-scoped onUpdateMessage,
+  // so nothing can clobber another chat and nothing is left stranded.
   const STREAM_BURST_MIN_MS = 42;   // fastest gap between word-bursts
   const STREAM_BURST_JITTER_MS = 70; // random spread added on top
   const STREAM_PAUSE_CHANCE = 0.14;  // odds of a longer "thinking" pause
   const STREAM_PAUSE_MS = 180;       // extra ms when a pause lands
-  const streamText = (fullText, placeholder) => {
-    onAppendMessage({ ...placeholder, text: "", streaming: true });
+  const streamText = (fullText, placeholder, targetChatId) => {
+    // S75: every streamed message gets its own id and every reveal tick
+    // patches THAT message in THAT chat — never "the last message of the
+    // current chat." The old last-message write meant a reply landing after
+    // the user sent something new (possible across a tab-switch remount)
+    // would overwrite the wrong bubble, and a reply landing after a chat
+    // switch would append into whichever chat was open.
+    const chatId = targetChatId || (chat && chat.id);
+    const msgId = `m${Date.now()}${Math.floor(Math.random() * 1e6)}`;
+    onAppendMessage({ ...placeholder, id: msgId, text: "", streaming: true }, chatId);
+    streamTargetRef.current = { chatId, msgId, fullText };
     setIsStreaming(true);
     // Reveal stops = index just past each whitespace run, plus the end. Walking
     // these in 1-3 step bursts reveals whole words at a time.
@@ -11457,10 +11522,11 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
       const burst = 1 + Math.floor(Math.random() * 3);
       s = Math.min(stops.length - 1, s + burst);
       const idx = stops[s];
-      onUpdateLastMessage({ text: fullText.slice(0, idx) });
+      onUpdateMessage(chatId, msgId, { text: fullText.slice(0, idx) });
       if (idx >= fullText.length) {
         streamIntervalRef.current = null;
-        onUpdateLastMessage({ streaming: false });
+        streamTargetRef.current = null;
+        onUpdateMessage(chatId, msgId, { streaming: false });
         setIsStreaming(false);
         return;
       }
@@ -11482,19 +11548,22 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
     // of EVERY chat's first send.) After first-run, neverMessagedCoach is
     // false and no cold-start is prepended.
     if (neverMessagedCoach && chat.messages.length === 0) {
-      onAppendMessage({ role: "coach", text: coldStart });
+      onAppendMessage({ role: "coach", text: coldStart }, chat.id);
     }
-    onAppendMessage({ role: "user", text: u });
+    onAppendMessage({ role: "user", text: u }, chat.id);
 
     // Session 56: every message goes to Coach. The model decides whether to
     // build a workout or just talk; we render whichever came back. No gate.
-    setIsThinking(true);
+    // S75: the in-flight flag lives at App level (survives tab switches);
+    // the drop-guard reads App state too, so it stays correct across
+    // remounts. Switching CHATS still abandons the generation (App clears
+    // the gen state on switch) — that owner-accepted semantic is unchanged.
     const reqChatId = chat.id;
-    activeGenChatRef.current = reqChatId;
+    onGenStart(reqChatId);
     onRespondAsCoach(u, chat.messages).then((res) => {
       // Dropped if the user switched chats while Coach was responding.
-      if (activeGenChatRef.current !== reqChatId) return;
-      setIsThinking(false);
+      if (!onGenIsCurrent(reqChatId)) return;
+      onGenEnd(reqChatId);
       if (res && res.kind === "workout") {
         const b = coachWorkoutToBubble(res.coachWorkout, (id) => (COACH_LIB_INDEX[id] ? COACH_LIB_INDEX[id].name : id));
         // Streamed surface = intro prose + the \n that triggers the workout
@@ -11510,11 +11579,11 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
           outro: b.outro,
           coachWorkout: res.coachWorkout, // carried so Start can export it
           _toolCalls: (res && res._toolCalls) || null,
-        });
+        }, reqChatId);
       } else if (res && res.kind === "reply") {
-        streamText(res.message, { role: "coach", kind: "text", quickReplies: res.quickReplies || null, _toolCalls: (res && res._toolCalls) || null });
+        streamText(res.message, { role: "coach", kind: "text", quickReplies: res.quickReplies || null, _toolCalls: (res && res._toolCalls) || null }, reqChatId);
       } else {
-        streamText(COACH_ERROR_TEXT, { role: "coach", kind: "text", _toolCalls: (res && res._toolCalls) || null });
+        streamText(COACH_ERROR_TEXT, { role: "coach", kind: "text", _toolCalls: (res && res._toolCalls) || null }, reqChatId);
       }
     });
   };
@@ -11542,12 +11611,11 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
       if (real[k].role === "user") { u = real[k].text; break; }
     }
     if (!u) return;
-    setIsThinking(true);
     const reqChatId = chat.id;
-    activeGenChatRef.current = reqChatId;
+    onGenStart(reqChatId);
     onRespondAsCoach(u, real).then((res) => {
-      if (activeGenChatRef.current !== reqChatId) return;
-      setIsThinking(false);
+      if (!onGenIsCurrent(reqChatId)) return;
+      onGenEnd(reqChatId);
       if (res && res.kind === "workout") {
         const b = coachWorkoutToBubble(res.coachWorkout, (id) => (COACH_LIB_INDEX[id] ? COACH_LIB_INDEX[id].name : id));
         streamText(`${b.intro}\n`, {
@@ -11556,11 +11624,11 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
           intro: b.intro, outro: b.outro,
           coachWorkout: res.coachWorkout,
           _toolCalls: (res && res._toolCalls) || null,
-        });
+        }, reqChatId);
       } else if (res && res.kind === "reply") {
-        streamText(res.message, { role: "coach", kind: "text", quickReplies: res.quickReplies || null, _toolCalls: (res && res._toolCalls) || null });
+        streamText(res.message, { role: "coach", kind: "text", quickReplies: res.quickReplies || null, _toolCalls: (res && res._toolCalls) || null }, reqChatId);
       } else {
-        streamText(COACH_ERROR_TEXT, { role: "coach", kind: "text", _toolCalls: (res && res._toolCalls) || null });
+        streamText(COACH_ERROR_TEXT, { role: "coach", kind: "text", _toolCalls: (res && res._toolCalls) || null }, reqChatId);
       }
     });
   };
@@ -11662,11 +11730,11 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
     // macrotask runs it strictly after all mount effects, so
     // cancelStream() has already fired and can't clobber our timer.
     setTimeout(() => {
-      onAppendMessage({ role: "user", text: seed.question, seededContext: seed.context });
-      setIsThinking(true);
+      onAppendMessage({ role: "user", text: seed.question, seededContext: seed.context }, chat && chat.id);
+      setSeedThinking(true);
       firstTokenTimeoutRef.current = setTimeout(() => {
         firstTokenTimeoutRef.current = null;
-        setIsThinking(false);
+        setSeedThinking(false);
         const ctx = seed.context || "";
         const sigMatch = ctx.match(/TRIGGERING SIGNAL: (.+)/);
         const srcMatch = ctx.match(/SOURCE SESSIONS: (.+)/);
@@ -11706,7 +11774,7 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
     // (D-168) renders at the transcript's tail — opening it, stepping
     // it in place, and swapping "Other…" for the text box all change
     // its height, and it should stay in view like a new message would.
-  }, [messages.length, isThinking, surveyCardOpen, qIndex, qOtherOpen]);
+  }, [messages.length, isThinking, seedThinking, surveyCardOpen, qIndex, qOtherOpen]);
 
   // Keep the bottom pinned WHILE a reply streams. The effect above only fires
   // on messages.length / isThinking changes; during the word-burst reveal the
@@ -11730,18 +11798,18 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
   // Close any open per-row menu when the drawer closes
   useEffect(() => { if (!historyOpen) setOpenMenuId(null); }, [historyOpen]);
 
-  // Clear stale thinking indicator AND cancel any in-flight stream on chat
-  // switch — otherwise if the user sends a message, switches chats before
-  // the streamed reply finishes, the timers would keep firing against the
-  // (no-longer-current) chat. updateLastCoachMessage is chat-id-scoped so
-  // it wouldn't actually clobber the wrong chat's data, but the local
-  // isThinking / isStreaming flags would get stuck on the new chat.
+  // On chat switch: finalize any mid-burst reveal and reset per-chat local
+  // UI state. (S75: message writes are id-scoped so cross-chat clobbering is
+  // structurally impossible; this effect is about finishing the reveal and
+  // clearing local flags, not about protecting data.)
   useEffect(() => {
-    setIsThinking(false);
+    // S75: isThinking is App-derived now (nothing to reset); the in-flight
+    // generation is abandoned by the APP when the user switches chats (see
+    // switchCoachChat / startNewCoachChat), preserving the old semantics.
+    setSeedThinking(false);
     setIsStreaming(false);
     setExpandedWhy(new Set());
-    cancelStream();
-    activeGenChatRef.current = null; // drop any in-flight Coach generation for the old chat
+    cancelStream(); // finalizes any mid-burst message (S75) rather than stranding it
     // cancelStream is stable enough for this purpose (closes over refs).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chat?.id]);
@@ -12044,7 +12112,7 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
             accent, slides in where the next Coach message will appear. The
             three dots animate in sequence. Removed the moment a real Coach
             message is appended. */}
-        {isThinking && (
+        {(isThinking || seedThinking) && (
           <div style={{ marginBottom: 12, display: "flex", justifyContent: "flex-start" }}>
             <div style={{
               padding: "10px 14px",
@@ -17061,7 +17129,6 @@ function TabBar({ active, onTab }) {
         display: "flex", justifyContent: "space-around",
         borderTop: `1px solid ${COLORS.border}`, background: COLORS.bg,
         flexShrink: 0, position: "relative", padding: "8px 0 6px",
-        paddingBottom: "calc(6px + env(safe-area-inset-bottom))",
       }}
     >
       {/* Sliding gold underline. Single-sided accent → no border-radius. */}
@@ -17245,8 +17312,19 @@ export default function MYGFitness() {
   const initialChatState = (() => {
     if (h.coachChats && h.coachChats.length > 0) {
       const activeExists = h.currentCoachChatId && h.coachChats.some((c) => c.id === h.currentCoachChatId);
+      // S75 sanitizer: killing the app mid-word-burst persists the last
+      // message with streaming:true, and nothing ever flips it back — the
+      // bubble is stranded "mid-stream" forever (for a workout, the Start
+      // button never renders; footer and chips stay suppressed). A persisted
+      // streaming flag is by definition stale — no reveal survives a reload —
+      // so force it off on every message at hydration.
       return {
-        chats: h.coachChats,
+        chats: h.coachChats.map((c) => ({
+          ...c,
+          messages: (c.messages || []).map((m) =>
+            m && m.streaming === true ? { ...m, streaming: false } : m
+          ),
+        })),
         activeId: activeExists ? h.currentCoachChatId : h.coachChats[0].id,
       };
     }
@@ -17297,33 +17375,56 @@ export default function MYGFitness() {
 
   const currentCoachChat = coachChats.find((c) => c.id === currentCoachChatId) || coachChats[0];
 
-  const appendCoachMessage = (msg) => {
+  // S75: append is chat-id-scoped (defaulting to current). A Coach reply
+  // landing after a tab-switch remount — or any late-landing async — writes
+  // into the chat the request STARTED in, never "whichever chat is open."
+  const appendCoachMessage = (msg, chatId) => {
+    const target = chatId || currentCoachChatId;
     setCoachChats((prev) => prev.map((c) =>
-      c.id === currentCoachChatId ? { ...c, messages: [...c.messages, msg] } : c
+      c.id === target ? { ...c, messages: [...c.messages, msg] } : c
     ));
   };
 
-  // Patch-merge the LAST message of the current chat. Used by the streaming
-  // mock to grow a Coach reply token-by-token: the streaming loop calls this
-  // every ~80ms with a longer `text` string, then once more with
-  // `{ streaming: false }` when the stream completes. When the real Claude
-  // API ships, the same mutator will be driven by the streaming response
-  // handler — no app-level shape change needed.
-  const updateLastCoachMessage = (patch) => {
+  // S75: patch a specific message by id in a specific chat. The word-burst
+  // reveal writes through this so it can never clobber a newer message —
+  // the old "patch the last message of the current chat" write was a
+  // wrong-bubble race across remounts. Messages without ids (all pre-S75
+  // history) are simply never targeted by it.
+  const updateCoachMessageById = (chatId, msgId, patch) => {
+    if (!chatId || !msgId) return;
     setCoachChats((prev) => prev.map((c) => {
-      if (c.id !== currentCoachChatId) return c;
-      if (c.messages.length === 0) return c;
-      const next = c.messages.slice();
-      next[next.length - 1] = { ...next[next.length - 1], ...patch };
-      return { ...c, messages: next };
+      if (c.id !== chatId) return c;
+      let touched = false;
+      const next = c.messages.map((m) => {
+        if (!m || m.id !== msgId) return m;
+        touched = true;
+        return { ...m, ...patch };
+      });
+      return touched ? { ...c, messages: next } : c;
     }));
   };
+
+  // S75: "a Coach generation is in flight for chat X" lives HERE, not in
+  // CoachTab — component state died on tab switch, which hid the thinking
+  // indicator and unlocked the composer mid-generation (live-hit
+  // 2026-07-26). State drives the indicator; the ref gives the .then
+  // closure a remount-proof drop-guard. Switching or deleting chats clears
+  // it (abandon semantics preserved from the pre-S75 design).
+  const coachGenRef = useRef(null);
+  const [coachGenChatId, setCoachGenChatId] = useState(null);
+  const coachGenStart = (chatId) => { coachGenRef.current = chatId; setCoachGenChatId(chatId); };
+  const coachGenEnd = (chatId) => {
+    if (coachGenRef.current === chatId) { coachGenRef.current = null; setCoachGenChatId(null); }
+  };
+  const coachGenIsCurrent = (chatId) => coachGenRef.current === chatId;
+  const coachGenAbandon = () => { coachGenRef.current = null; setCoachGenChatId(null); };
 
   const startNewCoachChat = () => {
     // Spam prevention: if current chat is already empty, stay on it.
     // The user already has an empty chat ready to type in.
     const current = coachChats.find((c) => c.id === currentCoachChatId);
     if (current && current.messages.length === 0) return;
+    coachGenAbandon(); // S75: same abandon rule as switchCoachChat
     const newId = `c${Date.now()}`;
     setCoachChats((prev) => [{ id: newId, createdAt: Date.now(), messages: [] }, ...prev]);
     setCurrentCoachChatId(newId);
@@ -17376,6 +17477,7 @@ export default function MYGFitness() {
 
   const switchCoachChat = (id) => {
     if (id === currentCoachChatId) return;
+    coachGenAbandon(); // S75: switching chats abandons any in-flight generation (pre-S75 semantics, now App-owned)
     setCoachChats((prev) => {
       // Auto-prune the chat we're LEAVING if it's empty (unless it's
       // the only chat). Keeps the history drawer from bloating.
@@ -17389,6 +17491,7 @@ export default function MYGFitness() {
   };
 
   const deleteCoachChat = (id) => {
+    if (coachGenRef.current === id) coachGenAbandon(); // S75: a deleted chat's generation dies with it
     setCoachChats((prev) => {
       const next = prev.filter((c) => c.id !== id);
       // If we just deleted the active chat, switch to the next one
@@ -17699,7 +17802,7 @@ export default function MYGFitness() {
       role: m.role,
       text: m.text || (m.workout ? `[built workout: ${m.workout.title}]` : ""),
     }));
-    const state = { userName, fitnessLevel, planGoal, planDaysPerWeek, coachRules, workoutHistory };
+    const state = { userName, fitnessLevel, planGoal, planDaysPerWeek, coachRules, coachObservations, workoutHistory };
     const turn = buildCoachTurn(state, {
       rotation, dueFocusLabel: due ? due.label : null,
       lastWorkout: lastMsg ? lastMsg.coachWorkout : null,
@@ -18608,7 +18711,11 @@ export default function MYGFitness() {
           inputFocused={coachInputFocused}
           onSetInputFocused={setCoachInputFocused}
           onAppendMessage={appendCoachMessage}
-          onUpdateLastMessage={updateLastCoachMessage}
+          onUpdateMessage={updateCoachMessageById}
+          genChatId={coachGenChatId}
+          onGenStart={coachGenStart}
+          onGenEnd={coachGenEnd}
+          onGenIsCurrent={coachGenIsCurrent}
           onRespondAsCoach={respondAsCoach}
           onStartCoachWorkout={requestStartWorkoutFromCoach}
           onBuildDebug={buildChatDebug}
@@ -19076,7 +19183,7 @@ export default function MYGFitness() {
   };
 
   return (
-    <div style={{ width: "100vw", height: "100vh", background: COLORS.bg }}>
+    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#0a0a0a", padding: "40px 20px" }}>
       <style>{`
         input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 24px; height: 24px; border-radius: 50%; background: #FFD700; cursor: pointer; border: 3px solid #111111; box-shadow: 0 0 8px rgba(255,215,0,0.4); }
         input[type="range"]::-moz-range-thumb { width: 24px; height: 24px; border-radius: 50%; background: #FFD700; cursor: pointer; border: 3px solid #111111; box-shadow: 0 0 8px rgba(255,215,0,0.4); }
