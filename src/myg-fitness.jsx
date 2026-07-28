@@ -1028,11 +1028,25 @@ function recentSessionsBlock(workoutHistory) {
 //       preview sandbox makes work without a key.
 //    So the same file runs in the preview for fast iteration AND on Vercel
 //    for phone dogfooding. ───────────────────────────────────────────────
+// S76: a hung request (dead gym wifi mid-handshake) previously waited
+// FOREVER — no abort anywhere — leaving "Coach is thinking…" up
+// permanently (and post-S75, faithfully following the user across
+// tabs). 60s is generous for the worst tool-loop turn; on abort the
+// fetch rejects into the existing error path, so the user gets the
+// normal "trouble putting that together" + Regenerate, never a hang.
+const COACH_REQUEST_TIMEOUT_MS = 60000;
+function fetchWithTimeout(url, opts) {
+  const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+  const timer = ctrl ? setTimeout(() => ctrl.abort(), COACH_REQUEST_TIMEOUT_MS) : null;
+  return fetch(url, ctrl ? { ...opts, signal: ctrl.signal } : opts)
+    .finally(() => { if (timer) clearTimeout(timer); });
+}
+
 async function coachRequest(body) {
   // Path 1: the Vercel proxy. Present only on the deployed site.
   let data = null;
   try {
-    const res = await fetch("/api/coach", {
+    const res = await fetchWithTimeout("/api/coach", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -1052,7 +1066,7 @@ async function coachRequest(body) {
 
   // Path 2 (Claude preview only): direct call; the sandbox injects the key.
   if (!data) {
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
+    const res = await fetchWithTimeout("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -4459,7 +4473,82 @@ Return STRICT JSON mapping each id to its rewritten stem, e.g. {"q_1":"...","q_2
 
 /* ── Shared Components ───────────────────────────────────────── */
 
+// ── Per-tab scroll memory (S76, 6b — the state-dies-on-unmount family) ──
+// Tabs unmount on switch, so every scroller reset to the top — a loud
+// "website" tell (native apps always restore your spot). The store is a
+// module-level plain object, NOT React state and NOT the snapshot: it
+// survives tab unmounts (the whole point), dies on app relaunch
+// (correct — a fresh open should start at the top), and costs nothing.
+// The hook restores before first paint (useLayoutEffect — no visible
+// jump) and records on scroll via a passive listener. The COACH chat
+// deliberately does NOT use this: it pins to the newest message by
+// design, and restoring an old scroll would fight the auto-pin.
+const TAB_SCROLL_MEMORY = {};
+function useScrollMemory(key, ref) {
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const saved = TAB_SCROLL_MEMORY[key];
+    if (typeof saved === "number" && saved > 0) el.scrollTop = saved;
+    const onScroll = () => { TAB_SCROLL_MEMORY[key] = el.scrollTop; };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+}
+
+// ── Environment detection (S76 — ends the per-deploy hand-patch) ──
+// The owner was manually stripping the demo bezel from every deploy
+// (V.23 lineage). Now one file serves both worlds: a touch device (or a
+// home-screen PWA) gets the full-bleed passthrough the owner shipped;
+// desktop / the Claude artifact preview keeps the framed demo shell.
+// Touch is the discriminator because it separates "someone's actual
+// phone" from "a browser being used to demo the app" without user
+// agents or width guesses.
+const IS_REAL_DEVICE = (() => {
+  try {
+    if (typeof window === "undefined") return false;
+    if (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) return true;
+    return "ontouchstart" in window || (window.navigator && window.navigator.maxTouchPoints > 0);
+  } catch (e) { return false; }
+})();
+
+// Deploy cache-verification marker (owner's V.23 convention, formalized:
+// bump this one constant per push to confirm the phone isn't serving
+// stale cached code; rendered only on real devices, top-right).
+const BUILD_TAG = "V.24";
+
 function PhoneFrame({ children }) {
+  if (IS_REAL_DEVICE) {
+    // Stripped-down passthrough for real-device rendering (owner's
+    // deployed wrapper, folded into the canonical file S76). No bezel,
+    // no fake "9:41" status bar, no fake home indicator — a real phone
+    // provides all three. paddingTop: env(safe-area-inset-top) — in PWA
+    // mode iOS draws the app under the status bar; without this the
+    // first row of every screen collides with the clock and battery.
+    // The bottom safe-area is handled inside TabBar so its background
+    // extends to the true bottom edge.
+    return (
+      <div
+        style={{
+          width: "100%",
+          height: "100%",
+          background: COLORS.bg,
+          position: "relative",
+          overflow: "hidden",
+          fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+          display: "flex",
+          flexDirection: "column",
+          paddingTop: "env(safe-area-inset-top)",
+        }}
+      >
+        <div style={{ position: "absolute", top: "calc(10px + env(safe-area-inset-top))", right: 20, color: COLORS.textSecondary, fontSize: 11, fontWeight: 500, letterSpacing: 1, opacity: 0.7, pointerEvents: "none", zIndex: 5 }}>{BUILD_TAG}</div>
+        <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
+          {children}
+        </div>
+      </div>
+    );
+  }
   return (
     <div
       style={{
@@ -4682,11 +4771,20 @@ function ScrollHint({ scrollRef }) {
    opening in-place typing, rather than being a one-tap answer).
    Alignment/wrap overrides ride the style prop; long-option text
    alignment is a deferred detail (S71 dev log). */
-function SelectableChip({ label, selected = false, onClick, leadingIcon = null, muted = false, pointerFire = false, style: s = {} }) {
+function SelectableChip({ label, selected = false, onClick, leadingIcon = null, muted = false, pointerFire = false, variant = "card", style: s = {} }) {
   const [pressed, setPressed] = useState(false);
   const flashTimer = useRef(null);
   useEffect(() => () => { if (flashTimer.current) clearTimeout(flashTimer.current); }, []);
   const lit = selected || pressed;
+  // S76: two visual weights, two meanings (owner lock). "card" (default) is
+  // the heavy unified chip — survey answers, onboarding selects. "pill" is
+  // the light composer-strip suggestion: transparent at rest, hairline
+  // border, dimmer text, content-hugging. Both share the SAME lit state
+  // (goldHighlight flash / gold border) so the tap language never forks —
+  // the variant only changes what "at rest" looks like. Palette branch
+  // lives HERE (not in a call-site style override) because the style prop
+  // spreads last and a static background would swallow the press flash.
+  const pill = variant === "pill";
   const handlers = pointerFire
     ? {
         onPointerDown: (e) => {
@@ -4705,11 +4803,13 @@ function SelectableChip({ label, selected = false, onClick, leadingIcon = null, 
     <button
       {...handlers}
       style={{
-        padding: "14px 20px", borderRadius: 10,
-        border: `1.5px solid ${lit ? COLORS.gold : COLORS.border}`,
-        background: lit ? COLORS.goldHighlight : COLORS.card,
-        color: lit ? COLORS.gold : (muted ? COLORS.textSecondary : COLORS.text),
-        fontSize: 15, fontWeight: lit ? 600 : 400,
+        padding: pill ? "7px 13px" : "14px 20px", borderRadius: pill ? 16 : 10,
+        border: pill
+          ? `1px solid ${lit ? COLORS.gold : COLORS.border}`
+          : `1.5px solid ${lit ? COLORS.gold : COLORS.border}`,
+        background: lit ? COLORS.goldHighlight : (pill ? "transparent" : COLORS.card),
+        color: lit ? COLORS.gold : (pill ? "#b8b8b8" : (muted ? COLORS.textSecondary : COLORS.text)),
+        fontSize: pill ? 13 : 15, fontWeight: lit ? 600 : 400,
         cursor: "pointer", transition: "all 0.2s ease",
         textAlign: "center", whiteSpace: "nowrap",
         fontFamily: "inherit",
@@ -5510,8 +5610,10 @@ function HomeTab({ onTabChange, userName, history, customExercises, nextSession,
     { label: "Last session", value: lastSessionLabel, up: false },
   ];
 
+  const homeScrollRef = useRef(null);
+  useScrollMemory("home", homeScrollRef);
   return (
-    <div style={{ flex: 1, padding: "20px 24px", overflowY: "auto" }}>
+    <div ref={homeScrollRef} style={{ flex: 1, padding: "20px 24px", overflowY: "auto", overscrollBehavior: "contain" }}>
 
       {/* Header row — greeting + avatar. Matches ProfileTab header
           shape (no level badge, no date subline). */}
@@ -6949,6 +7051,7 @@ function WorkoutTab({
   // resting position during drag.
   const containerRef = useRef(null);
   const workoutScrollRef = useRef(null);
+  useScrollMemory("workout", workoutScrollRef);
 
   // Finish summary screen takes priority — once user taps Finish, that's
   // a deliberate action and we want to show the payoff before anything else.
@@ -6983,7 +7086,7 @@ function WorkoutTab({
   // the conflict modal from step 2.
   return (
     <div ref={containerRef} style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, position: "relative" }}>
-      <div ref={workoutScrollRef} style={{ flex: 1, padding: "8px 24px 20px", overflowY: "auto", position: "relative" }}>
+      <div ref={workoutScrollRef} style={{ flex: 1, padding: "8px 24px 20px", overflowY: "auto", overscrollBehavior: "contain", position: "relative" }}>
         <ScrollHint scrollRef={workoutScrollRef} />
         <h2 style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 22, color: COLORS.text, margin: "0 0 12px", fontWeight: 400 }}>Workout</h2>
 
@@ -11913,7 +12016,7 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
       )}
 
       {/* Messages */}
-      <div ref={coachScrollRef} style={{ flex: 1, minHeight: 0, padding: "16px 24px", overflowY: "auto", WebkitOverflowScrolling: "touch", position: "relative" }}>
+      <div ref={coachScrollRef} style={{ flex: 1, minHeight: 0, padding: "16px 24px", overflowY: "auto", overscrollBehavior: "contain", WebkitOverflowScrolling: "touch", position: "relative" }}>
         <ScrollHint scrollRef={coachScrollRef} />
         {showGreeting ? (
           /* ── Empty-state (Session 57) ────────────────────────────────
@@ -12319,12 +12422,17 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
       )}
 
       {/* Quick-reply chips — the user's pre-written CONVERSATIONAL
-          answers, stacked vertically above the composer (Claude
-          placement). Vertical so long labels ("Seated Cable Row") never
-          truncate the way a horizontal scroll row clipped them (Session
-          64 dogfooding). Rendered with the unified chip (D-167): gray
-          card at rest — the old gold-outline pills are gone, gold is now
-          only the press flash — then the label sends as a user message
+          answers above the composer (Claude placement — the user's side
+          of the conversation; the placement has been right since D-117).
+          S76 (owner lock): the FORM changed — the S64/S71 full-width
+          vertical stack read like survey answer cards and ate the
+          composer area ("look at this image… garbage"). Now a wrapping
+          ROW of pill-variant chips: content-hugging, transparent at
+          rest with a hairline border and dim text — NOT the pre-D-167
+          gold-outline pills; gold remains only the press flash — long
+          labels wrap to a second line instead of truncating (the S64
+          case, solved by wrap not by going vertical). Tapping sends the
+          label as a user message
           via sendMessage (fire-and-forget; pointerFire carries the D-116
           blur-race handling). D-168's deliberate split: this strip is
           for conversational chips only ("Make it shorter", "Swap
@@ -12333,16 +12441,23 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
           contained unit. */}
       {quickReplies && quickReplies.length > 0 && (
         <div style={{
-          padding: "8px 16px 0", display: "flex", flexDirection: "column",
-          gap: 6, flexShrink: 0,
+          padding: "8px 16px 0", display: "flex", flexDirection: "row",
+          flexWrap: "wrap", gap: 8, flexShrink: 0,
         }}>
+          {/* S76 (owner lock): suggestions are PILLS — content-hugging,
+              transparent at rest, wrapping when labels run long (the
+              D-133 truncation case is solved by wrap, not by going
+              vertical). The survey card keeps the heavy card chips;
+              the weight difference IS the meaning: heavy = answer a
+              question, light = shortcut a message. */}
           {quickReplies.map((q, qi) => (
             <SelectableChip
               key={qi}
               label={q}
               pointerFire
+              variant="pill"
               onClick={() => sendMessage(q)}
-              style={{ width: "100%", textAlign: "left", whiteSpace: "normal", lineHeight: 1.3 }}
+              style={{ whiteSpace: "normal", lineHeight: 1.3, textAlign: "left" }}
             />
           ))}
         </div>
@@ -12787,10 +12902,19 @@ function ExercisesTab({
   onAddCustom,
   onUpdateCustom,
   onDeleteCustom,
+  browseState,
+  onBrowseState,
 }) {
-  const [search, setSearch] = useState("");
-  const [filter, setFilter] = useState("All");
-  const [onlyMine, setOnlyMine] = useState(false);
+  // S76 (state-dies-on-unmount family, same disease as the S75 thinking
+  // bug): search / muscle filter / only-mine now live at App level so a
+  // tab detour doesn't wipe them. Deliberately NOT persisted to the
+  // snapshot — they reset on app relaunch like any transient UI state.
+  const search = browseState.search;
+  const filter = browseState.filter;
+  const onlyMine = browseState.onlyMine;
+  const setSearch = (v) => onBrowseState({ ...browseState, search: v });
+  const setFilter = (v) => onBrowseState({ ...browseState, filter: v });
+  const setOnlyMine = (v) => onBrowseState({ ...browseState, onlyMine: typeof v === "function" ? v(browseState.onlyMine) : v });
   const [detailId, setDetailId] = useState(null);
   const [menuOpen, setMenuOpen] = useState(false);
   // Sort popover state — mounted in top right.
@@ -12808,6 +12932,7 @@ function ExercisesTab({
   // row button so we can scroll a specific row into view after creation.
   const rowRefs = useRef({});
   const exScrollRef = useRef(null);
+  useScrollMemory("exercises", exScrollRef);
   // Timer ref so we can clear it if the highlight is dismissed early.
   const highlightTimerRef = useRef(null);
 
@@ -14672,6 +14797,8 @@ function ProfileTab({
   onOpenSettings, onOpenPlan, onOpenEquipment, onOpenRules,
   onOpenProgress, onOpenObservations, onOpenBodyStats,
 }) {
+  const profileScrollRef = useRef(null);
+  useScrollMemory("profile", profileScrollRef);
   // Empty-state detection. Bible §6.5: first-launch shows vitals in
   // muted gray, "New file" subtitle, one-liner italic placeholders per
   // section, and a "file opened today" signed footer.
@@ -14800,7 +14927,7 @@ function ProfileTab({
       </div>
 
       {/* Scrollable body */}
-      <div style={{ flex: 1, padding: "0 24px 24px", overflowY: "auto", minHeight: 0 }}>
+      <div ref={profileScrollRef} style={{ flex: 1, padding: "0 24px 24px", overflowY: "auto", overscrollBehavior: "contain", minHeight: 0 }}>
 
         {/* Identity / intake block — Variant D (this session). The bare
             "Tyler" name from v27 was rewritten as a clipboard-style intake
@@ -17083,7 +17210,7 @@ function BodyStatsSubscreen({
 
 /* ── Tab Bar ──────────────────────────────────────────────────── */
 
-function TabBar({ active, onTab }) {
+function TabBar({ active, onTab, coachDot = false }) {
   const tabs = [
     { id: "home", label: "Home", icon: (c) => <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="1.8"><path d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-4 0a1 1 0 01-1-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 01-1 1h-2z" /></svg> },
     { id: "workout", label: "Workout", icon: (c) => <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="1.8"><path d="M3 12h4l3-9 4 18 3-9h4" /></svg> },
@@ -17129,6 +17256,7 @@ function TabBar({ active, onTab }) {
         display: "flex", justifyContent: "space-around",
         borderTop: `1px solid ${COLORS.border}`, background: COLORS.bg,
         flexShrink: 0, position: "relative", padding: "8px 0 6px",
+        paddingBottom: "calc(6px + env(safe-area-inset-bottom))",
       }}
     >
       {/* Sliding gold underline. Single-sided accent → no border-radius. */}
@@ -17161,8 +17289,26 @@ function TabBar({ active, onTab }) {
               WebkitTapHighlightColor: "transparent",
             }}
           >
-            <span style={{ display: "flex", transition: "opacity 180ms cubic-bezier(0.22,1,0.36,1)" }}>
+            <span style={{ display: "flex", position: "relative", transition: "opacity 180ms cubic-bezier(0.22,1,0.36,1)" }}>
               {t.icon(c)}
+              {/* S76 pending-questions badge: a quiet gold dot on the Coach
+                  icon, visible from every OTHER tab whenever the survey pin
+                  is waiting. Hidden while ON the Coach tab — there the pin
+                  itself is the signal and a dot on an already-gold icon is
+                  noise. Retires the moment the survey completes or is
+                  replaced (it reads the same pending state as the pin). */}
+              {t.id === "coach" && coachDot && active !== "coach" && (
+                <span
+                  aria-hidden="true"
+                  data-coach-dot="1"
+                  style={{
+                    position: "absolute", top: -2, right: -5,
+                    width: 7, height: 7, borderRadius: "50%",
+                    background: COLORS.gold,
+                    border: `1.5px solid ${COLORS.bg}`,
+                  }}
+                />
+              )}
             </span>
             <span style={{
               fontSize: 10, color: c, fontWeight: a ? 600 : 400,
@@ -17353,6 +17499,10 @@ export default function MYGFitness() {
   // sort button toggles on tap. Default is alphabetical ascending, which
   // is the natural "browse" order.
   const [exerciseSort, setExerciseSort] = useState(() => h.exerciseSort || { mode: "alpha", dir: "asc" });
+  // S76 (6a): Exercises browse state lives HERE so a tab detour doesn't
+  // wipe a typed search or a chosen muscle filter (state-dies-on-unmount
+  // family). Transient by design — never persisted to the snapshot.
+  const [exercisesBrowseState, setExercisesBrowseState] = useState({ search: "", filter: "All", onlyMine: false });
 
   // ── Rest timer preferences ──
   // Lifted from per-workout state so the user's preferred mode and
@@ -18740,6 +18890,8 @@ export default function MYGFitness() {
         <ExercisesTab
           userEquipment={selectedEquipment}
           onOpenEquipmentEditor={openEquipmentEditor}
+          browseState={exercisesBrowseState}
+          onBrowseState={setExercisesBrowseState}
           customExercises={customExercises}
           exerciseSort={exerciseSort}
           onChangeSort={setExerciseSort}
@@ -18968,6 +19120,14 @@ export default function MYGFitness() {
     // keyboard and the tab bar. Matches Claude / iMessage / every major
     // chat app. Only triggers on the Coach tab.
     const hideTabBar = activeTab === "coach" && coachInputFocused;
+    // S76 badge signal — same truth the pin reads (questions remain
+    // unanswered). Shape-guarded for legacy pre-S73 pins.
+    const coachQuestionsWaiting = !!(
+      pendingCoachQuestions &&
+      Array.isArray(pendingCoachQuestions.questions) &&
+      Array.isArray(pendingCoachQuestions.answered) &&
+      pendingCoachQuestions.questions.length > pendingCoachQuestions.answered.length
+    );
     // Same reasoning for the SessionBar (Session 47): while composing a
     // Coach message it isn't serving its purpose (jump-back-to-workout)
     // and it's the worst space thief — it stacks directly above the
@@ -18990,7 +19150,7 @@ export default function MYGFitness() {
           {renderTab()}
         </div>
         {showSessionBar && <SessionBar workout={activeWorkout} restTimerMode={restTimerModePref} restCountdownTarget={restCountdownTargetPref} onTap={expandWorkoutFromBar} />}
-        {!hideTabBar && <TabBar active={activeTab} onTab={setActiveTab} />}
+        {!hideTabBar && <TabBar active={activeTab} onTab={setActiveTab} coachDot={coachQuestionsWaiting} />}
 
         {showStartConflict && (
           <>
@@ -19183,7 +19343,9 @@ export default function MYGFitness() {
   };
 
   return (
-    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#0a0a0a", padding: "40px 20px" }}>
+    <div style={IS_REAL_DEVICE
+      ? { width: "100vw", height: "100vh", background: COLORS.bg }
+      : { minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#0a0a0a", padding: "40px 20px" }}>
       <style>{`
         input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 24px; height: 24px; border-radius: 50%; background: #FFD700; cursor: pointer; border: 3px solid #111111; box-shadow: 0 0 8px rgba(255,215,0,0.4); }
         input[type="range"]::-moz-range-thumb { width: 24px; height: 24px; border-radius: 50%; background: #FFD700; cursor: pointer; border: 3px solid #111111; box-shadow: 0 0 8px rgba(255,215,0,0.4); }
