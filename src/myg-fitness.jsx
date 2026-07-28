@@ -1028,6 +1028,160 @@ function recentSessionsBlock(workoutHistory) {
 //       preview sandbox makes work without a key.
 //    So the same file runs in the preview for fast iteration AND on Vercel
 //    for phone dogfooding. ───────────────────────────────────────────────
+/* ── SSE streaming (Session 76) ─────────────────────────────────────
+   The conversational Coach path now streams real tokens. Three pieces:
+
+   coachConsumeSse(res, onDelta)
+     Reads the proxy's SSE bytes and RECONSTRUCTS the exact non-streaming
+     response object ({content, stop_reason, usage}) the rest of the code
+     already understands — text blocks accumulate text_delta, tool_use
+     blocks accumulate input_json_delta and parse at block stop. Callers
+     downstream of coachRequest cannot tell a streamed response from a
+     buffered one. onDelta fires per event so the live path can forward.
+
+   createCoachLiveExtractor()
+     The visibility problem: Coach replies come in three shapes — bare
+     prose (stream it), a {"kind":"text","text":"…"} envelope (stream ONLY
+     the decoded value of the text field, character by character, handling
+     \" \n \uXXXX escapes across chunk boundaries), or a workout envelope
+     (no text/message field → NOTHING is visible → the card stays atomic
+     and "Coach is thinking" holds, exactly the owner's design: "coach is
+     completely conversational except for the workout card JSON").
+     feed(chunk) returns { visible, grew } — the full visible text so far
+     and whether this chunk grew it.
+
+   Forwarding rules live in callCoach: tokens forward only while no
+   tool_use block has appeared in the round; if one appears after text
+   already went live, onAbort retracts the bubble and the loop continues
+   (tool rounds are thinking, not talking). ───────────────────────── */
+function coachConsumeSse(res, onDelta) {
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  const msg = { content: [], stop_reason: null, usage: null };
+  const partials = {};
+  const handle = (evt) => {
+    const t = evt.type;
+    if (t === "message_start" && evt.message) {
+      msg.usage = evt.message.usage || null;
+    } else if (t === "content_block_start") {
+      const b = evt.content_block || {};
+      const copy = { ...b };
+      if (copy.type === "text") copy.text = copy.text || "";
+      msg.content[evt.index] = copy;
+      if (onDelta) onDelta({ kind: "block_start", index: evt.index, blockType: copy.type });
+    } else if (t === "content_block_delta") {
+      const d = evt.delta || {};
+      const blk = msg.content[evt.index];
+      if (d.type === "text_delta" && blk) {
+        blk.text = (blk.text || "") + (d.text || "");
+        if (onDelta) onDelta({ kind: "text", index: evt.index, text: d.text || "" });
+      } else if (d.type === "input_json_delta") {
+        partials[evt.index] = (partials[evt.index] || "") + (d.partial_json || "");
+      }
+    } else if (t === "content_block_stop") {
+      const blk = msg.content[evt.index];
+      if (blk && blk.type === "tool_use" && partials[evt.index] != null) {
+        try { blk.input = JSON.parse(partials[evt.index] || "{}"); } catch (e) { blk.input = {}; }
+      }
+    } else if (t === "message_delta") {
+      if (evt.delta && evt.delta.stop_reason) msg.stop_reason = evt.delta.stop_reason;
+      if (evt.usage) msg.usage = { ...(msg.usage || {}), ...evt.usage };
+    } else if (t === "error") {
+      throw new Error("Coach stream error: " + JSON.stringify(evt.error || {}).slice(0, 200));
+    }
+  };
+  const pump = () => reader.read().then(({ done, value }) => {
+    if (done) {
+      msg.content = msg.content.filter(Boolean);
+      return msg;
+    }
+    buf += dec.decode(value, { stream: true });
+    let sep;
+    while ((sep = buf.indexOf("\n\n")) >= 0) {
+      const rawEvt = buf.slice(0, sep);
+      buf = buf.slice(sep + 2);
+      let data = null;
+      for (const line of rawEvt.split("\n")) {
+        if (line.startsWith("data:")) data = line.slice(5).trim();
+      }
+      if (!data) continue;
+      let evt = null;
+      try { evt = JSON.parse(data); } catch (e) { continue; }
+      handle(evt);
+    }
+    return pump();
+  });
+  return pump();
+}
+
+function createCoachLiveExtractor() {
+  let mode = "sniff"; // sniff | prose | scan | str | done
+  let raw = "";
+  let visible = "";
+  let pos = 0;        // scan pointer into raw while in "str"
+  let esc = false;    // in-string: previous char was a backslash
+  let uni = null;     // collecting \uXXXX hex digits, or null
+  const KEY_RE = /"(text|message)"\s*:\s*"/;
+  return {
+    feed(chunk) {
+      raw += chunk || "";
+      const before = visible.length;
+      if (mode === "sniff") {
+        const t = raw.replace(/^\s+/, "");
+        if (!t) return { visible, grew: false };
+        mode = t[0] === "{" ? "scan" : "prose";
+      }
+      if (mode === "prose") {
+        visible = raw;
+        return { visible, grew: visible.length > before };
+      }
+      if (mode === "scan") {
+        const m = KEY_RE.exec(raw);
+        if (!m) return { visible, grew: false };
+        mode = "str";
+        pos = m.index + m[0].length;
+      }
+      if (mode === "str") {
+        let i = pos;
+        while (i < raw.length) {
+          const c = raw[i];
+          if (uni !== null) {
+            uni += c;
+            if (uni.length === 4) {
+              const code = parseInt(uni, 16);
+              visible += isNaN(code) ? "\uFFFD" : String.fromCharCode(code);
+              uni = null;
+            }
+            i++; continue;
+          }
+          if (esc) {
+            esc = false;
+            if (c === "n") visible += "\n";
+            else if (c === "t") visible += "\t";
+            else if (c === "r") visible += "\r";
+            else if (c === "u") uni = "";
+            else visible += c; // \" \\ \/ and anything else → literal char
+            i++; continue;
+          }
+          if (c === "\\") { esc = true; i++; continue; }
+          if (c === '"') { mode = "done"; i++; break; }
+          visible += c; i++;
+        }
+        pos = i;
+        return { visible, grew: visible.length > before };
+      }
+      return { visible, grew: false };
+    },
+  };
+}
+
+// Set true after a streaming attempt fails against an old (v1) proxy so we
+// stop asking for SSE this session and fall back to buffered replies — the
+// app degrades to the word-burst instead of breaking if the api/coach.js
+// deploy lagged behind the client deploy.
+let coachStreamUnsupported = false;
+
 // S76: a hung request (dead gym wifi mid-handshake) previously waited
 // FOREVER — no abort anywhere — leaving "Coach is thinking…" up
 // permanently (and post-S75, faithfully following the user across
@@ -1042,9 +1196,40 @@ function fetchWithTimeout(url, opts) {
     .finally(() => { if (timer) clearTimeout(timer); });
 }
 
-async function coachRequest(body) {
+async function coachRequest(body, onDelta) {
   // Path 1: the Vercel proxy. Present only on the deployed site.
+  // S76: when onDelta is provided (the conversational Coach path) we ask
+  // the v2 proxy for SSE and reconstruct the response client-side while
+  // forwarding deltas. If the deployed proxy is still v1 (streaming not
+  // understood → it buffers/garbles), the attempt fails cleanly, we mark
+  // streaming unsupported for the session, and retry buffered — the app
+  // degrades to the word-burst instead of breaking on a lagged deploy.
   let data = null;
+  const wantStream = !!onDelta && !coachStreamUnsupported;
+  if (wantStream) {
+    try {
+      const res = await fetchWithTimeout("/api/coach", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...body, stream: true }),
+      });
+      const ctype = res.headers.get("content-type") || "";
+      if (res.ok && ctype.includes("text/event-stream") && res.body) {
+        return await coachConsumeSse(res, onDelta);
+      }
+      if (ctype.includes("application/json")) {
+        const errData = await res.json();
+        if (!res.ok) throw new Error(`Coach proxy ${res.status}: ${JSON.stringify(errData).slice(0, 200)}`);
+        // 200 JSON to a stream request = v1 proxy somehow answered; use it.
+        return errData;
+      }
+      // Unexpected shape → treat as old proxy; fall through to buffered.
+      coachStreamUnsupported = true;
+    } catch (e) {
+      if (String(e && e.message).startsWith("Coach proxy")) throw e; // real upstream error — surface it
+      coachStreamUnsupported = true; // transport/shape failure → stop asking for SSE this session
+    }
+  }
   try {
     const res = await fetchWithTimeout("/api/coach", {
       method: "POST",
@@ -1102,12 +1287,32 @@ function coachRunToolSafe(runTool, name, input) {
 const COACH_TOOL_MAX_ROUNDS = 5;
 
 async function callCoach(systemPrompt, userMessage, opts = {}) {
-  const { tools = null, runTool = null, maxRounds = COACH_TOOL_MAX_ROUNDS } = opts;
+  const { tools = null, runTool = null, maxRounds = COACH_TOOL_MAX_ROUNDS, live = null } = opts;
   const useTools = !!(tools && runTool);
   const messages = [{ role: "user", content: userMessage }];
   let usage = null;
   let exhaustedNoteSent = false;
   for (let round = 0; ; round++) {
+    // S76 live-forwarding state, fresh per round. Tokens go to the UI only
+    // while the round looks like a final conversational answer: the moment
+    // a tool_use block appears, this round is thinking-not-talking — any
+    // text already forwarded is retracted (onAbort) and forwarding stays
+    // off until the next round starts clean.
+    const extractor = live ? createCoachLiveExtractor() : null;
+    let liveStarted = false;
+    let roundTainted = false;
+    const onDelta = live ? (d) => {
+      if (d.kind === "block_start" && d.blockType === "tool_use") {
+        if (liveStarted && !roundTainted && live.onAbort) live.onAbort();
+        roundTainted = true;
+      } else if (d.kind === "text" && !roundTainted) {
+        const r = extractor.feed(d.text);
+        if (r.grew) {
+          if (!liveStarted) { liveStarted = true; if (live.onStart) live.onStart(); }
+          if (live.onText) live.onText(r.visible);
+        }
+      }
+    } : null;
     const body = {
       // S75: 2000 truncated legitimate workout replies — a pretty-printed
       // 7-exercise card is ~1,400-1,500 tokens, 9 exercises ~1,800, before
@@ -1118,7 +1323,7 @@ async function callCoach(systemPrompt, userMessage, opts = {}) {
       system: systemPrompt, messages,
     };
     if (useTools) body.tools = tools;
-    const data = await coachRequest(body);
+    const data = await coachRequest(body, onDelta);
     usage = data.usage || usage;
     const content = data.content || [];
     const toolUses = content.filter((b) => b.type === "tool_use");
@@ -4516,7 +4721,7 @@ const IS_REAL_DEVICE = (() => {
 // Deploy cache-verification marker (owner's V.23 convention, formalized:
 // bump this one constant per push to confirm the phone isn't serving
 // stale cached code; rendered only on real devices, top-right).
-const BUILD_TAG = "V.24";
+const BUILD_TAG = "V.25";
 
 function PhoneFrame({ children }) {
   if (IS_REAL_DEVICE) {
@@ -11229,7 +11434,7 @@ function buildCoachGreeting({ userName, now, workoutHistory, coachRotation, rota
   return pool.length ? pick(pool) : `What's the plan?`;
 }
 
-function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFocused, onAppendMessage, onUpdateMessage, genChatId, onGenStart, onGenEnd, onGenIsCurrent, onRespondAsCoach, onStartCoachWorkout, onBuildDebug, onNewChat, onSwitchChat, onDeleteChat, onRenameChat, pendingSeed, onSeedConsumed, workoutHistory, coachRotation, rotationCursor, planDaysPerWeek, planGoal, selectedEquipment, pendingQuestions, onAnswerQuestion, onDismissSurvey }) {
+function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFocused, onAppendMessage, onUpdateMessage, onRemoveMessage, genChatId, onGenStart, onGenEnd, onGenIsCurrent, onRespondAsCoach, onStartCoachWorkout, onBuildDebug, onNewChat, onSwitchChat, onDeleteChat, onRenameChat, pendingSeed, onSeedConsumed, workoutHistory, coachRotation, rotationCursor, planDaysPerWeek, planGoal, selectedEquipment, pendingQuestions, onAnswerQuestion, onDismissSurvey }) {
   // Bible §4.7: hard cap on user message length. Keeps one chat message
   // within a single API call's budget and prevents runaway prompts. The
   // counter only appears in the last 100 chars so it doesn't distract
@@ -11252,6 +11457,9 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
   // that path has no real generation, just a canned delay, and always runs
   // in a freshly-mounted tab — component-local is correct for it.
   const [seedThinking, setSeedThinking] = useState(false);
+  // S76: true while real tokens are streaming into a live bubble — the
+  // thinking indicator yields to the growing text the moment this flips.
+  const [liveTokens, setLiveTokens] = useState(false);
   // True while the mock Coach reply is mid-stream (between first-token and
   // final-token). Used to gate the send button so the user can't fire a
   // second message on top of a streaming one. The bubble renderer reads
@@ -11642,6 +11850,75 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
 
   // sendMessage: the real send path, callable with any text — the composer's
   // send() wraps it, and quick-reply chips call it directly (Session 60).
+  // S76: live-stream handlers for one generation. Returned object closes
+  // over a mutable liveMsgId; the .then finalizer reads it via .id(). Every
+  // handler is guarded by onGenIsCurrent so an abandoned generation (chat
+  // switched) can never write, and the finalizer removes any partial bubble
+  // an abandoned stream left behind.
+  const makeLiveHandlers = (reqChatId) => {
+    let liveMsgId = null;
+    return {
+      id: () => liveMsgId,
+      clear: () => { liveMsgId = null; },
+      onStart: () => {
+        if (!onGenIsCurrent(reqChatId)) return;
+        liveMsgId = `m${Date.now()}${Math.floor(Math.random() * 1e6)}`;
+        onAppendMessage({ role: "coach", kind: "text", text: "", streaming: true, id: liveMsgId }, reqChatId);
+        setLiveTokens(true);
+      },
+      onText: (full) => {
+        if (liveMsgId && onGenIsCurrent(reqChatId)) onUpdateMessage(reqChatId, liveMsgId, { text: full });
+      },
+      onAbort: () => {
+        if (liveMsgId) { onRemoveMessage(reqChatId, liveMsgId); liveMsgId = null; }
+        setLiveTokens(false);
+      },
+    };
+  };
+
+  // S76: shared .then finalizer — one place decides how a finished
+  // generation lands, for both sendMessage and regenerate:
+  //   reply + live bubble    → finalize in place (exact final text, chips,
+  //                            tool trace, streaming off) — no word-burst,
+  //                            the tokens already played for real
+  //   reply, no live bubble  → word-burst fallback (preview / old proxy)
+  //   workout                → retract any stray live preamble, atomic card
+  //   error                  → retract, canned error via word-burst
+  const landCoachResult = (res, reqChatId, liveH) => {
+    setLiveTokens(false);
+    if (!onGenIsCurrent(reqChatId)) {
+      if (liveH.id()) onRemoveMessage(reqChatId, liveH.id());
+      return;
+    }
+    onGenEnd(reqChatId);
+    if (res && res.kind === "workout") {
+      if (liveH.id()) { onRemoveMessage(reqChatId, liveH.id()); liveH.clear(); }
+      const b = coachWorkoutToBubble(res.coachWorkout, (id) => (COACH_LIB_INDEX[id] ? COACH_LIB_INDEX[id].name : id));
+      streamText(`${b.intro}\n`, {
+        role: "coach", kind: "workout",
+        workout: { title: b.title, exercises: b.exercises },
+        intro: b.intro, outro: b.outro,
+        coachWorkout: res.coachWorkout,
+        _toolCalls: (res && res._toolCalls) || null,
+      }, reqChatId);
+    } else if (res && res.kind === "reply") {
+      if (liveH.id()) {
+        onUpdateMessage(reqChatId, liveH.id(), {
+          text: res.message,
+          quickReplies: res.quickReplies || null,
+          _toolCalls: (res && res._toolCalls) || null,
+          streaming: false,
+        });
+        liveH.clear();
+      } else {
+        streamText(res.message, { role: "coach", kind: "text", quickReplies: res.quickReplies || null, _toolCalls: (res && res._toolCalls) || null }, reqChatId);
+      }
+    } else {
+      if (liveH.id()) { onRemoveMessage(reqChatId, liveH.id()); liveH.clear(); }
+      streamText(COACH_ERROR_TEXT, { role: "coach", kind: "text", _toolCalls: (res && res._toolCalls) || null }, reqChatId);
+    }
+  };
+
   const sendMessage = (raw) => {
     const u = (raw || "").trim();
     if (!u || !isOnline || isThinking || isStreaming) return;
@@ -11663,32 +11940,8 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
     // the gen state on switch) — that owner-accepted semantic is unchanged.
     const reqChatId = chat.id;
     onGenStart(reqChatId);
-    onRespondAsCoach(u, chat.messages).then((res) => {
-      // Dropped if the user switched chats while Coach was responding.
-      if (!onGenIsCurrent(reqChatId)) return;
-      onGenEnd(reqChatId);
-      if (res && res.kind === "workout") {
-        const b = coachWorkoutToBubble(res.coachWorkout, (id) => (COACH_LIB_INDEX[id] ? COACH_LIB_INDEX[id].name : id));
-        // Streamed surface = intro prose + the \n that triggers the workout
-        // card to materialize. The outro is intentionally NOT streamed (it's
-        // no longer rendered) — streaming it would just delay isDone, leaving
-        // the card on screen with no Start button for the length of the
-        // invisible outro. The trailing \n is what flips showWorkoutBlock on.
-        streamText(`${b.intro}\n`, {
-          role: "coach",
-          kind: "workout",
-          workout: { title: b.title, exercises: b.exercises },
-          intro: b.intro,
-          outro: b.outro,
-          coachWorkout: res.coachWorkout, // carried so Start can export it
-          _toolCalls: (res && res._toolCalls) || null,
-        }, reqChatId);
-      } else if (res && res.kind === "reply") {
-        streamText(res.message, { role: "coach", kind: "text", quickReplies: res.quickReplies || null, _toolCalls: (res && res._toolCalls) || null }, reqChatId);
-      } else {
-        streamText(COACH_ERROR_TEXT, { role: "coach", kind: "text", _toolCalls: (res && res._toolCalls) || null }, reqChatId);
-      }
-    });
+    const liveH = makeLiveHandlers(reqChatId);
+    onRespondAsCoach(u, chat.messages, liveH).then((res) => landCoachResult(res, reqChatId, liveH));
   };
   const send = () => {
     if (!canSend) return;
@@ -11716,24 +11969,8 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
     if (!u) return;
     const reqChatId = chat.id;
     onGenStart(reqChatId);
-    onRespondAsCoach(u, real).then((res) => {
-      if (!onGenIsCurrent(reqChatId)) return;
-      onGenEnd(reqChatId);
-      if (res && res.kind === "workout") {
-        const b = coachWorkoutToBubble(res.coachWorkout, (id) => (COACH_LIB_INDEX[id] ? COACH_LIB_INDEX[id].name : id));
-        streamText(`${b.intro}\n`, {
-          role: "coach", kind: "workout",
-          workout: { title: b.title, exercises: b.exercises },
-          intro: b.intro, outro: b.outro,
-          coachWorkout: res.coachWorkout,
-          _toolCalls: (res && res._toolCalls) || null,
-        }, reqChatId);
-      } else if (res && res.kind === "reply") {
-        streamText(res.message, { role: "coach", kind: "text", quickReplies: res.quickReplies || null, _toolCalls: (res && res._toolCalls) || null }, reqChatId);
-      } else {
-        streamText(COACH_ERROR_TEXT, { role: "coach", kind: "text", _toolCalls: (res && res._toolCalls) || null }, reqChatId);
-      }
-    });
+    const liveH = makeLiveHandlers(reqChatId);
+    onRespondAsCoach(u, real, liveH).then((res) => landCoachResult(res, reqChatId, liveH));
   };
 
   // ── Coach message footer ────────────────────────────────────────────
@@ -11911,6 +12148,7 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
     // switchCoachChat / startNewCoachChat), preserving the old semantics.
     setSeedThinking(false);
     setIsStreaming(false);
+    setLiveTokens(false);
     setExpandedWhy(new Set());
     cancelStream(); // finalizes any mid-burst message (S75) rather than stranding it
     // cancelStream is stable enough for this purpose (closes over refs).
@@ -12202,8 +12440,15 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
                   <div style={{
                     color: COLORS.text,
                     fontSize: 14, lineHeight: 1.55, padding: "2px 2px",
+                    whiteSpace: "pre-wrap",
                   }}>
                     {m.text}
+                    {/* S76: blinking gold caret while real tokens land —
+                        the chatbot tell. Reuses the existing blink
+                        keyframes; disappears the instant streaming ends. */}
+                    {m.streaming === true && (
+                      <span aria-hidden="true" style={{ display: "inline-block", width: 7, height: 13, marginLeft: 3, verticalAlign: "-2px", background: COLORS.gold, borderRadius: 1, animation: "blink 1s step-end infinite" }} />
+                    )}
                   </div>
                   {m.role === "coach" && m.streaming !== true && renderCoachFooter(m, i)}
                 </div>
@@ -12215,7 +12460,7 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
             accent, slides in where the next Coach message will appear. The
             three dots animate in sequence. Removed the moment a real Coach
             message is appended. */}
-        {(isThinking || seedThinking) && (
+        {((isThinking && !liveTokens) || seedThinking) && (
           <div style={{ marginBottom: 12, display: "flex", justifyContent: "flex-start" }}>
             <div style={{
               padding: "10px 14px",
@@ -17554,6 +17799,17 @@ export default function MYGFitness() {
     }));
   };
 
+  // S76: remove a message by id — the live-stream retraction path (a
+  // tool_use block appeared after text went live, or a workout envelope
+  // arrived after a stray preamble, or the generation was abandoned
+  // mid-stream). Pre-S75 messages have no ids and are never targeted.
+  const removeCoachMessageById = (chatId, msgId) => {
+    if (!chatId || !msgId) return;
+    setCoachChats((prev) => prev.map((c) =>
+      c.id === chatId ? { ...c, messages: c.messages.filter((m) => !m || m.id !== msgId) } : c
+    ));
+  };
+
   // S75: "a Coach generation is in flight for chat X" lives HERE, not in
   // CoachTab — component state died on tab switch, which hid the thinking
   // indicator and unlocked the composer mid-generation (live-hit
@@ -17943,7 +18199,7 @@ export default function MYGFitness() {
   // available library, the chat so far). The model decides: build a workout
   // (returns CoachWorkout JSON) or just talk (returns plain text). The app
   // branches on what came back. No keyword gate — the model routes itself.
-  const respondAsCoach = async (userMessage, messages) => {
+  const respondAsCoach = async (userMessage, messages, live = null) => {
     const rotation = resolveRotation(coachRotation, planDaysPerWeek);
     const due = walkRotation(rotation, rotationCursor);
     const fullPool = availableAll(selectedEquipment, EXERCISE_LIBRARY);
@@ -17972,6 +18228,7 @@ export default function MYGFitness() {
       // state at send time; the loop in callCoach handles the round-trips.
       const toolState = { workoutHistory, customExercises, coachRules, coachObservations, progressPRs, anchors };
       const { text } = await callCoach(COACH_SYSTEM_PROMPT, turn, {
+        live,
         tools: COACH_TOOL_DEFS,
         runTool: (name, input) => {
           const started = Date.now();
@@ -18862,6 +19119,7 @@ export default function MYGFitness() {
           onSetInputFocused={setCoachInputFocused}
           onAppendMessage={appendCoachMessage}
           onUpdateMessage={updateCoachMessageById}
+          onRemoveMessage={removeCoachMessageById}
           genChatId={coachGenChatId}
           onGenStart={coachGenStart}
           onGenEnd={coachGenEnd}
