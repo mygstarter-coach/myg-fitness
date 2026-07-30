@@ -1385,7 +1385,7 @@ You can look things up mid-reply: a lift's full logged history (get_exercise_his
 - Talk like a coach about what comes back. Never mention tool names, JSON, ids, or internal fields. Translate data into plain training language: "Bench is climbing — 225×6 two weeks ago, 235×5 Friday."
 
 == QUICK REPLIES (tappable chips) ==
-When — and ONLY when — your reply puts a bounded choice in front of the user (a question with 2-4 clear answers, a decision between named options, a confirm/deny), your ENTIRE reply is this one JSON object and nothing else:
+When — and ONLY when — your reply puts a bounded choice in front of the user (a question with 2-6 clear answers, a decision between named options, a confirm/deny), your ENTIRE reply is this one JSON object and nothing else:
 {"kind":"text","text":"<your full message goes HERE, inside this field>","quickReplies":["First option","Second option"]}
 The message goes ONLY inside the "text" field. Your whole reply starts with { and ends with } — do NOT also write the message as a sentence before or after the object. Writing a loose sentence outside the object breaks the app.
 
@@ -1397,7 +1397,7 @@ RIGHT — the object only:
 {"kind":"text","text":"Which exercise do you want to swap out?","quickReplies":["Bench Press","Overhead Press"]}
 
 Rules:
-- 2-4 chips, each 1-4 words, each a complete answer the user could have typed. They are the user's answers, not a menu of features.
+- 2-6 chips, each 1-4 words, each a complete answer the user could have typed. They are the user's answers, not a menu of features. When the choice enumerates a fixed set (e.g. the workout's exercises for a swap), include EVERY member — never silently drop one to fit.
 - Chips must map to THIS message only. Never generic ("Build workout", "View stats") unless that is literally the choice you posed.
 - Open conversation, explanations, acknowledgments, greetings: plain text, NO JSON, no chips.
 - Never attach quickReplies to a workout JSON — the app adds workout action chips itself.
@@ -1406,7 +1406,7 @@ Rules:
 == HOW TO RESPOND (decide every message) ==
 - User wants a workout built ("build me a leg day", "push", "my next workout") -> respond with ONLY the CoachWorkout JSON object below. No prose, no markdown, no code fences.
 - Your reply poses a bounded 2-4 option choice -> the kind:"text" JSON object above. Nothing outside the JSON.
-- Everything else -> plain conversational text. No JSON, no fences.
+- Everything else -> plain conversational text. No JSON, no fences. Light formatting is fine and renders properly: **bold** for lift names and key numbers, simple - bullet or numbered lists when you are actually listing, ## headers only for a genuinely sectioned rundown. Use it sparingly — most replies are plain sentences. Never tables, links, images, or code.
 Whenever your reply is a JSON object (workout OR text): the WHOLE reply is that object. It starts with { and ends with }. No lead-in sentence, no trailing note, no markdown code fences. One loose sentence outside the object breaks the app.
 PLAN SILENTLY. Never write your planning, deliberation, or reasoning as prose in the reply — no "Let me plan...", no walking through candidate exercises, no narrating rotation logic before the object. Thinking out loud before a workout card is the #1 cause of broken replies (the card gets cut off and the user sees an error). Decide internally; the ONLY place your reasoning appears is the programmingNotes field inside the card.
 
@@ -1453,7 +1453,7 @@ The only hard rule:
 Beyond that, treat movements by their role:
 - STAPLE COMPOUNDS (e.g. barbell bench, squat, barbell row, overhead press) are the lifts the user PROGRESSES on. Program them REGULARLY — a given staple should recur roughly every 2-3 sessions for its focus, because a user can only build strength on a lift they train consistently. Do NOT rotate a staple out just because it appeared recently; rotate it only to avoid a back-to-back repeat, then bring it back. A great staple done every 2nd-3rd session is correct; a great staple appearing once in six sessions is WRONG. Most variety should come from which staple leads and from the accessory slots — not from benching the user away from barbell bench.
 - ROTATE THE LEAD across sessions: do not open with the same compound every time. If the user benched first last session, open with incline or another press this time, and feel free to vary the order of the compounds session to session. The lead movement and variant must never be identical two sessions running. On a composite day (Upper, Full Body, Push, Pull) it is fine to open with the primary press most sessions, but occasionally lead with a different movement category — a row or a shoulder press rather than a chest press — for variety.
-- IMPLEMENT VARIETY WITHIN A SESSION (soft default, not a rule): when two movements in one session share a pattern — two presses, two rows — prefer different implements for them. After barbell flat bench, a dumbbell or machine incline beats a second barbell press: different range of motion and stabilizer demand, and the same joints aren't loaded through an identical fixed path twice. Override freely when the user asks for it or their history shows they run both.
+- IMPLEMENT VARIETY WITHIN A SESSION (soft default, not a rule): when two movements in one session share a pattern — two presses, two rows — prefer different implements for them. After barbell flat bench, a dumbbell or machine incline beats a second barbell press: different range of motion and stabilizer demand, and the same joints aren't loaded through an identical fixed path twice. Override freely when the user asks for it or their history shows they run both. VARIETY NEVER OVERRIDES AN ESTABLISHED VARIANT: if the user's history or benchmarks show one variant of a movement and nothing on the others, prescribe THAT variant — switching implements on an established lift orphans their reference numbers. Change it only when the user asks.
 - ACCESSORIES & ISOLATION: vary the MOVEMENT for variety only where real alternatives exist. When a muscle has just one suitable isolation (quads -> Leg Extension, hamstrings -> Leg Curl, side delts -> Lateral Raise), keep using it every session — that is correct programming, not repetition. For every exercise pick the single most natural variant for it, and use ONLY a variant label that is listed under that exact exercise. Never swap a variant just to be different, and NEVER pair an exercise with a variant that belongs to a different exercise.
 
 Mention the rotation choice in programmingNotes (e.g. "leading with front squat this session since the last two opened on back squat").
@@ -1993,7 +1993,12 @@ function sanitizeQuickReplies(arr) {
     if (!t || t.length > 32) continue;
     if (out.some((x) => x.toLowerCase() === t.toLowerCase())) continue;
     out.push(t);
-    if (out.length === 4) break;
+    // S77: cap 4 -> 6. The 2026-07-29 export caught the 4-cap silently
+    // dropping Leg Curl from a 5-exercise swap enumeration — a bounded
+    // choice must never lose a legitimate member. 6 covers the largest
+    // card size the generator prescribes; the prompt-side "2-6" rule
+    // changed in the same commit.
+    if (out.length === 6) break;
   }
   return out.length ? out : null;
 }
@@ -4721,7 +4726,168 @@ const IS_REAL_DEVICE = (() => {
 // Deploy cache-verification marker (owner's V.23 convention, formalized:
 // bump this one constant per push to confirm the phone isn't serving
 // stale cached code; rendered only on real devices, top-right).
-const BUILD_TAG = "V.25";
+const BUILD_TAG = "V.26";
+
+/* ── Visual-viewport pin (S77 — the "composer slides past the keyboard" bug) ──
+   iOS (Safari tab and standalone PWA alike) never shrinks the LAYOUT
+   viewport when the keyboard opens — it shrinks the VISUAL viewport and
+   auto-scrolls it to reveal the focused input. Against a fixed 100vh root
+   that auto-scroll moved the whole app: the composer was never pinned and
+   content could slide past the keyboard. Fix: on real devices the root's
+   height IS the live visual-viewport height (re-read on every vv
+   resize/scroll) and the document scroll is clamped back to 0, so iOS's
+   auto-scroll has nothing left to move. The keyboard then shrinks the app
+   exactly like a native view resizes, and the composer — the bottom of the
+   flex column — lands flush on the keyboard's top edge. The iOS form
+   accessory bar between them is OS furniture a web app cannot remove; it
+   dies at the RN port, and NOTHING here hardcodes its existence or height —
+   all geometry derives from the viewport, so the native build inherits this
+   layout unchanged. Desktop preview and SSR are untouched (guards). */
+function useVisualViewportHeight() {
+  const [h, setH] = useState(() =>
+    typeof window !== "undefined" && window.visualViewport
+      ? Math.round(window.visualViewport.height)
+      : 0
+  );
+  useEffect(() => {
+    if (!IS_REAL_DEVICE || typeof window === "undefined" || !window.visualViewport) return;
+    const vv = window.visualViewport;
+    let raf = null;
+    const apply = () => {
+      if (raf) return;
+      raf = requestAnimationFrame(() => {
+        raf = null;
+        setH(Math.round(vv.height));
+        // Clamp the reveal-scroll: the app owns its layout; the document
+        // must never scroll. Runs on vv scroll + window scroll so the
+        // keyboard-open animation's transient shifts settle back to 0.
+        if (window.scrollY !== 0 || vv.offsetTop !== 0) window.scrollTo(0, 0);
+      });
+    };
+    vv.addEventListener("resize", apply);
+    vv.addEventListener("scroll", apply);
+    window.addEventListener("scroll", apply, { passive: true });
+    apply();
+    return () => {
+      vv.removeEventListener("resize", apply);
+      vv.removeEventListener("scroll", apply);
+      window.removeEventListener("scroll", apply);
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, []);
+  return h;
+}
+
+/* ── Coach rich text (S77, owner lock (b) — full chat subset) ─────────
+   Display-layer markdown for Coach's conversational text: bold, italics,
+   bullet + numbered lists, #/##/### headers; backtick pairs are stripped
+   (content kept, no visible ticks). Deliberately NOT a markdown engine:
+   tables, links, images, fences render as the literal text the model
+   wrote — the prompt bans them, and the renderer's worst case must equal
+   today's behavior (plain text), never something clever. Streaming-safe
+   by construction: it re-parses the partial string every render, and any
+   construct that hasn't closed yet (an unfinished **, a lone backtick)
+   renders literal until its closer arrives — same rule for genuinely
+   malformed output. Pure function of the string; parser state never
+   persists; engines and the envelope path never see it. */
+function coachRichInline(text, keyBase) {
+  const out = [];
+  let i = 0, buf = "", k = 0;
+  const flushBuf = () => { if (buf) { out.push(buf); buf = ""; } };
+  const s = String(text);
+  while (i < s.length) {
+    if (s.startsWith("**", i)) {
+      const close = s.indexOf("**", i + 2);
+      // Valid pair: non-empty content, no leading/trailing space inside.
+      if (close > i + 2 && s[i + 2] !== " " && s[close - 1] !== " ") {
+        flushBuf();
+        out.push(<strong key={`${keyBase}b${k++}`} style={{ fontWeight: 700 }}>{coachRichInline(s.slice(i + 2, close), `${keyBase}b${k}`)}</strong>);
+        i = close + 2;
+        continue;
+      }
+    } else if (s[i] === "*") {
+      const close = s.indexOf("*", i + 1);
+      // Single-star italics only when it can't be math/prose ("205 * 3"):
+      // content is non-empty, doesn't start/end with a space, and the
+      // closer isn't the start of a ** pair.
+      if (close > i + 1 && s[i + 1] !== " " && s[close - 1] !== " " && s[close + 1] !== "*") {
+        flushBuf();
+        out.push(<em key={`${keyBase}i${k++}`}>{coachRichInline(s.slice(i + 1, close), `${keyBase}i${k}`)}</em>);
+        i = close + 1;
+        continue;
+      }
+    } else if (s[i] === "`") {
+      const close = s.indexOf("`", i + 1);
+      if (close > i + 1) {
+        // Strip the ticks, keep the content plain — Coach has no business
+        // rendering code, and visible backticks are the thing being killed.
+        flushBuf();
+        buf += s.slice(i + 1, close);
+        i = close + 1;
+        continue;
+      }
+    }
+    buf += s[i];
+    i++;
+  }
+  flushBuf();
+  return out;
+}
+function renderCoachRichText(text, caretNode = null) {
+  const lines = String(text == null ? "" : text).split("\n");
+  const blocks = [];
+  let list = null; // { ordered, items: [{ marker, body }] }
+  const flushList = () => { if (list) { blocks.push(list); list = null; } };
+  for (const ln of lines) {
+    const head = /^\s*(#{1,3})\s+(.*)$/.exec(ln);
+    const bullet = /^\s*[-*•]\s+(.*)$/.exec(ln);
+    const num = /^\s*(\d+)[.)]\s+(.*)$/.exec(ln);
+    if (bullet) {
+      if (!list || list.ordered) { flushList(); list = { ordered: false, items: [] }; }
+      list.items.push({ marker: "•", body: bullet[1] });
+    } else if (num) {
+      if (!list || !list.ordered) { flushList(); list = { ordered: true, items: [] }; }
+      list.items.push({ marker: num[1] + ".", body: num[2] });
+    } else if (head) {
+      flushList();
+      blocks.push({ head: head[1].length, body: head[2] });
+    } else {
+      flushList();
+      blocks.push({ para: ln });
+    }
+  }
+  flushList();
+  return blocks.map((b, bi) => {
+    if (b.items) {
+      return (
+        <div key={bi} style={{ margin: "2px 0" }}>
+          {b.items.map((it, ii) => (
+            <div key={ii} style={{ display: "flex", gap: 8, padding: "1px 0" }}>
+              <span style={{ flexShrink: 0, minWidth: b.ordered ? 16 : 10, textAlign: b.ordered ? "right" : "center", color: COLORS.textSecondary }}>{it.marker}</span>
+              <span style={{ flex: 1, minWidth: 0 }}>{coachRichInline(it.body, `l${bi}-${ii}`)}</span>
+            </div>
+          ))}
+        </div>
+      );
+    }
+    if (b.head) {
+      // Headers map to the app's own hierarchy, not HTML defaults: modest
+      // sizes, semibold, no color shift — Coach speaks, it doesn't shout.
+      const size = b.head === 1 ? 16 : b.head === 2 ? 15 : 14;
+      return <div key={bi} style={{ fontSize: size, fontWeight: 700, margin: "6px 0 2px" }}>{coachRichInline(b.body, `h${bi}`)}</div>;
+    }
+    // Plain line. Empty source lines keep their paragraph-gap job.
+    if (b.para === "") return <div key={bi} style={{ height: 8 }} />;
+    // The streaming caret rides INSIDE the final plain line so it blinks
+    // where the next token will land, not on a fresh line below.
+    const isTail = caretNode && bi === blocks.length - 1;
+    return <div key={bi}>{coachRichInline(b.para, `p${bi}`)}{isTail ? caretNode : null}</div>;
+  }).concat(
+    caretNode && (blocks.length === 0 || blocks[blocks.length - 1].para == null || blocks[blocks.length - 1].para === "")
+      ? [<div key="caret-tail">{caretNode}</div>]
+      : []
+  );
+}
 
 function PhoneFrame({ children }) {
   if (IS_REAL_DEVICE) {
@@ -4990,6 +5156,13 @@ function SelectableChip({ label, selected = false, onClick, leadingIcon = null, 
   // lives HERE (not in a call-site style override) because the style prop
   // spreads last and a static background would swallow the press flash.
   const pill = variant === "pill";
+  // S77 (owner lock, Direction C): "draft" is the composer-suggestion
+  // treatment that replaced the S76 pill strip — a GHOST USER BUBBLE.
+  // Same shape/radius/edge as a sent user message, but transparent with
+  // a dashed hairline and dimmed text: it reads literally as a reply you
+  // could send. Lit state stays the shared gold flash (the tap language
+  // never forks — same rule that unified card/pill in S76).
+  const draft = variant === "draft";
   const handlers = pointerFire
     ? {
         onPointerDown: (e) => {
@@ -5008,13 +5181,16 @@ function SelectableChip({ label, selected = false, onClick, leadingIcon = null, 
     <button
       {...handlers}
       style={{
-        padding: pill ? "7px 13px" : "14px 20px", borderRadius: pill ? 16 : 10,
-        border: pill
-          ? `1px solid ${lit ? COLORS.gold : COLORS.border}`
-          : `1.5px solid ${lit ? COLORS.gold : COLORS.border}`,
-        background: lit ? COLORS.goldHighlight : (pill ? "transparent" : COLORS.card),
-        color: lit ? COLORS.gold : (pill ? "#b8b8b8" : (muted ? COLORS.textSecondary : COLORS.text)),
-        fontSize: pill ? 13 : 15, fontWeight: lit ? 600 : 400,
+        padding: draft ? "8px 13px" : (pill ? "7px 13px" : "14px 20px"),
+        borderRadius: draft ? 16 : (pill ? 16 : 10),
+        border: draft
+          ? (lit ? `1px solid ${COLORS.gold}` : "1px dashed #3f3f42")
+          : pill
+            ? `1px solid ${lit ? COLORS.gold : COLORS.border}`
+            : `1.5px solid ${lit ? COLORS.gold : COLORS.border}`,
+        background: lit ? COLORS.goldHighlight : ((pill || draft) ? "transparent" : COLORS.card),
+        color: lit ? COLORS.gold : (draft ? "#9a9a9a" : (pill ? "#b8b8b8" : (muted ? COLORS.textSecondary : COLORS.text))),
+        fontSize: draft ? 13.5 : (pill ? 13 : 15), fontWeight: lit ? 600 : 400,
         cursor: "pointer", transition: "all 0.2s ease",
         textAlign: "center", whiteSpace: "nowrap",
         fontFamily: "inherit",
@@ -11468,6 +11644,9 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
   // strictly for input-side gating.
   const [isStreaming, setIsStreaming] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  // S77: which suggestion source key the user X-ed away (session-local
+  // layer; message-keyed dismissals ALSO persist on the message itself).
+  const [dismissedSrc, setDismissedSrc] = useState(null);
   // ── Post-workout questions pin + INLINE CARD (D-168, Session 71 —
   //    supersedes the D-122 bottom sheet) ──
   // The pin waits above the composer while pendingQuestions has
@@ -11737,18 +11916,27 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
   // as the footer fade-in) and when offline.
   const greetingDue = walkRotation(resolveRotation(coachRotation, planDaysPerWeek), rotationCursor);
   let quickReplies = null;
+  // S77: every suggestion set carries a SOURCE KEY so the X can dismiss
+  // exactly this set and nothing else. Message-derived sets key on the
+  // message id (dismissal persists on the message via the S75 id-scoped
+  // updater); the greeting chip keys on the chat (no message exists yet —
+  // dismissal is session-local state); an id-less tail message (pre-S75)
+  // falls back to a position key (session-local).
+  let quickReplySrc = null;
   if (isOnline && !isThinking && !isStreaming && !tailStreaming) {
     const lastM = messages.length ? messages[messages.length - 1] : null;
     if (showFirstRunNudge) {
       quickReplies = null; // owner call: no "Build today's session" chip
     } else if (showGreeting && greetingDue && greetingDue.label) {
       quickReplies = ["Build my " + greetingDue.label.toLowerCase()];
-    } else if (lastM && lastM.role === "coach" && !lastM.streaming) {
+      quickReplySrc = "greeting:" + (chat ? chat.id : "");
+    } else if (lastM && lastM.role === "coach" && !lastM.streaming && !lastM.quickRepliesDismissed) {
       if (lastM.kind === "workout") {
         quickReplies = ["Make it shorter", "Swap something"];
       } else if (lastM.kind === "text" && Array.isArray(lastM.quickReplies) && lastM.quickReplies.length) {
         quickReplies = lastM.quickReplies;
       }
+      if (quickReplies) quickReplySrc = lastM.id ? lastM.id : ("tail:" + messages.length);
     }
   }
 
@@ -12150,6 +12338,7 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
     setIsStreaming(false);
     setLiveTokens(false);
     setExpandedWhy(new Set());
+    setDismissedSrc(null); // S77: suggestion dismissal is per-source; a chat switch changes the source
     cancelStream(); // finalizes any mid-burst message (S75) rather than stranding it
     // cancelStream is stable enough for this purpose (closes over refs).
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -12169,13 +12358,78 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [onSetInputFocused]);
 
+  // S77: the header's three actions (copy-debug / history / new chat),
+  // hoisted so the at-rest header and the focused SLIM strip render the
+  // exact same buttons — one markup site, two placements.
+  const headerActions = (
+    <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
+              {/* Copy debug — dogfooding tool. Copies this whole chat as JSON
+                  (context snapshot + every workout's full coachWorkout/notes) so
+                  it can be pasted back for analysis. */}
+              <button
+                onClick={async () => {
+                  try {
+                    const ok = await copyText(onBuildDebug(chat));
+                    setDebugCopied(ok);
+                    setTimeout(() => setDebugCopied(false), 1500);
+                  } catch (e) { console.warn("[coach] copy debug failed", e); }
+                }}
+                title="Copy debug (for analysis)"
+                style={{ background: "transparent", border: "none", cursor: "pointer", padding: 8, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 8, minWidth: 30 }}
+              >
+                {debugCopied
+                  ? <span style={{ color: COLORS.gold, fontSize: 11, fontWeight: 600 }}>Copied</span>
+                  : <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={COLORS.textSecondary} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <rect x="9" y="9" width="13" height="13" rx="2" />
+                      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                    </svg>}
+              </button>
+              {/* History button */}
+              <button
+                onClick={() => setHistoryOpen(true)}
+                title="Chat history"
+                style={{ background: "transparent", border: "none", cursor: "pointer", padding: 8, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 8 }}
+              >
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={COLORS.textSecondary} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="9" />
+                  <polyline points="12 7 12 12 15 15" />
+                </svg>
+              </button>
+              {/* New chat button — gold plus-in-circle. Dimmed when
+                  current chat is empty (spam prevention visual). */}
+              <button
+                onClick={onNewChat}
+                disabled={currentIsEmpty}
+                title={currentIsEmpty ? "You're already in a new chat" : "New chat"}
+                style={{
+                  background: "transparent", border: "none",
+                  cursor: currentIsEmpty ? "default" : "pointer",
+                  padding: 6, display: "flex", alignItems: "center", justifyContent: "center",
+                  borderRadius: 8,
+                  opacity: currentIsEmpty ? 0.35 : 1,
+                  transition: "opacity 0.15s ease",
+                }}
+              >
+                <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke={COLORS.gold} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="10" />
+                  <line x1="12" y1="8" x2="12" y2="16" />
+                  <line x1="8" y1="12" x2="16" y2="12" />
+                </svg>
+              </button>
+            </div>
+  );
+
   return (
     <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", position: "relative" }}>
       {/* Header — hidden while composing a message, so the chat area feels
           full-height and the focus is entirely on the conversation. Matches
           the pattern in Claude / iMessage / every major chat app. Restores
           on blur. */}
-      {!inputFocused && (
+      {/* S77 (owner lock, Slim 1): while composing, the header no longer
+          unmounts — it collapses to a 40px icons-only strip so the tab
+          keeps its corners (the Claude move) without spending the
+          identity block's height. Full header restores on blur. */}
+      {!inputFocused ? (
       <div style={{ padding: "12px 16px 12px 24px", borderBottom: `1px solid ${COLORS.border}`, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0, flex: 1 }}>
           <div style={{ width: 36, height: 36, borderRadius: 18, background: "transparent", border: `2px solid ${COLORS.gold}`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
@@ -12195,61 +12449,11 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
             </div>
           </div>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
-          {/* Copy debug — dogfooding tool. Copies this whole chat as JSON
-              (context snapshot + every workout's full coachWorkout/notes) so
-              it can be pasted back for analysis. */}
-          <button
-            onClick={async () => {
-              try {
-                const ok = await copyText(onBuildDebug(chat));
-                setDebugCopied(ok);
-                setTimeout(() => setDebugCopied(false), 1500);
-              } catch (e) { console.warn("[coach] copy debug failed", e); }
-            }}
-            title="Copy debug (for analysis)"
-            style={{ background: "transparent", border: "none", cursor: "pointer", padding: 8, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 8, minWidth: 30 }}
-          >
-            {debugCopied
-              ? <span style={{ color: COLORS.gold, fontSize: 11, fontWeight: 600 }}>Copied</span>
-              : <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={COLORS.textSecondary} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <rect x="9" y="9" width="13" height="13" rx="2" />
-                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-                </svg>}
-          </button>
-          {/* History button */}
-          <button
-            onClick={() => setHistoryOpen(true)}
-            title="Chat history"
-            style={{ background: "transparent", border: "none", cursor: "pointer", padding: 8, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 8 }}
-          >
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={COLORS.textSecondary} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <circle cx="12" cy="12" r="9" />
-              <polyline points="12 7 12 12 15 15" />
-            </svg>
-          </button>
-          {/* New chat button — gold plus-in-circle. Dimmed when
-              current chat is empty (spam prevention visual). */}
-          <button
-            onClick={onNewChat}
-            disabled={currentIsEmpty}
-            title={currentIsEmpty ? "You're already in a new chat" : "New chat"}
-            style={{
-              background: "transparent", border: "none",
-              cursor: currentIsEmpty ? "default" : "pointer",
-              padding: 6, display: "flex", alignItems: "center", justifyContent: "center",
-              borderRadius: 8,
-              opacity: currentIsEmpty ? 0.35 : 1,
-              transition: "opacity 0.15s ease",
-            }}
-          >
-            <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke={COLORS.gold} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <circle cx="12" cy="12" r="10" />
-              <line x1="12" y1="8" x2="12" y2="16" />
-              <line x1="8" y1="12" x2="16" y2="12" />
-            </svg>
-          </button>
-        </div>
+        {headerActions}
+      </div>
+      ) : (
+      <div style={{ padding: "2px 12px", borderBottom: `1px solid ${COLORS.border}`, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "flex-end", minHeight: 40 }}>
+        {headerActions}
       </div>
       )}
 
@@ -12442,13 +12646,16 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
                     fontSize: 14, lineHeight: 1.55, padding: "2px 2px",
                     whiteSpace: "pre-wrap",
                   }}>
-                    {m.text}
-                    {/* S76: blinking gold caret while real tokens land —
-                        the chatbot tell. Reuses the existing blink
-                        keyframes; disappears the instant streaming ends. */}
-                    {m.streaming === true && (
+                    {/* S77 (owner lock b): Coach text renders through the
+                        chat-subset markdown renderer — bold/italics/lists/
+                        headers live, backticks stripped, everything else
+                        literal. Re-parsed per render, so streamed partial
+                        text formats as it lands (unclosed constructs stay
+                        literal until their closer arrives). The S76 gold
+                        caret now rides inside the final line. */}
+                    {renderCoachRichText(m.text, m.streaming === true ? (
                       <span aria-hidden="true" style={{ display: "inline-block", width: 7, height: 13, marginLeft: 3, verticalAlign: "-2px", background: COLORS.gold, borderRadius: 1, animation: "blink 1s step-end infinite" }} />
-                    )}
+                    ) : null)}
                   </div>
                   {m.role === "coach" && m.streaming !== true && renderCoachFooter(m, i)}
                 </div>
@@ -12684,27 +12891,55 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
           something"); survey ANSWERS live inside the inline question
           card, never here — that's what lets the survey read as a
           contained unit. */}
-      {quickReplies && quickReplies.length > 0 && (
+      {/* S77 (owner lock, Direction C — supersedes the S76 pill strip):
+          suggestions render as GHOST USER BUBBLES — a right-aligned
+          column on the user's edge, dashed outline, dimmed text. They
+          read as drafts of replies you could send; tapping one sends it
+          (same pointerFire flash). Structural fixes over the pill strip:
+          right alignment kills the ragged-left float, bubbles wrap any
+          label length natively (no truncation, no cap-driven ugliness),
+          and the quiet X beneath the stack dismisses THIS set — persisted
+          on the source message when it has an id, session-local for the
+          greeting chip / pre-S75 tails. The stack also hides the moment
+          the user starts typing (a draft you're writing replaces the
+          drafts we offered) and returns if the box is cleared. */}
+      {quickReplies && quickReplies.length > 0 && quickReplySrc !== dismissedSrc && !input.trim() && (
         <div style={{
-          padding: "8px 16px 0", display: "flex", flexDirection: "row",
-          flexWrap: "wrap", gap: 8, flexShrink: 0,
+          padding: "0 16px 8px", display: "flex", flexDirection: "column",
+          alignItems: "flex-end", gap: 6, flexShrink: 0,
         }}>
-          {/* S76 (owner lock): suggestions are PILLS — content-hugging,
-              transparent at rest, wrapping when labels run long (the
-              D-133 truncation case is solved by wrap, not by going
-              vertical). The survey card keeps the heavy card chips;
-              the weight difference IS the meaning: heavy = answer a
-              question, light = shortcut a message. */}
           {quickReplies.map((q, qi) => (
             <SelectableChip
               key={qi}
               label={q}
               pointerFire
-              variant="pill"
+              variant="draft"
               onClick={() => sendMessage(q)}
-              style={{ whiteSpace: "normal", lineHeight: 1.3, textAlign: "left" }}
+              style={{ whiteSpace: "normal", lineHeight: 1.35, textAlign: "left", maxWidth: "78%" }}
             />
           ))}
+          <button
+            onPointerDown={(e) => {
+              // pointerFire convention (D-116): act on pointer-down so a
+              // focused composer's blur can't shift layout under the tap.
+              e.preventDefault();
+              setDismissedSrc(quickReplySrc);
+              // Message-keyed sets persist the dismissal on the message
+              // itself (id-scoped, S75) so a reload or tab switch doesn't
+              // resurrect what the user closed.
+              if (quickReplySrc && !quickReplySrc.startsWith("greeting:") && !quickReplySrc.startsWith("tail:") && chat) {
+                onUpdateMessage(chat.id, quickReplySrc, { quickRepliesDismissed: true });
+              }
+            }}
+            title="Hide suggestions"
+            style={{
+              background: "transparent", border: "none", cursor: "pointer",
+              width: 26, height: 20, display: "flex", alignItems: "center", justifyContent: "center",
+              color: COLORS.inactive, fontSize: 12, padding: 0, lineHeight: 1,
+            }}
+          >
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+          </button>
         </div>
       )}
 
@@ -17571,6 +17806,9 @@ function TabBar({ active, onTab, coachDot = false }) {
 /* ── MAIN APP ────────────────────────────────────────────────── */
 
 export default function MYGFitness() {
+  // S77: the app root tracks the LIVE visual viewport on real devices —
+  // the keyboard shrinks the app instead of sliding it (item-4 fix).
+  const vvHeight = useVisualViewportHeight();
   // ── Hydrate from localStorage once on mount ──
   // See the Session Persistence block at the top of this file for the
   // full pattern. If a valid snapshot with onboardingComplete=true exists,
@@ -19602,7 +19840,7 @@ export default function MYGFitness() {
 
   return (
     <div style={IS_REAL_DEVICE
-      ? { width: "100vw", height: "100vh", background: COLORS.bg }
+      ? { width: "100vw", height: vvHeight ? `${vvHeight}px` : "100vh", background: COLORS.bg }
       : { minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#0a0a0a", padding: "40px 20px" }}>
       <style>{`
         input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 24px; height: 24px; border-radius: 50%; background: #FFD700; cursor: pointer; border: 3px solid #111111; box-shadow: 0 0 8px rgba(255,215,0,0.4); }
