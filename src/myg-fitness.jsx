@@ -4726,7 +4726,7 @@ const IS_REAL_DEVICE = (() => {
 // Deploy cache-verification marker (owner's V.23 convention, formalized:
 // bump this one constant per push to confirm the phone isn't serving
 // stale cached code; rendered only on real devices, top-right).
-const BUILD_TAG = "V.27";
+const BUILD_TAG = "V.28";
 
 /* ── Visual-viewport pin (S77 — the "composer slides past the keyboard" bug) ──
    iOS (Safari tab and standalone PWA alike) never shrinks the LAYOUT
@@ -4744,33 +4744,36 @@ const BUILD_TAG = "V.27";
    all geometry derives from the viewport, so the native build inherits this
    layout unchanged. Desktop preview and SSR are untouched (guards). */
 function useVisualViewportHeight() {
-  const [h, setH] = useState(() =>
-    typeof window !== "undefined" && window.visualViewport
-      ? Math.round(window.visualViewport.height)
-      : 0
-  );
+  /* S77, third and final form (V.28) — THE DOCTRINE: NEVER TRUST A
+     MEASUREMENT AT REST.
+     History of this hook, kept as a warning label:
+     - V.26 set the root to visualViewport.height always, trusting iOS to
+       announce keyboard dismissal. iOS standalone sometimes never delivers
+       that resize -> app stuck smushed at keyboard-open height (live).
+     - V.27 added a window.innerHeight recovery floor. Also unreliable:
+       platform traces show iOS can freeze visualViewport MID-DISMISSAL at
+       a partial height with a residual offsetTop (the owner's live
+       "half-a-keyboard gap"), and Apple's own forums document innerHeight
+       reporting wrong on real devices in some environments. Every JS
+       viewport number on iOS is a rumor.
+     - V.28 stops asking. At rest (no editable focused — the only state in
+       which a keyboard cannot be up) the root's height is the CSS string
+       "100vh": the exact value that filled the screen correctly for 25
+       builds, resolved by the engine, immune to stuck JS metrics, and
+       self-adapting on rotation. A measured vv.height is used ONLY while
+       an editable is actually focused, to pin the composer above the live
+       keyboard. Worst case is therefore confined to the seconds the user
+       is typing; the resting app can never be smushed again because we no
+       longer ask iOS how tall it is.
+     The settle burst (0/80/180/320/600ms samples on every trigger) remains
+     for the FOCUSED phase, and its scroll clamp also runs through focusout
+     to unstick the residual document scroll iOS leaves behind. */
+  const [vvH, setVvH] = useState(0);
+  const [editFocused, setEditFocused] = useState(false);
   useEffect(() => {
     if (!IS_REAL_DEVICE || typeof window === "undefined" || !window.visualViewport) return;
     const vv = window.visualViewport;
     let timers = [];
-    /* S77 hotfix (V.27 — the live "smushed screen" bug). V.26 trusted a
-       single vv resize event to restore full height when the keyboard
-       closed — but iOS standalone PWAs are known to sometimes NEVER
-       deliver the keyboard-dismiss resize, so the app stayed locked at
-       keyboard-open height with a keyboard-sized dead gap under the tab
-       bar. Two structural defenses replace event-trust:
-       (1) FOCUS-GATED SHRINK: the app only accepts a below-full height
-           while an editable element is actually focused (the only time a
-           keyboard can be up). No focus → height is the larger of
-           vv.height and window.innerHeight — and innerHeight does not
-           shrink with the keyboard on iOS, so it is the reliable
-           full-screen recovery truth even when the event goes missing.
-           This also self-heals a stale small vv reading at cold launch.
-       (2) SETTLE BURST: iOS animates the keyboard and fires events
-           unreliably mid-flight, so every trigger samples the viewport
-           across the animation window (0/80/180/320/600ms) instead of
-           once. focusin/focusout are triggers too — focusout alone
-           restores full height even if no viewport event ever arrives. */
     const editableFocused = () => {
       const el = document.activeElement;
       if (!el) return false;
@@ -4778,13 +4781,11 @@ function useVisualViewportHeight() {
       return t === "INPUT" || t === "TEXTAREA" || el.isContentEditable === true;
     };
     const measure = () => {
-      const vvH = Math.round(vv.height);
-      const next = editableFocused()
-        ? vvH
-        : Math.max(vvH, Math.round(window.innerHeight));
-      setH((prev) => (prev === next ? prev : next));
-      // Clamp the reveal-scroll: the app owns its layout; the document
-      // must never scroll.
+      setEditFocused(editableFocused());
+      setVvH(Math.round(vv.height));
+      // Clamp the reveal-scroll AND the residual post-dismiss scroll iOS
+      // is documented to leave stuck: the app owns its layout; the
+      // document must never scroll.
       if (window.scrollY !== 0 || vv.offsetTop !== 0) window.scrollTo(0, 0);
     };
     const settle = () => {
@@ -4812,7 +4813,9 @@ function useVisualViewportHeight() {
       timers.forEach(clearTimeout);
     };
   }, []);
-  return h;
+  // The returned value IS the CSS height: a px string only while typing,
+  // the engine-resolved "100vh" the rest of the time.
+  return editFocused && vvH ? `${vvH}px` : "100vh";
 }
 
 /* ── Coach rich text (S77, owner lock (b) — full chat subset) ─────────
@@ -17843,8 +17846,9 @@ function TabBar({ active, onTab, coachDot = false }) {
 /* ── MAIN APP ────────────────────────────────────────────────── */
 
 export default function MYGFitness() {
-  // S77: the app root tracks the LIVE visual viewport on real devices —
-  // the keyboard shrinks the app instead of sliding it (item-4 fix).
+  // S77 (V.28 doctrine): at rest the root is CSS "100vh" — never a
+  // measured number; a live vv.height pins the composer ONLY while an
+  // editable is focused. See useVisualViewportHeight's warning label.
   const vvHeight = useVisualViewportHeight();
   // ── Hydrate from localStorage once on mount ──
   // See the Session Persistence block at the top of this file for the
@@ -18550,6 +18554,18 @@ export default function MYGFitness() {
   // message, with each workout's full coachWorkout (ids, variants, sets, and
   // programmingNotes). Pasted back for analysis. Returns a pretty JSON string.
   const buildChatDebug = (chat) => {
+    // S77 (V.28): live viewport snapshot rides every debug copy so a
+    // layout complaint arrives with numbers instead of theories.
+    const vp = typeof window === "undefined" ? null : {
+      buildTag: BUILD_TAG,
+      innerHeight: window.innerHeight,
+      innerWidth: window.innerWidth,
+      vvHeight: window.visualViewport ? Math.round(window.visualViewport.height) : null,
+      vvOffsetTop: window.visualViewport ? Math.round(window.visualViewport.offsetTop) : null,
+      scrollY: Math.round(window.scrollY),
+      screenH: window.screen ? window.screen.height : null,
+      standalone: typeof window.matchMedia === "function" ? window.matchMedia("(display-mode: standalone)").matches : null,
+    };
     const rotation = resolveRotation(coachRotation, planDaysPerWeek);
     const due = walkRotation(rotation, rotationCursor);
     const recentSessions = (workoutHistory || []).slice(0, 8).map((s) => ({
@@ -18568,6 +18584,7 @@ export default function MYGFitness() {
     return JSON.stringify({
       _debug: "myg-coach-chat",
       exportedAt: new Date().toISOString(),
+      viewport: vp,
       chat: { id: chat && chat.id, title: (chat && chat.title) || null },
       context: {
         userName, fitnessLevel, planGoal, planDaysPerWeek,
@@ -19877,7 +19894,7 @@ export default function MYGFitness() {
 
   return (
     <div style={IS_REAL_DEVICE
-      ? { width: "100vw", height: vvHeight ? `${vvHeight}px` : "100vh", background: COLORS.bg }
+      ? { width: "100vw", height: vvHeight, background: COLORS.bg }
       : { minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#0a0a0a", padding: "40px 20px" }}>
       <style>{`
         input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 24px; height: 24px; border-radius: 50%; background: #FFD700; cursor: pointer; border: 3px solid #111111; box-shadow: 0 0 8px rgba(255,215,0,0.4); }
