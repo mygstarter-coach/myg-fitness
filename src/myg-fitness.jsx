@@ -4726,7 +4726,7 @@ const IS_REAL_DEVICE = (() => {
 // Deploy cache-verification marker (owner's V.23 convention, formalized:
 // bump this one constant per push to confirm the phone isn't serving
 // stale cached code; rendered only on real devices, top-right).
-const BUILD_TAG = "V.26";
+const BUILD_TAG = "V.27";
 
 /* ── Visual-viewport pin (S77 — the "composer slides past the keyboard" bug) ──
    iOS (Safari tab and standalone PWA alike) never shrinks the LAYOUT
@@ -4752,27 +4752,64 @@ function useVisualViewportHeight() {
   useEffect(() => {
     if (!IS_REAL_DEVICE || typeof window === "undefined" || !window.visualViewport) return;
     const vv = window.visualViewport;
-    let raf = null;
-    const apply = () => {
-      if (raf) return;
-      raf = requestAnimationFrame(() => {
-        raf = null;
-        setH(Math.round(vv.height));
-        // Clamp the reveal-scroll: the app owns its layout; the document
-        // must never scroll. Runs on vv scroll + window scroll so the
-        // keyboard-open animation's transient shifts settle back to 0.
-        if (window.scrollY !== 0 || vv.offsetTop !== 0) window.scrollTo(0, 0);
-      });
+    let timers = [];
+    /* S77 hotfix (V.27 — the live "smushed screen" bug). V.26 trusted a
+       single vv resize event to restore full height when the keyboard
+       closed — but iOS standalone PWAs are known to sometimes NEVER
+       deliver the keyboard-dismiss resize, so the app stayed locked at
+       keyboard-open height with a keyboard-sized dead gap under the tab
+       bar. Two structural defenses replace event-trust:
+       (1) FOCUS-GATED SHRINK: the app only accepts a below-full height
+           while an editable element is actually focused (the only time a
+           keyboard can be up). No focus → height is the larger of
+           vv.height and window.innerHeight — and innerHeight does not
+           shrink with the keyboard on iOS, so it is the reliable
+           full-screen recovery truth even when the event goes missing.
+           This also self-heals a stale small vv reading at cold launch.
+       (2) SETTLE BURST: iOS animates the keyboard and fires events
+           unreliably mid-flight, so every trigger samples the viewport
+           across the animation window (0/80/180/320/600ms) instead of
+           once. focusin/focusout are triggers too — focusout alone
+           restores full height even if no viewport event ever arrives. */
+    const editableFocused = () => {
+      const el = document.activeElement;
+      if (!el) return false;
+      const t = el.tagName;
+      return t === "INPUT" || t === "TEXTAREA" || el.isContentEditable === true;
     };
-    vv.addEventListener("resize", apply);
-    vv.addEventListener("scroll", apply);
-    window.addEventListener("scroll", apply, { passive: true });
-    apply();
+    const measure = () => {
+      const vvH = Math.round(vv.height);
+      const next = editableFocused()
+        ? vvH
+        : Math.max(vvH, Math.round(window.innerHeight));
+      setH((prev) => (prev === next ? prev : next));
+      // Clamp the reveal-scroll: the app owns its layout; the document
+      // must never scroll.
+      if (window.scrollY !== 0 || vv.offsetTop !== 0) window.scrollTo(0, 0);
+    };
+    const settle = () => {
+      timers.forEach(clearTimeout);
+      timers = [];
+      measure();
+      [80, 180, 320, 600].forEach((ms) => timers.push(setTimeout(measure, ms)));
+    };
+    vv.addEventListener("resize", settle);
+    vv.addEventListener("scroll", settle);
+    window.addEventListener("resize", settle);
+    window.addEventListener("orientationchange", settle);
+    window.addEventListener("scroll", settle, { passive: true });
+    document.addEventListener("focusin", settle);
+    document.addEventListener("focusout", settle);
+    settle();
     return () => {
-      vv.removeEventListener("resize", apply);
-      vv.removeEventListener("scroll", apply);
-      window.removeEventListener("scroll", apply);
-      if (raf) cancelAnimationFrame(raf);
+      vv.removeEventListener("resize", settle);
+      vv.removeEventListener("scroll", settle);
+      window.removeEventListener("resize", settle);
+      window.removeEventListener("orientationchange", settle);
+      window.removeEventListener("scroll", settle);
+      document.removeEventListener("focusin", settle);
+      document.removeEventListener("focusout", settle);
+      timers.forEach(clearTimeout);
     };
   }, []);
   return h;
