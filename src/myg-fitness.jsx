@@ -803,7 +803,7 @@ const EXERCISE_LIBRARY = [
     { label: "Flat Bench", equipment: ["flat_bench"], bodyweight: true },
   ]},
 
-  // CORE (19)
+  // CORE (20)
   { id: "plank", name: "Plank", primary: "Core", pattern: "isolation_abs", secondary: [], type: "Compound", variants: [{ label: "Bodyweight", equipment: [], bodyweight: true }]},
   { id: "side_plank", name: "Side Plank", primary: "Core", pattern: "isolation_obliques", secondary: [], type: "Compound", variants: [{ label: "Bodyweight", equipment: [], bodyweight: true }]},
   { id: "reverse_plank", name: "Reverse Plank", primary: "Core", pattern: "isolation_abs", secondary: [], type: "Compound", variants: [{ label: "Bodyweight", equipment: [], bodyweight: true }]},
@@ -829,6 +829,9 @@ const EXERCISE_LIBRARY = [
   { id: "oblique_crunch", name: "Oblique Crunch", primary: "Core", pattern: "isolation_obliques", secondary: [], type: "Isolation", variants: [{ label: "Bodyweight", equipment: [], bodyweight: true }]},
   { id: "decline_crunch", name: "Decline Crunch", primary: "Core", pattern: "isolation_abs", secondary: [], type: "Isolation", variants: [
     { label: "Adjustable Bench", equipment: ["adjustable_bench"], bodyweight: true },
+  ]},
+  { id: "sit_up", name: "Sit-Up", primary: "Core", pattern: "isolation_abs", secondary: [], type: "Isolation", variants: [
+    { label: "Bodyweight", equipment: [], bodyweight: true },
   ]},
   { id: "hanging_leg_raise", name: "Hanging Leg Raise", primary: "Core", pattern: "isolation_abs", secondary: [], type: "Isolation", variants: [
     { label: "Pull-Up Bar", equipment: ["pull_up_bar"], bodyweight: true },
@@ -1116,25 +1119,65 @@ function coachConsumeSse(res, onDelta) {
 }
 
 function createCoachLiveExtractor() {
-  let mode = "sniff"; // sniff | prose | scan | str | done
+  let mode = "sniff"; // sniff | prose | build | scan | str | done
   let raw = "";
   let visible = "";
   let pos = 0;        // scan pointer into raw while in "str"
   let esc = false;    // in-string: previous char was a backslash
   let uni = null;     // collecting \uXXXX hex digits, or null
+  // S78 intro-first streaming: prose mode now watches for a JSON envelope
+  // starting mid-reply (the new prompt shape: coaching intro, blank line,
+  // CoachWorkout object). The moment a line-leading "{" proves to be an
+  // object opener, the visible text FREEZES at the prose before it, mode
+  // flips to "build", and every later token is swallowed silently — the
+  // UI shows "Building your workout…" instead of raw JSON. This is the
+  // fix for the live-hit flicker (S78 owner report: streamed JSON guts
+  // visibly, then everything vanished and re-rendered as the card).
+  // A "{" that turns out to be ordinary prose is released back into the
+  // visible text and scanning continues after it.
+  let scanFrom = 0;   // prose offset to search for the next candidate "{"
+  let cand = -1;      // raw index of an undecided line-leading "{"
   const KEY_RE = /"(text|message)"\s*:\s*"/;
+  const findCandidate = () => {
+    const re = /(^|\n)[ \t]*\{/g;
+    re.lastIndex = scanFrom;
+    const m = re.exec(raw);
+    return m ? m.index + m[0].length - 1 : -1;
+  };
   return {
     feed(chunk) {
       raw += chunk || "";
       const before = visible.length;
       if (mode === "sniff") {
         const t = raw.replace(/^\s+/, "");
-        if (!t) return { visible, grew: false };
+        if (!t) return { visible, grew: false, building: false };
         mode = t[0] === "{" ? "scan" : "prose";
       }
       if (mode === "prose") {
-        visible = raw;
-        return { visible, grew: visible.length > before };
+        for (;;) {
+          if (cand < 0) cand = findCandidate();
+          if (cand < 0) { visible = raw; break; }
+          const tail = raw.slice(cand);
+          // Envelope opener: { followed by a quoted key and a colon.
+          if (/^\{\s*"[A-Za-z_][A-Za-z0-9_]*"\s*:/.test(tail)) {
+            mode = "build";
+            visible = raw.slice(0, cand).replace(/\s+$/, "");
+            break;
+          }
+          // Provably NOT an opener: a non-quote, non-space char right after
+          // the brace, or a "key" that ran 48 chars without hitting a colon.
+          if (/^\{\s*[^"\s]/.test(tail) || tail.length > 48) {
+            scanFrom = cand + 1; cand = -1; continue; // release into prose
+          }
+          // Undecided (marker may be split across chunks): withhold from
+          // display everything from the candidate on, keep prose before it.
+          visible = raw.slice(0, cand);
+          break;
+        }
+        return { visible, grew: visible.length > before, building: mode === "build" };
+      }
+      if (mode === "build") {
+        return { visible, grew: false, building: true };
       }
       if (mode === "scan") {
         const m = KEY_RE.exec(raw);
@@ -1169,9 +1212,9 @@ function createCoachLiveExtractor() {
           visible += c; i++;
         }
         pos = i;
-        return { visible, grew: visible.length > before };
+        return { visible, grew: visible.length > before, building: false };
       }
-      return { visible, grew: false };
+      return { visible, grew: false, building: false };
     },
   };
 }
@@ -1301,6 +1344,7 @@ async function callCoach(systemPrompt, userMessage, opts = {}) {
     const extractor = live ? createCoachLiveExtractor() : null;
     let liveStarted = false;
     let roundTainted = false;
+    let buildingSent = false; // S78: fire onBuilding once per round
     const onDelta = live ? (d) => {
       if (d.kind === "block_start" && d.blockType === "tool_use") {
         if (liveStarted && !roundTainted && live.onAbort) live.onAbort();
@@ -1310,6 +1354,10 @@ async function callCoach(systemPrompt, userMessage, opts = {}) {
         if (r.grew) {
           if (!liveStarted) { liveStarted = true; if (live.onStart) live.onStart(); }
           if (live.onText) live.onText(r.visible);
+        }
+        if (r.building && !buildingSent) {
+          buildingSent = true;
+          if (live.onBuilding) live.onBuilding();
         }
       }
     } : null;
@@ -1370,6 +1418,8 @@ Voice rules:
 
 == SCOPE ==
 - Training — programming, exercise selection, form, rep schemes, progression, motivation, equipment, this app: engage fully, with depth.
+- EVERY genuine training request from the user is in scope and gets served — a one-off famous program (Golden 6, StrongLifts, 5/3/1), a session outside their usual split, an easier or beginner-paced workout (training with a partner or family member, a deload, coming back from time off). Their profile describes them; it does not confine them. You may note the departure in one short clause, then build exactly what they asked for. Never refuse, argue with, or interrogate a normal training request — judgment, not gatekeeping: your job is to filter the ridiculous, not the normal.
+- PEDs (steroids, SARMs, fat burners and the like): discuss honestly at the information level — what they are, real risks and trade-offs, why they're controlled. Never provide dosing, cycles, sourcing, or protocols; that is a physician's territory and you say so plainly, once, without a lecture.
 - Training-adjacent (sleep, nutrition basics, supplements, recovery, soreness, mobility): answer like a knowledgeable coach — useful, evidence-based, brief. Give real numbers and practical guidance. Point to a doctor only when it turns medical or needs individualized prescription (conditions, medications, chronic problems). Do NOT open with disclaimers on everyday questions; a coach who hedges everything is useless.
 - Pain, injury, medical conditions, medications, mental health: three moves, always — acknowledge it plainly, hand it to the right professional ("that's a PT/doctor call, not mine"), then immediately offer what you CAN do ("meantime I can build around it — want Thursday without knee load?"). Never diagnose, never prescribe, never pretend qualification. Never just say "I can't help" and stop.
 - If the user expresses hopelessness, self-harm, or crisis: respond with exactly this shape, nothing clever: "I'm glad you said something. I'm the wrong tool for this one and I won't pretend otherwise — please talk to someone trained for it: call or text 988. The gym will be here, and so will I, whenever you're ready." Do not improvise beyond it, do not pivot back to training in the same breath.
@@ -1404,11 +1454,11 @@ Rules:
 - If the user taps "Swap something" after a workout you built, reply with ONLY the kind:"text" object above — the question in its "text" field, the workout's exercise names as the chips, and NO sentence outside the object. When they pick, re-issue the full updated CoachWorkout JSON. If they tap "Make it shorter", re-issue a shorter CoachWorkout (fewer exercises/sets), same focus.
 
 == HOW TO RESPOND (decide every message) ==
-- User wants a workout built ("build me a leg day", "push", "my next workout") -> respond with ONLY the CoachWorkout JSON object below. No prose, no markdown, no code fences.
+- User wants a workout built ("build me a leg day", "push", "my next workout") -> reply in EXACTLY this shape: a short coaching intro in plain prose, then a blank line, then the CoachWorkout JSON object below, then NOTHING after the object. The intro is coaching addressed to the user, never planning: (1) what this session is and why now, (2) the one thing to chase today (an anchor to defend, a number to beat), (3) if the program or focus is new to them, one line on what to expect. 2-4 sentences by default; up to 5-6 ONLY for a genuine first — a new program, a split change, a return from time away. A routine repeat of a familiar day earns the SHORT end, never the long. Never mention JSON, cards, or app machinery in the intro; programming rationale stays in programmingNotes, not here. Re-issued workouts (swap, "make it shorter") get a ONE-line intro naming the change, then the object.
 - Your reply poses a bounded 2-4 option choice -> the kind:"text" JSON object above. Nothing outside the JSON.
 - Everything else -> plain conversational text. No JSON, no fences. Light formatting is fine and renders properly: **bold** for lift names and key numbers, simple - bullet or numbered lists when you are actually listing, ## headers only for a genuinely sectioned rundown. Use it sparingly — most replies are plain sentences. Never tables, links, images, or code.
-Whenever your reply is a JSON object (workout OR text): the WHOLE reply is that object. It starts with { and ends with }. No lead-in sentence, no trailing note, no markdown code fences. One loose sentence outside the object breaks the app.
-PLAN SILENTLY. Never write your planning, deliberation, or reasoning as prose in the reply — no "Let me plan...", no walking through candidate exercises, no narrating rotation logic before the object. Thinking out loud before a workout card is the #1 cause of broken replies (the card gets cut off and the user sees an error). Decide internally; the ONLY place your reasoning appears is the programmingNotes field inside the card.
+Whenever your reply is a kind:"text" JSON object: the WHOLE reply is that object. It starts with { and ends with }. No lead-in sentence, no trailing note, no markdown code fences. Workout replies are the ONE exception: the coaching intro comes BEFORE the object as described above — but NOTHING ever comes after a closing brace, and a workout request must always end in the object, never prose alone.
+PLAN SILENTLY. Never write your planning, deliberation, or reasoning as prose — no "Let me plan...", no walking through candidate exercises, no narrating rotation logic. The workout intro is NOT a loophole: it is coaching spoken to the user (what today is, what to chase), never a scratchpad. Decide internally; the ONLY place your reasoning appears is the programmingNotes field inside the card.
 
 == When building a workout ==
 You generate ONE workout from the user's profile, the focus they want (infer it from their message and their split), and ONLY the exercises available to them.
@@ -2017,11 +2067,15 @@ function sanitizeQuickReplies(arr) {
 // signal even once users stop seeing the dump).
 function extractCoachEnvelope(clean) {
   const isEnvelope = (o) => o && (o.kind === "workout" || o.kind === "text");
-  // Fast path: the whole reply is the object (the correct, common case).
+  // Fast path: the whole reply is the object (kind:"text" contract; also a
+  // workout with no intro, which the S78 prompt discourages but tolerates).
   if (clean.startsWith("{")) {
-    try { const whole = JSON.parse(clean); if (isEnvelope(whole)) return { obj: whole, salvaged: false }; } catch { /* scan below */ }
+    try { const whole = JSON.parse(clean); if (isEnvelope(whole)) return { obj: whole, salvaged: false, pre: "", post: "" }; } catch { /* scan below */ }
   }
-  // Fallback: find the first embedded {...} that parses to an envelope.
+  // Scan: find the first embedded {...} that parses to an envelope. Since
+  // S78 the prose BEFORE a workout object is the intentional coaching intro
+  // (intro-first prompt shape), returned as `pre`. Prose AFTER the object
+  // remains a contract violation, returned as `post` for the caller to log.
   for (let i = 0; i < clean.length; i++) {
     if (clean[i] !== "{") continue;
     let depth = 0, inStr = false, esc = false;
@@ -2035,23 +2089,27 @@ function extractCoachEnvelope(clean) {
         depth--;
         if (depth === 0) {
           const candidate = clean.slice(i, j + 1);
-          try { const parsed = JSON.parse(candidate); if (isEnvelope(parsed)) return { obj: parsed, salvaged: (i !== 0 || j + 1 !== clean.length) }; } catch { /* keep scanning */ }
+          try { const parsed = JSON.parse(candidate); if (isEnvelope(parsed)) return { obj: parsed, salvaged: (i !== 0 || j + 1 !== clean.length), pre: clean.slice(0, i), post: clean.slice(j + 1) }; } catch { /* keep scanning */ }
           break; // not an envelope from here; advance i to the next "{"
         }
       }
     }
   }
-  return { obj: null, salvaged: false };
+  return { obj: null, salvaged: false, pre: "", post: "" };
 }
 function parseCoachReply(rawText, validate) {
   const clean = (rawText || "").replace(/```json/g, "").replace(/```/g, "").trim();
-  const { obj, salvaged } = extractCoachEnvelope(clean);
-  if (salvaged) console.warn("[coach] recovered a JSON envelope wrapped in prose — model emitted text outside the object (D-131)");
+  const { obj, salvaged, pre, post } = extractCoachEnvelope(clean);
   if (obj && obj.kind === "workout") {
+    // S78: prose before a workout object is the intro-first contract, not a
+    // violation — it rides back as the preamble. Prose AFTER the object is
+    // still a slip (dropped + logged); so is prose around a text object.
+    if (post && post.trim()) console.warn("[coach] text after the workout object — dropped (intro-first contract: nothing follows the closing brace)");
     const v = validate(obj);
     if (!v.ok) { console.warn("[coach] schema violations", v.errors); return { kind: "error" }; }
-    return { kind: "workout", coachWorkout: obj };
+    return { kind: "workout", coachWorkout: obj, preamble: (pre || "").trim() };
   }
+  if (salvaged) console.warn("[coach] recovered a JSON envelope wrapped in prose — model emitted text outside the object (D-131)");
   if (obj && obj.kind === "text" && typeof obj.text === "string" && obj.text.trim()) {
     return { kind: "reply", message: obj.text.trim(), quickReplies: sanitizeQuickReplies(obj.quickReplies) };
   }
@@ -4726,7 +4784,7 @@ const IS_REAL_DEVICE = (() => {
 // Deploy cache-verification marker (owner's V.23 convention, formalized:
 // bump this one constant per push to confirm the phone isn't serving
 // stale cached code; rendered only on real devices, top-right).
-const BUILD_TAG = "V.28";
+const BUILD_TAG = "V.29";
 
 /* ── Visual-viewport pin (S77 — the "composer slides past the keyboard" bug) ──
    iOS (Safari tab and standalone PWA alike) never shrinks the LAYOUT
@@ -5831,7 +5889,7 @@ function NameScreen({ onNext, onBack }) {
   const [name, setName] = useState("");
   const handleNext = () => {
     const trimmed = name.trim();
-    onNext(trimmed || "Tyler");
+    onNext(trimmed || "Athlete");
   };
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
@@ -6351,681 +6409,12 @@ const SET_TYPES = [
   { id: "failure", label: "Failure",  short: "F" },
 ];
 
-/* Mock completed-workout history. Each session captures what actually
-   happened (per Bible: data model captures executed, not prescribed).
-   Sets carry the type so the recap sheet can render warmups correctly. */
-const MOCK_WORKOUT_HISTORY = [
-  // Most-recent-first. S8–S17 (May 24 – Jul 5) added from the dogfooding
-  // training log; ids h8–h17 map to session numbers (h7 absent — S7 was
-  // pre-workout only, never logged). Durations for S9/S11/S12/S13 are
-  // best-effort estimates (timers left running, per D-086); S14 (~11h47m) and
-  // S16 (~508 min) are stored null by the D-121 plausibility guard. S15 (67m)
-  // and S17 (86m) are plausible. Iso Lateral Row / Machine Decline Press are
-  // their own movements per the D-085 split.
-  // ── Session 17 — Full Body (user-built, Mode C) · Jul 5 ──
-  // App auto-named "Full Body" — MISFIRE: this is a Push day (chest+shoulders+
-  // triceps), should be "Push Day" (3-muscle-push → Full Body classifier bug,
-  // D-006/D-132; owner deferring the fix). Dip is bodyweight (0 lbs volume).
-  {
-    id: "h17",
-    name: "Full Body",
-    date: "2026-07-05",
-    durationSec: 5160, // 86 min — plausible
-    exercises: [
-      { name: "Bench Press", variantLabel: "Barbell", sets: [
-        { weight: 135, reps: 8,  type: "warmup" },
-        { weight: 185, reps: 8,  type: "working" },
-        { weight: 205, reps: 8,  type: "working" },
-        { weight: 205, reps: 6,  type: "working" },
-        { weight: 155, reps: 10, type: "working" },
-      ]},
-      { name: "Incline Bench Press", variantLabel: "Dumbbells", sets: [
-        { weight: 70, reps: 8, type: "working" },
-        { weight: 70, reps: 6, type: "working" },
-        { weight: 70, reps: 7, type: "working" },
-      ]},
-      { name: "Overhead Press", variantLabel: "Smith Machine", sets: [
-        { weight: 135, reps: 8, type: "warmup" },
-        { weight: 155, reps: 6, type: "working" },
-        { weight: 155, reps: 6, type: "working" },
-      ]},
-      { name: "Chest Fly", variantLabel: "Pec Deck", sets: [
-        { weight: 130, reps: 15, type: "working" },
-        { weight: 150, reps: 15, type: "working" },
-        { weight: 165, reps: 11, type: "working" },
-      ]},
-      { name: "Lateral Raise", variantLabel: "Lateral Raise Machine", sets: [
-        { weight: 80, reps: 12, type: "working" },
-        { weight: 80, reps: 12, type: "working" },
-        { weight: 90, reps: 12, type: "working" },
-      ]},
-      { name: "Tricep Pushdown", variantLabel: "Cable (High Pulley)", sets: [
-        { weight: 135, reps: 12, type: "working" },
-        { weight: 120, reps: 12, type: "working" },
-        { weight: 120, reps: 12, type: "working" },
-      ]},
-      { name: "Dip", variantLabel: "Dip Station", sets: [
-        { weight: 0, reps: 8, type: "working" },
-        { weight: 0, reps: 9, type: "working" },
-        { weight: 0, reps: 9, type: "working" },
-      ]},
-      { name: "Skull Crusher", variantLabel: "Dumbbells", sets: [
-        { weight: 25, reps: 12, type: "working" },
-        { weight: 25, reps: 6,  type: "working" },
-        { weight: 25, reps: 6,  type: "working" },
-      ]},
-      { name: "Front Raise", variantLabel: "Dumbbells", sets: [
-        { weight: 25, reps: 10, type: "working" },
-      ]},
-    ],
-  },
-  // ── Session 16 — Back & Arms (user-built, Mode C) · Jul 1 ──
-  // App auto-named "Back & Arms" — composite back+biceps day, muscle-list
-  // name (the namer doesn't map content → canonical Pull split; see log).
-  // Date stamped correctly (Jul 1). Pull-Up is bodyweight (0 lbs volume).
-  {
-    id: "h16",
-    name: "Back & Arms",
-    date: "2026-07-01",
-    durationSec: null, // ~508 min left-running timer → stored null (D-121 guard)
-    exercises: [
-      { name: "Bent-Over Row", variantLabel: "Barbell", sets: [
-        { weight: 135, reps: 8, type: "warmup" },
-        { weight: 185, reps: 8, type: "working" },
-        { weight: 225, reps: 8, type: "working" },
-      ]},
-      { name: "Pull-Up", variantLabel: "Pull-Up Bar", sets: [
-        { weight: 0, reps: 8, type: "working" },
-        { weight: 0, reps: 8, type: "working" },
-        { weight: 0, reps: 8, type: "working" },
-        { weight: 0, reps: 8, type: "working" },
-      ]},
-      { name: "Bicep Curl", variantLabel: "Barbell", sets: [
-        { weight: 95, reps: 8, type: "working" },
-        { weight: 95, reps: 8, type: "working" },
-        { weight: 95, reps: 8, type: "working" },
-      ]},
-      { name: "Back Extension", variantLabel: "Hyperextension Bench", sets: [
-        { weight: 25, reps: 10, type: "working" },
-        { weight: 25, reps: 10, type: "working" },
-      ]},
-    ],
-  },
-  // ── Session 15 — Chest & Shoulders (user-built, Mode C) · Jun 28 ──
-  // App auto-named "Chest & Shoulders" — correct (first non-"Full Body"
-  // multi-muscle auto-name; coherent 2-group day, no triceps). Displayed date
-  // was "Jun 29"; stored as workout-start 6/28 per D-086/D-121 (see log flag).
-  {
-    id: "h15",
-    name: "Chest & Shoulders",
-    date: "2026-06-28",
-    durationSec: 4020, // 67 min — plausible, timer streak broken
-    exercises: [
-      { name: "Incline Bench Press", variantLabel: "Barbell", sets: [
-        { weight: 135, reps: 10, type: "warmup" },
-        { weight: 155, reps: 10, type: "working" },
-        { weight: 165, reps: 8,  type: "working" },
-        { weight: 165, reps: 8,  type: "working" },
-      ]},
-      { name: "Machine Chest Press", variantLabel: "Hammer Strength Chest Press", sets: [
-        { weight: 225, reps: 8,  type: "working" },
-        { weight: 225, reps: 10, type: "working" },
-        { weight: 275, reps: 8,  type: "working" },
-      ]},
-      { name: "Machine Shoulder Press", variantLabel: "Hammer Strength Shoulder Press", sets: [
-        { weight: 135, reps: 10, type: "warmup" },
-        { weight: 205, reps: 8,  type: "working" },
-        { weight: 205, reps: 7,  type: "working" },
-      ]},
-      { name: "Cable Crossover", variantLabel: "Cable Crossover", sets: [
-        { weight: 33, reps: 12, type: "working" },
-        { weight: 33, reps: 10, type: "working" },
-        { weight: 33, reps: 8,  type: "working" },
-      ]},
-      { name: "Lateral Raise", variantLabel: "Cable (Low Pulley)", sets: [
-        { weight: 20, reps: 12, type: "working" },
-        { weight: 20, reps: 15, type: "working" },
-        { weight: 30, reps: 8,  type: "working" },
-      ]},
-    ],
-  },
-  // ── Session 14 — Push Day (user-built, Mode C) · Jun 21 ──
-  // Device auto-named "Full Body" (D-006 classifier residual on a user-built
-  // Push day); stored under the corrected focus name per mock convention.
-  {
-    id: "h14",
-    name: "Push Day",
-    date: "2026-06-21",
-    durationSec: null, // ~11h47m left-running timer → stored null (D-121 guard)
-    exercises: [
-      { name: "Bench Press", variantLabel: "Barbell", sets: [
-        { weight: 135, reps: 10, type: "warmup" },
-        { weight: 205, reps: 8,  type: "working" },
-        { weight: 205, reps: 7,  type: "working" },
-        { weight: 205, reps: 9,  type: "working" },
-      ]},
-      { name: "Incline Bench Press", variantLabel: "Dumbbells", sets: [
-        { weight: 60, reps: 10, type: "working" },
-        { weight: 65, reps: 8,  type: "working" },
-        { weight: 65, reps: 8,  type: "working" },
-      ]},
-      { name: "Lateral Raise", variantLabel: "Dumbbells", sets: [
-        { weight: 15, reps: 15, type: "working" },
-        { weight: 15, reps: 15, type: "working" },
-        { weight: 20, reps: 15, type: "working" },
-      ]},
-      { name: "Front Raise", variantLabel: "Dumbbells", sets: [
-        { weight: 15, reps: 10, type: "working" },
-        { weight: 15, reps: 15, type: "working" },
-        { weight: 20, reps: 15, type: "working" },
-      ]},
-      { name: "Skull Crusher", variantLabel: "Dumbbells", sets: [
-        { weight: 15, reps: 15, type: "working" },
-        { weight: 15, reps: 15, type: "working" },
-        { weight: 20, reps: 15, type: "working" },
-      ]},
-      { name: "Cable Crossover", variantLabel: "Cable Crossover", sets: [
-        { weight: 33, reps: 15, type: "working" },
-        { weight: 33, reps: 12, type: "working" },
-        { weight: 33, reps: 12, type: "working" },
-      ]},
-      { name: "Machine Decline Press", variantLabel: "Hammer Strength Decline Press", sets: [
-        { weight: 225, reps: 8,  type: "working" },
-        { weight: 225, reps: 8,  type: "working" },
-        { weight: 225, reps: 12, type: "working" },
-      ]},
-      { name: "Tricep Pushdown", variantLabel: "Cable (High Pulley)", sets: [
-        { weight: 120, reps: 15, type: "working" },
-        { weight: 135, reps: 15, type: "working" },
-        { weight: 135, reps: 15, type: "working" },
-      ]},
-    ],
-  },
-  // ── Session 13 — Leg Day (user-built, Mode C) · Jun 2 ──
-  {
-    id: "h13",
-    name: "Leg Day",
-    date: "2026-06-02",
-    durationSec: 2100, // est. — timer left running (D-086)
-    exercises: [
-      { name: "Bulgarian Split Squat", variantLabel: "Smith Machine", sets: [
-        { weight: 135, reps: 8, type: "working" },
-        { weight: 185, reps: 8, type: "working" },
-        { weight: 225, reps: 8, type: "working" },
-      ]},
-      { name: "Leg Extension", variantLabel: "Leg Extension Machine", sets: [
-        { weight: 135, reps: 15, type: "working" },
-        { weight: 170, reps: 15, type: "working" },
-        { weight: 195, reps: 15, type: "working" },
-      ]},
-      { name: "Leg Curl", variantLabel: "Seated Leg Curl", sets: [
-        { weight: 125, reps: 12, type: "working" },
-        { weight: 130, reps: 12, type: "working" },
-        { weight: 140, reps: 12, type: "working" },
-      ]},
-    ],
-  },
-  // ── Session 12 — Back Day (user-built, Mode C) · May 31 (start-date) ──
-  {
-    id: "h12",
-    name: "Back Day",
-    date: "2026-05-31",
-    durationSec: 2400, // est. — timer left running (D-086)
-    exercises: [
-      { name: "Pull-Up", variantLabel: "Pull-Up Bar", sets: [
-        { weight: 0, reps: 8, type: "working" },
-        { weight: 0, reps: 9, type: "working" },
-        { weight: 0, reps: 9, type: "working" },
-      ]},
-      { name: "Seated Cable Row", variantLabel: "Seated Cable Row", sets: [
-        { weight: 187, reps: 10, type: "working" },
-        { weight: 209, reps: 10, type: "working" },
-        { weight: 209, reps: 10, type: "working" },
-      ]},
-      { name: "Iso Lateral Row", variantLabel: "Iso Lateral Row Machine", sets: [
-        { weight: 90,  reps: 10, type: "working" },
-        { weight: 90,  reps: 10, type: "working" },
-        { weight: 115, reps: 10, type: "working" },
-      ]},
-      { name: "T-Bar Row", variantLabel: "T-Bar Row Machine", sets: [
-        { weight: 180, reps: 12, type: "working" },
-        { weight: 205, reps: 12, type: "working" },
-        { weight: 205, reps: 12, type: "working" },
-      ]},
-    ],
-  },
-  // ── Session 11 — Push Day (Coach-prescribed, Mode A) · May 31 ──
-  {
-    id: "h11",
-    name: "Push Day",
-    date: "2026-05-31",
-    durationSec: 4500, // est. — timer left running (D-086)
-    exercises: [
-      { name: "Incline Bench Press", variantLabel: "Barbell", sets: [
-        { weight: 135, reps: 8, type: "warmup" },
-        { weight: 155, reps: 8, type: "working" },
-        { weight: 185, reps: 8, type: "working" },
-        { weight: 185, reps: 8, type: "working" },
-      ]},
-      { name: "Bench Press", variantLabel: "Dumbbells", sets: [
-        { weight: 80, reps: 9, type: "working" },
-        { weight: 75, reps: 9, type: "working" },
-        { weight: 75, reps: 8, type: "working" },
-      ]},
-      { name: "Dip", variantLabel: "Dip Station", sets: [
-        { weight: 0, reps: 9, type: "working" },
-        { weight: 0, reps: 8, type: "working" },
-        { weight: 0, reps: 8, type: "working" },
-      ]},
-      { name: "Overhead Press", variantLabel: "Barbell", sets: [
-        { weight: 135, reps: 6, type: "working" },
-        { weight: 135, reps: 6, type: "working" },
-      ]},
-      { name: "Cable Crossover", variantLabel: "Cable Crossover", sets: [
-        { weight: 27, reps: 15, type: "working" },
-        { weight: 33, reps: 12, type: "working" },
-        { weight: 33, reps: 8,  type: "working" },
-      ]},
-      { name: "Lateral Raise", variantLabel: "Cable (Low Pulley)", sets: [
-        { weight: 20, reps: 13, type: "working" },
-        { weight: 20, reps: 13, type: "working" },
-        { weight: 20, reps: 15, type: "working" },
-      ]},
-      { name: "Tricep Pushdown", variantLabel: "Cable (High Pulley)", sets: [
-        { weight: 120, reps: 15, type: "working" },
-        { weight: 120, reps: 15, type: "working" },
-        { weight: 120, reps: 10, type: "working" },
-      ]},
-      { name: "Tricep Kickback", variantLabel: "Cable (Low Pulley)", sets: [
-        { weight: 30, reps: 10, type: "working" },
-        { weight: 30, reps: 10, type: "working" },
-        { weight: 30, reps: 10, type: "working" },
-      ]},
-      { name: "Machine Chest Press", variantLabel: "Hammer Strength Chest Press", sets: [
-        { weight: 180, reps: 10, type: "working" },
-        { weight: 180, reps: 10, type: "working" },
-        { weight: 180, reps: 10, type: "working" },
-      ]},
-    ],
-  },
-  // ── Session 10 — Pull Day (Coach-prescribed, Mode A) · May 26 ──
-  {
-    id: "h10",
-    name: "Pull Day",
-    date: "2026-05-26",
-    durationSec: 3120, // ~52 min working time
-    exercises: [
-      { name: "Bent-Over Row", variantLabel: "Barbell", sets: [
-        { weight: 135, reps: 8, type: "warmup" },
-        { weight: 225, reps: 6, type: "working" },
-        { weight: 225, reps: 6, type: "working" },
-      ]},
-      { name: "Lat Pulldown", variantLabel: "Cable Lat Pulldown", sets: [
-        { weight: 140, reps: 14, type: "warmup" },
-        { weight: 160, reps: 12, type: "working" },
-        { weight: 180, reps: 10, type: "working" },
-      ]},
-      { name: "Seated Cable Row", variantLabel: "Seated Cable Row", sets: [
-        { weight: 160, reps: 12, type: "warmup" },
-        { weight: 180, reps: 12, type: "working" },
-        { weight: 200, reps: 10, type: "working" },
-      ]},
-      { name: "Bicep Curl", variantLabel: "Barbell", sets: [
-        { weight: 95, reps: 10, type: "working" },
-        { weight: 95, reps: 10, type: "working" },
-      ]},
-    ],
-  },
-  // ── Session 9 — Full Body / Pull·Arms·Legs mixed (user-built, Mode C) · May 25 ──
-  {
-    id: "h9",
-    name: "Full Body",
-    date: "2026-05-25",
-    durationSec: 3300, // est. — timer left running (D-086)
-    exercises: [
-      { name: "Bicep Curl", variantLabel: "Bicep Curl Machine", sets: [
-        { weight: 100, reps: 12, type: "working" },
-        { weight: 100, reps: 12, type: "working" },
-        { weight: 115, reps: 12, type: "working" },
-      ]},
-      { name: "Preacher Curl", variantLabel: "EZ Curl Bar", sets: [
-        { weight: 70, reps: 10, type: "working" },
-        { weight: 70, reps: 10, type: "working" },
-        { weight: 80, reps: 8,  type: "working" },
-      ]},
-      { name: "Bulgarian Split Squat", variantLabel: "Barbell", sets: [
-        { weight: 135, reps: 8, type: "working" },
-        { weight: 185, reps: 8, type: "working" },
-        { weight: 205, reps: 8, type: "working" },
-      ]},
-      { name: "Leg Extension", variantLabel: "Leg Extension Machine", sets: [
-        { weight: 90,  reps: 10, type: "working" },
-        { weight: 120, reps: 10, type: "working" },
-        { weight: 140, reps: 10, type: "working" },
-        { weight: 160, reps: 15, type: "working" },
-      ]},
-      { name: "Back Extension", variantLabel: "Hyperextension Bench", sets: [
-        { weight: 45, reps: 6, type: "working" },
-        { weight: 45, reps: 8, type: "working" },
-        { weight: 45, reps: 8, type: "working" },
-      ]},
-    ],
-  },
-  // ── Session 8 — Push Day (Coach-prescribed, user built different shape, Mode C) · May 24 ──
-  {
-    id: "h8",
-    name: "Push Day",
-    date: "2026-05-24",
-    durationSec: 3684, // 1:01:24
-    exercises: [
-      { name: "Bench Press", variantLabel: "Barbell", sets: [
-        { weight: 135, reps: 10, type: "warmup" },
-        { weight: 205, reps: 8,  type: "working" },
-        { weight: 205, reps: 8,  type: "working" },
-        { weight: 205, reps: 8,  type: "working" },
-        { weight: 225, reps: 4,  type: "working" },
-      ]},
-      { name: "Incline Bench Press", variantLabel: "Dumbbells", sets: [
-        { weight: 60, reps: 10, type: "working" },
-        { weight: 70, reps: 8,  type: "working" },
-        { weight: 70, reps: 8,  type: "working" },
-      ]},
-      { name: "Overhead Press", variantLabel: "Dumbbells", sets: [
-        { weight: 45, reps: 8, type: "working" },
-        { weight: 45, reps: 8, type: "working" },
-        { weight: 50, reps: 9, type: "working" },
-      ]},
-      { name: "Lateral Raise", variantLabel: "Lateral Raise Machine", sets: [
-        { weight: 70, reps: 10, type: "working" },
-        { weight: 75, reps: 12, type: "working" },
-        { weight: 85, reps: 12, type: "working" },
-      ]},
-      { name: "Chest Fly", variantLabel: "Pec Deck", sets: [
-        { weight: 115, reps: 12, type: "working" },
-        { weight: 145, reps: 15, type: "working" },
-        { weight: 165, reps: 12, type: "working" },
-      ]},
-      { name: "Dip", variantLabel: "Dip Station", sets: [
-        { weight: 0, reps: 9,  type: "working" },
-        { weight: 0, reps: 10, type: "working" },
-        { weight: 0, reps: 9,  type: "working" },
-      ]},
-      { name: "Skull Crusher", variantLabel: "Dumbbells", sets: [
-        { weight: 25, reps: 12, type: "working" },
-        { weight: 25, reps: 12, type: "working" },
-        { weight: 25, reps: 12, type: "working" },
-      ]},
-    ],
-  },
-  // ── Session 6 — Push Day (user-built, Mode C) ──
-  // Bench 225×6 confirms the Session 4 grindy 225×5 — anchor moves 205 → 225.
-  // Pec Deck volume scheme retired heavy scheme. Five off-card additions:
-  // Dip, Machine Decline Press (n=2), DB Lateral, DB Front, DB Chest Fly.
-  {
-    id: "h1",
-    name: "Push Day",
-    date: "2026-05-17",
-    durationSec: 4130, // 1:08:50
-    exercises: [
-      { name: "Bench Press", variantLabel: "Barbell", sets: [
-        { weight: 135, reps: 10, type: "warmup" },
-        { weight: 205, reps: 8,  type: "working" },
-        { weight: 225, reps: 6,  type: "working" },
-        { weight: 225, reps: 5,  type: "working" },
-        { weight: 155, reps: 12, type: "drop" },
-      ]},
-      { name: "Incline Bench Press", variantLabel: "Dumbbells", sets: [
-        { weight: 70, reps: 6,  type: "working" },
-        { weight: 60, reps: 10, type: "working" },
-        { weight: 65, reps: 10, type: "working" },
-      ]},
-      { name: "Chest Fly", variantLabel: "Pec Deck", sets: [
-        { weight: 130, reps: 12, type: "working" },
-        { weight: 145, reps: 12, type: "working" },
-        { weight: 145, reps: 12, type: "working" },
-        { weight: 155, reps: 15, type: "working" },
-      ]},
-      { name: "Dip", variantLabel: "Dip Station", sets: [
-        { weight: 0, reps: 8, type: "working" },
-        { weight: 0, reps: 8, type: "working" },
-        { weight: 0, reps: 8, type: "working" },
-      ]},
-      { name: "Machine Decline Press", variantLabel: "Hammer Strength Decline Press", sets: [
-        { weight: 225, reps: 8, type: "working" },
-        { weight: 225, reps: 8, type: "working" },
-        { weight: 225, reps: 8, type: "working" },
-      ]},
-      { name: "Tricep Pushdown", variantLabel: "Cable (High Pulley)", sets: [
-        { weight: 110, reps: 15, type: "working" },
-        { weight: 135, reps: 10, type: "working" },
-        { weight: 135, reps: 8,  type: "working" },
-      ]},
-      { name: "Lateral Raise", variantLabel: "Dumbbells", sets: [
-        { weight: 15, reps: 15, type: "working" },
-        { weight: 15, reps: 15, type: "working" },
-        { weight: 20, reps: 15, type: "working" },
-      ]},
-      { name: "Front Raise", variantLabel: "Dumbbells", sets: [
-        { weight: 15, reps: 10, type: "working" },
-        { weight: 15, reps: 10, type: "working" },
-        { weight: 20, reps: 10, type: "working" },
-      ]},
-      { name: "Chest Fly", variantLabel: "Dumbbells", sets: [
-        { weight: 15, reps: 15, type: "working" },
-        { weight: 15, reps: 15, type: "working" },
-        { weight: 20, reps: 15, type: "working" },
-      ]},
-    ],
-  },
-
-  // ── Session 5 — Back Day (user-built, Mode C) ──
-  // Bent Row 185 was a missed ramp — anchor remains 205. Seated Cable Row 200×10 PR.
-  // Back Extension cold-start, 140–150 provisional.
-  {
-    id: "h2",
-    name: "Back Day",
-    date: "2026-05-12",
-    durationSec: 5677, // 1:34:37
-    exercises: [
-      { name: "Bent-Over Row", variantLabel: "Barbell", sets: [
-        { weight: 95,  reps: 10, type: "working" },
-        { weight: 155, reps: 8,  type: "working" },
-        { weight: 185, reps: 8,  type: "working" },
-      ]},
-      { name: "Lat Pulldown", variantLabel: "Cable Lat Pulldown", sets: [
-        { weight: 160, reps: 10, type: "working" },
-        { weight: 180, reps: 10, type: "working" },
-        { weight: 180, reps: 10, type: "working" },
-      ]},
-      { name: "Seated Cable Row", variantLabel: "Seated Cable Row", sets: [
-        { weight: 160, reps: 10, type: "working" },
-        { weight: 180, reps: 10, type: "working" },
-        { weight: 200, reps: 10, type: "working" },
-      ]},
-      { name: "Back Extension", variantLabel: "Back Extension Machine", sets: [
-        { weight: 140, reps: 10, type: "working" },
-        { weight: 140, reps: 10, type: "working" },
-        { weight: 150, reps: 10, type: "working" },
-      ]},
-    ],
-  },
-
-  // ── Session 4 — Push Day (Coach-prescribed Mode A, mid-prescription
-  // negotiation: Tyler added Cable Crossover from Coach's rec AND
-  // Machine Decline Press as his own add; dropped Overhead Tricep Extension.)
-  // Bench 225×5 grindy PR; Incline DB 75×8 new anchor.
-  {
-    id: "h3",
-    name: "Push Day",
-    date: "2026-05-10",
-    durationSec: 4276, // 1:11:16
-    exercises: [
-      { name: "Incline Bench Press", variantLabel: "Dumbbells", sets: [
-        { weight: 65, reps: 8, type: "working" },
-        { weight: 70, reps: 8, type: "working" },
-        { weight: 75, reps: 8, type: "working" },
-        { weight: 75, reps: 8, type: "working" },
-      ]},
-      { name: "Bench Press", variantLabel: "Barbell", sets: [
-        { weight: 135, reps: 10, type: "warmup" },
-        { weight: 185, reps: 7,  type: "working" },
-        { weight: 205, reps: 7,  type: "working" },
-        { weight: 225, reps: 5,  type: "working" },
-      ]},
-      { name: "Cable Crossover", variantLabel: "Cable Crossover", sets: [
-        { weight: 27, reps: 15, type: "working" },
-        { weight: 33, reps: 12, type: "working" },
-      ]},
-      { name: "Overhead Press", variantLabel: "Dumbbells", sets: [
-        { weight: 45, reps: 8, type: "working" },
-        { weight: 55, reps: 8, type: "working" },
-        { weight: 60, reps: 8, type: "working" },
-      ]},
-      { name: "Lateral Raise", variantLabel: "Cable (Low Pulley)", sets: [
-        { weight: 20, reps: 12, type: "working" },
-        { weight: 20, reps: 12, type: "working" },
-        { weight: 25, reps: 10, type: "working" },
-      ]},
-      { name: "Tricep Pushdown", variantLabel: "Cable (High Pulley)", sets: [
-        { weight: 120, reps: 12, type: "working" },
-        { weight: 135, reps: 12, type: "working" },
-        { weight: 135, reps: 8,  type: "working" },
-      ]},
-      { name: "Machine Decline Press", variantLabel: "Hammer Strength Decline Press", sets: [
-        { weight: 90,  reps: 10, type: "working" },
-        { weight: 180, reps: 10, type: "working" },
-        { weight: 180, reps: 10, type: "working" },
-      ]},
-    ],
-  },
-
-  // ── Session 3 — Leg Day (Mode B, 3 swaps + 2 missing vs prescription;
-  // Tyler ran his own session, Coach had no signal for why) ──
-  // Pyramid-up pattern across all four lifts. Top sets: Hip Thrust 450×8,
-  // Bulgarian 155×8, RDL 225×8, Leg Press 630×8.
-  {
-    id: "h4",
-    name: "Leg Day",
-    date: "2026-05-08",
-    durationSec: 3600, // duration partially captured; ~60min estimate
-    exercises: [
-      { name: "Hip Thrust", variantLabel: "Hip Thrust Machine", sets: [
-        { weight: 90,  reps: 8, type: "working" },
-        { weight: 180, reps: 8, type: "working" },
-        { weight: 270, reps: 8, type: "working" },
-        { weight: 360, reps: 8, type: "working" },
-        { weight: 450, reps: 8, type: "working" },
-      ]},
-      { name: "Bulgarian Split Squat", variantLabel: "Barbell", sets: [
-        { weight: 95,  reps: 10, type: "working" },
-        { weight: 135, reps: 8,  type: "working" },
-        { weight: 155, reps: 8,  type: "working" },
-      ]},
-      { name: "Romanian Deadlift", variantLabel: "Barbell", sets: [
-        { weight: 135, reps: 8, type: "working" },
-        { weight: 185, reps: 8, type: "working" },
-        { weight: 222, reps: 8, type: "working" },
-        { weight: 225, reps: 8, type: "working" },
-      ]},
-      { name: "Leg Press", variantLabel: "Leg Press (45°)", sets: [
-        { weight: 225, reps: 10, type: "working" },
-        { weight: 360, reps: 10, type: "working" },
-        { weight: 495, reps: 10, type: "working" },
-        { weight: 585, reps: 8,  type: "working" },
-        { weight: 630, reps: 8,  type: "working" },
-      ]},
-    ],
-  },
-
-  // ── Session 2 — Pull Day (Coach-prescribed Mode A) ──
-  // Bent Row 205×8 new anchor. Pull-Ups submax. Lat Pulldown 180 + Seated
-  // Row 180 same working weight (worth cycling one heavier).
-  {
-    id: "h5",
-    name: "Pull Day",
-    date: "2026-05-05",
-    durationSec: 4457, // 1:14:17
-    exercises: [
-      { name: "Bent-Over Row", variantLabel: "Barbell", sets: [
-        { weight: 135, reps: 8, type: "working" },
-        { weight: 185, reps: 8, type: "working" },
-        { weight: 195, reps: 8, type: "working" },
-        { weight: 205, reps: 8, type: "working" },
-      ]},
-      { name: "Pull-Up", variantLabel: "Pull-Up Bar", sets: [
-        { weight: 0, reps: 8, type: "working" },
-        { weight: 0, reps: 8, type: "working" },
-        { weight: 0, reps: 8, type: "working" },
-        { weight: 0, reps: 7, type: "working" },
-      ]},
-      { name: "Lat Pulldown", variantLabel: "Cable Lat Pulldown", sets: [
-        { weight: 160, reps: 10, type: "working" },
-        { weight: 160, reps: 10, type: "working" },
-        { weight: 180, reps: 10, type: "working" },
-      ]},
-      { name: "Seated Cable Row", variantLabel: "Seated Cable Row", sets: [
-        { weight: 160, reps: 10, type: "working" },
-        { weight: 160, reps: 10, type: "working" },
-        { weight: 180, reps: 10, type: "working" },
-      ]},
-      { name: "Face Pull", variantLabel: "Cable (High Pulley)", sets: [
-        { weight: 50, reps: 10, type: "working" },
-        { weight: 50, reps: 10, type: "working" },
-        { weight: 60, reps: 10, type: "working" },
-      ]},
-      { name: "Bicep Curl", variantLabel: "Cable (Low Pulley)", sets: [
-        { weight: 80, reps: 9, type: "working" },
-        { weight: 70, reps: 8, type: "working" },
-        { weight: 70, reps: 8, type: "working" },
-      ]},
-    ],
-  },
-
-  // ── Session 1 — Push Day (Coach-prescribed Mode A) ──
-  // First logged session. Bench 205×8 anchor. OHTE skipped on time
-  // constraint — first of two consecutive Push skips that confirm the
-  // rotate-out preference.
-  {
-    id: "h6",
-    name: "Push Day",
-    date: "2026-05-03",
-    durationSec: 4040, // 1:07:20
-    exercises: [
-      { name: "Bench Press", variantLabel: "Barbell", sets: [
-        { weight: 135, reps: 10, type: "warmup" },
-        { weight: 185, reps: 8,  type: "working" },
-        { weight: 205, reps: 8,  type: "working" },
-        { weight: 205, reps: 8,  type: "working" },
-        { weight: 205, reps: 6,  type: "working" },
-        { weight: 135, reps: 8,  type: "drop" },
-      ]},
-      { name: "Incline Bench Press", variantLabel: "Dumbbells", sets: [
-        { weight: 70, reps: 6, type: "working" },
-      ]},
-      { name: "Overhead Press", variantLabel: "Dumbbells", sets: [
-        { weight: 40, reps: 8,  type: "working" },
-        { weight: 40, reps: 8,  type: "working" },
-        { weight: 40, reps: 10, type: "working" },
-      ]},
-      { name: "Lateral Raise", variantLabel: "Cable (Low Pulley)", sets: [
-        { weight: 20, reps: 12, type: "working" },
-        { weight: 20, reps: 12, type: "working" },
-        { weight: 30, reps: 8,  type: "working" },
-      ]},
-      { name: "Chest Fly", variantLabel: "Pec Deck", sets: [
-        { weight: 145, reps: 14, type: "working" },
-        { weight: 175, reps: 8,  type: "working" },
-        { weight: 160, reps: 9,  type: "working" },
-        { weight: 160, reps: 9,  type: "working" },
-      ]},
-      { name: "Tricep Pushdown", variantLabel: "Cable (High Pulley)", sets: [
-        { weight: 90,  reps: 15, type: "working" },
-        { weight: 120, reps: 12, type: "working" },
-        { weight: 120, reps: 12, type: "working" },
-      ]},
-    ],
-  },
-];
+/* Session 78 — FACTORY WIPE (owner call): the hand-encoded dogfooding
+   history that seeded every fresh install is gone. New installs start with
+   an empty log; the historical dataset lives on ONLY as fixtures inside
+   engine_tests.js (the suite still validates the engines against it).
+   The constant name survives so the hydration fallbacks stay untouched. */
+const MOCK_WORKOUT_HISTORY = [];
 
 /* ── Coach's File mock seed data (Bible §6.5, v26) ────────────────
    The Coach's File landing surfaces four kinds of data that don't yet
@@ -7086,124 +6475,31 @@ const MOCK_WORKOUT_HISTORY = [
 const NOW_FOR_SEED = Date.now();
 const DAY = 24 * 60 * 60 * 1000;
 
-const MOCK_COACH_RULES = [
-  { id: "r1", text: "Finish every Pull/Back day with Back Extension", createdAt: NOW_FOR_SEED - 0 * DAY },
-  { id: "r2", text: "Don't program deadlifts", createdAt: NOW_FOR_SEED - 14 * DAY },
-];
+/* Session 78 — FACTORY WIPE (owner call): seeded rules, observations,
+   benchmark rows, and body stats removed. Coach's File now starts truly
+   empty — nothing appears in it that the user didn't put there (the same
+   principle the S78 survey/observation design locks: nothing is "known"
+   until the user confirmed it). Historical seed data lives on as fixtures
+   in engine_tests.js. Constant names retained for the hydration and
+   logout fallbacks. */
+const MOCK_COACH_RULES = [];
 
-const MOCK_COACH_OBSERVATIONS = [
-  { id: "o1", text: "Pyramid-up ramping on leg compounds", createdAt: NOW_FOR_SEED - 9 * DAY, tier: 3,
-    provenance: { sessions: ["Leg Day · May 8"],
-      signal: "Deliberate ramp-to-max on Hip Thrust (90→180→270→360→450), Leg Press (225→360→495→585→630), RDL (135→185→222→225), and Bulgarian Split Squat (95→135→155) — confirmed verbally as preferred training style on leg compounds" } },
-  { id: "o2", text: "Cold-start calibration on unfamiliar lifts", createdAt: NOW_FOR_SEED - 5 * DAY, tier: 3,
-    provenance: { sessions: ["Push Day · May 3", "Pull Day · May 5", "Push Day · May 10", "Push Day · May 17"],
-      signal: "On lifts with no prior anchor data, first set is a sight-light (e.g. Pec Deck 145→175→160, Bicep Curl 80→70, Machine Decline Press 90→180, Back Extension 140→150). Once anchor data exists, works from the anchor with no test-then-settle behavior" } },
-  { id: "o3", text: "Doesn't like Overhead Tricep Extension as a standing slot", createdAt: NOW_FOR_SEED - 7 * DAY, tier: 2,
-    provenance: { sessions: ["Push Day · May 3", "Push Day · May 10"],
-      signal: "Skipped on two consecutive Push days. Confirmed verbally as filler — happy to be suggested occasionally but not on the standing card" } },
-  { id: "o4", text: "Batch-logs weights after the exercise, not between sets", createdAt: NOW_FOR_SEED - 8 * DAY, tier: 3,
-    provenance: { sessions: ["Leg Day · May 8", "Back Day · May 12", "Pull Day · May 26", "Back Day · May 31", "Leg Day · Jun 2"],
-      signal: "Rest-timer values between sets frequently 0–10s, then a single large gap before the next exercise — consistent with logging the full exercise at once rather than after each set. Also leaves the session timer running past the workout (S12 ~28h, S13 ~95-min trailing rest) — duration is best-effort only per D-086. Rest values must not be referenced by Coach" } },
-  { id: "o5", text: "Machine press (chest/decline) — keep in occasional rotation on Push", createdAt: NOW_FOR_SEED - 0 * DAY, tier: 2,
-    encodedAs: "occasional", encodedAt: new Date("2026-05-31T12:00:00").getTime(), refreshDueAt: new Date("2026-11-30T12:00:00").getTime(),
-    provenance: { sessions: ["Push Day · May 10", "Push Day · May 17", "Push Day · May 31"],
-      signal: "Recurring off-card machine-press add across Push sessions (HS Decline 180×10 at S4, 225×8 at S6; HS Chest Press 180×10 at S11). n=3 inquiry surfaced S11; user selected \"Keep as occasional.\" Originally encoded as one Machine Press lift (D-082, mixed variants); the D-085 split now separates these into Machine Chest Press and Machine Decline Press, so the preference spans both and enters the D-083 rotation pool — one surfaces in ~1 of 3-5 Push prescriptions, not every one. 6-month refresh due Nov 30, 2026" } },
-];
+const MOCK_COACH_OBSERVATIONS = [];
 
-// Benchmark rows render only if isPR or isNew. Each row's achievedAt is the
-// absolute date of the session that established the anchor, parsed from the
-// workout date so the timestamp doesn't drift as NOW_FOR_SEED moves.
-// Anchors are deduped to the most-recent occurrence per (exercise, variant).
 const _D = (iso) => new Date(iso + "T12:00:00").getTime();
-const MOCK_PROGRESS_PRS = [
-  // ── Session 17 · Jul 5 ──
-  { id: "p41", exerciseName: "Overhead Press (Smith)",         value: "155 × 6",  isPR: false, isNew: true,  achievedAt: _D("2026-07-05") },
-  // ── Session 15 · Jun 28 ──
-  { id: "p40", exerciseName: "Machine Shoulder Press",         value: "205 × 8",  isPR: false, isNew: true,  achievedAt: _D("2026-06-28") },
-  // ── Session 13 · Jun 2 ──
-  { id: "p24", exerciseName: "Leg Extension",                  value: "195 × 15", isPR: true,  isNew: false, achievedAt: _D("2026-06-02") },
-  { id: "p25", exerciseName: "Bulgarian Split Squat (Smith)",  value: "225 × 8",  isPR: false, isNew: true,  achievedAt: _D("2026-06-02") },
-  { id: "p26", exerciseName: "Leg Curl (Seated)",              value: "140 × 12", isPR: false, isNew: true,  achievedAt: _D("2026-06-02") },
-  // ── Session 12 · May 31 ──
-  { id: "p27", exerciseName: "Iso Lateral Row",                value: "115 × 10", isPR: false, isNew: true,  achievedAt: _D("2026-05-31") },
-  { id: "p28", exerciseName: "T-Bar Row",                      value: "205 × 12", isPR: false, isNew: true,  achievedAt: _D("2026-05-31") },
-  // ── Session 11 · May 31 ──
-  { id: "p29", exerciseName: "Incline Barbell Press",          value: "185 × 8",  isPR: false, isNew: true,  achievedAt: _D("2026-05-31") },
-  { id: "p30", exerciseName: "DB Bench Press",                 value: "80 × 9",   isPR: false, isNew: true,  achievedAt: _D("2026-05-31") },
-  { id: "p31", exerciseName: "Barbell Overhead Press",         value: "135 × 6",  isPR: false, isNew: true,  achievedAt: _D("2026-05-31") },
-  { id: "p32", exerciseName: "Tricep Kickback",                value: "30 × 10",  isPR: false, isNew: true,  achievedAt: _D("2026-05-31") },
-  { id: "p33", exerciseName: "Machine Chest Press",       value: "275 × 8",  isPR: true,  isNew: false, achievedAt: _D("2026-06-28") },
-  // ── Session 10 · May 26 ──
-  { id: "p34", exerciseName: "Bicep Curl (Barbell)",           value: "95 × 10",  isPR: false, isNew: true,  achievedAt: _D("2026-05-26") },
-  // ── Session 9 · May 25 ──
-  { id: "p35", exerciseName: "Bicep Curl (Machine)",           value: "100 × 12", isPR: false, isNew: true,  achievedAt: _D("2026-05-25") },
-  { id: "p36", exerciseName: "Preacher Curl (EZ Bar)",         value: "80 × 8",   isPR: false, isNew: true,  achievedAt: _D("2026-05-25") },
-  { id: "p37", exerciseName: "Back Extension (Hyperext.)",     value: "45 × 8",   isPR: false, isNew: true,  achievedAt: _D("2026-05-25") },
-  // ── Session 8 · May 24 ──
-  { id: "p38", exerciseName: "Machine Lateral Raise",          value: "90 × 12",  isPR: true,  isNew: false, achievedAt: _D("2026-07-05") },
-  { id: "p39", exerciseName: "DB Skull Crusher",               value: "25 × 12",  isPR: false, isNew: true,  achievedAt: _D("2026-05-24") },
-  // ── Session 6 · May 17 ──
-  { id: "p1",  exerciseName: "Bench Press (Barbell)",          value: "225 × 6",  isPR: true,  isNew: false, achievedAt: _D("2026-05-17") },
-  { id: "p2",  exerciseName: "Pec Deck Chest Fly",             value: "155 × 15", isPR: false, isNew: true,  achievedAt: _D("2026-05-17") },
-  { id: "p3",  exerciseName: "Machine Decline Press",     value: "225 × 12", isPR: true,  isNew: false, achievedAt: _D("2026-06-21") },
-  { id: "p4",  exerciseName: "Dip (Bodyweight)",               value: "BW × 10",  isPR: true,  isNew: false, achievedAt: _D("2026-05-24") },
-  { id: "p5",  exerciseName: "DB Lateral Raise",               value: "20 × 15",  isPR: false, isNew: true,  achievedAt: _D("2026-05-17") },
-  { id: "p6",  exerciseName: "DB Front Raise",                 value: "25 × 10",  isPR: true,  isNew: false, achievedAt: _D("2026-07-05") },
-  { id: "p7",  exerciseName: "DB Chest Fly",                   value: "20 × 15",  isPR: false, isNew: true,  achievedAt: _D("2026-05-17") },
-  // ── Session 5 · May 12 ──
-  { id: "p8",  exerciseName: "Seated Cable Row",               value: "209 × 10", isPR: true,  isNew: false, achievedAt: _D("2026-05-31") },
-  { id: "p9",  exerciseName: "Back Extension Machine",         value: "150 × 10", isPR: false, isNew: true,  achievedAt: _D("2026-05-12") },
-  // ── Session 4 · May 10 ──
-  { id: "p10", exerciseName: "Incline DB Press",               value: "75 × 8",   isPR: false, isNew: true,  achievedAt: _D("2026-05-10") },
-  { id: "p11", exerciseName: "Cable Crossover",                value: "33 × 12",  isPR: false, isNew: true,  achievedAt: _D("2026-05-10") },
-  { id: "p12", exerciseName: "DB Overhead Press",              value: "55 × 8",   isPR: true,  isNew: false, achievedAt: _D("2026-05-10") },
-  { id: "p13", exerciseName: "Cable Lateral Raise",            value: "30 × 8",   isPR: true,  isNew: false, achievedAt: _D("2026-06-28") },
-  { id: "p14", exerciseName: "Tricep Pushdown",                value: "135 × 12", isPR: true,  isNew: false, achievedAt: _D("2026-05-10") },
-  // ── Session 3 · May 8 ──
-  { id: "p15", exerciseName: "Hip Thrust (Machine)",           value: "450 × 8",  isPR: false, isNew: true,  achievedAt: _D("2026-05-08") },
-  { id: "p16", exerciseName: "Bulgarian Split Squat (Barbell)", value: "205 × 8",  isPR: true,  isNew: false, achievedAt: _D("2026-05-25") },
-  { id: "p17", exerciseName: "Romanian Deadlift (Barbell)",    value: "225 × 8",  isPR: false, isNew: true,  achievedAt: _D("2026-05-08") },
-  { id: "p18", exerciseName: "Leg Press (45°)",                value: "630 × 8",  isPR: false, isNew: true,  achievedAt: _D("2026-05-08") },
-  // ── Session 2 · May 5 ──
-  { id: "p19", exerciseName: "Bent-Over Row (Barbell)",        value: "225 × 8",  isPR: true,  isNew: false, achievedAt: _D("2026-07-01") },
-  { id: "p20", exerciseName: "Lat Pulldown (Cable)",           value: "180 × 10", isPR: false, isNew: true,  achievedAt: _D("2026-05-05") },
-  { id: "p21", exerciseName: "Pull-Up (Bodyweight)",           value: "BW × 9",   isPR: true,  isNew: false, achievedAt: _D("2026-05-31") },
-  { id: "p22", exerciseName: "Face Pull",                      value: "60 × 10",  isPR: false, isNew: true,  achievedAt: _D("2026-05-05") },
-  { id: "p23", exerciseName: "Cable Bicep Curl (Low Pulley)",  value: "70 × 8",   isPR: false, isNew: true,  achievedAt: _D("2026-05-05") },
-];
-
-// Mock weight log generator. Produces ~30 days of weigh-ins trending
-// slightly downward from a baseline, with realistic noise so the chart
-// has something to render in development. Cadence is daily-ish with
-// occasional skipped days — matches typical user behavior. Used only
-// for prototype mock data; real users start with an empty log.
-const generateMockWeightLog = (baselineLb, days = 30, trendDelta = -3) => {
-  const log = [];
-  for (let i = days - 1; i >= 0; i--) {
-    // Skip ~15% of days to simulate gaps.
-    if (Math.random() < 0.15) continue;
-    // Pseudo-random but deterministic noise — water/food/etc.
-    const noise = (Math.sin(i * 1.3) + Math.cos(i * 0.7)) * 0.8;
-    const progress = (days - 1 - i) / (days - 1); // 0 → 1 from oldest to newest
-    const targetWeight = baselineLb + (trendDelta * progress) + noise;
-    log.push({
-      id: `w${i}`,
-      lb: Math.round(targetWeight * 10) / 10, // one decimal
-      loggedAt: NOW_FOR_SEED - i * DAY,
-    });
-  }
-  return log;
-};
+const MOCK_PROGRESS_PRS = [];
 
 const MOCK_BODY_STATS = {
-  heightIn: 78,                                                     // 6'6"
-  weightLog: [{ id: "w0", lb: 235, loggedAt: NOW_FOR_SEED }],       // single entry today
+  heightIn: null,
+  weightLog: [],
   weightGoalTarget: null,
   weightGoalDirection: null,
-  ageRange: "18–24",
-  ageYears: 23,
-  gender: "Male",
+  ageRange: null,
+  ageYears: null,
+  gender: null,
 };
+
+// (S78: benchmark-row, weight-log-generator, and body-stat seeds removed — see wipe note above.)
 
 /* Auto-naming logic per spec: derived from primary muscle groups of
    exercises in the session. Empty session → date + time-of-day fallback.
@@ -11123,6 +10419,15 @@ function HistoryRecapSheet({ session, onClose, onRepeat, onEdit, onDelete }) {
   // Hooks live ABOVE the early return (§15 hygiene — same fix as
   // WorkoutTab; an early return before a hook is a conditional hook).
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  // S78 QoL (owner report): the delete-confirm replaces the button at the
+  // very bottom of the detail sheet, below the fold — the user had to
+  // scroll manually just to see what popped up. The app scrolls for them.
+  const deleteConfirmRef = useRef(null);
+  useEffect(() => {
+    if (confirmingDelete && deleteConfirmRef.current) {
+      try { deleteConfirmRef.current.scrollIntoView({ behavior: "smooth", block: "end" }); } catch { /* older WebKit */ }
+    }
+  }, [confirmingDelete]);
   if (!session) return null;
   const volume = totalVolumeFromExercises(session.exercises);
   return (
@@ -11232,7 +10537,7 @@ function HistoryRecapSheet({ session, onClose, onRepeat, onEdit, onDelete }) {
               Delete Workout
             </button>
           ) : (
-            <div style={{
+            <div ref={deleteConfirmRef} style={{
               marginTop: 10, padding: 14, borderRadius: 10,
               background: "#3A1A1A", border: "1px solid #5A2A2A",
             }}>
@@ -11676,6 +10981,11 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
   // S76: true while real tokens are streaming into a live bubble — the
   // thinking indicator yields to the growing text the moment this flips.
   const [liveTokens, setLiveTokens] = useState(false);
+  // S78: true from the moment the live extractor detects the workout JSON
+  // starting mid-stream until the generation lands. The intro paragraph is
+  // frozen on screen and the indicator reads "Building your workout…" —
+  // the user never sees JSON and never sees streamed text retracted.
+  const [liveBuilding, setLiveBuilding] = useState(false);
   // True while the mock Coach reply is mid-stream (between first-token and
   // final-token). Used to gate the send button so the user can't fire a
   // second message on top of a streaming one. The bubble renderer reads
@@ -12097,9 +11407,13 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
       onText: (full) => {
         if (liveMsgId && onGenIsCurrent(reqChatId)) onUpdateMessage(reqChatId, liveMsgId, { text: full });
       },
+      onBuilding: () => {
+        if (onGenIsCurrent(reqChatId)) setLiveBuilding(true);
+      },
       onAbort: () => {
         if (liveMsgId) { onRemoveMessage(reqChatId, liveMsgId); liveMsgId = null; }
         setLiveTokens(false);
+        setLiveBuilding(false);
       },
     };
   };
@@ -12114,21 +11428,42 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
   //   error                  → retract, canned error via word-burst
   const landCoachResult = (res, reqChatId, liveH) => {
     setLiveTokens(false);
+    setLiveBuilding(false);
     if (!onGenIsCurrent(reqChatId)) {
       if (liveH.id()) onRemoveMessage(reqChatId, liveH.id());
       return;
     }
     onGenEnd(reqChatId);
     if (res && res.kind === "workout") {
-      if (liveH.id()) { onRemoveMessage(reqChatId, liveH.id()); liveH.clear(); }
       const b = coachWorkoutToBubble(res.coachWorkout, (id) => (COACH_LIB_INDEX[id] ? COACH_LIB_INDEX[id].name : id));
-      streamText(`${b.intro}\n`, {
-        role: "coach", kind: "workout",
-        workout: { title: b.title, exercises: b.exercises },
-        intro: b.intro, outro: b.outro,
-        coachWorkout: res.coachWorkout,
-        _toolCalls: (res && res._toolCalls) || null,
-      }, reqChatId);
+      // S78 intro-first: the coaching paragraph Coach wrote before the JSON
+      // is the intro the user already watched stream. Keep it — never
+      // retract streamed words. Fallback to the auto one-liner only when
+      // the model skipped the intro entirely.
+      const intro = (res.preamble && res.preamble.trim()) ? res.preamble.trim() : b.intro;
+      if (liveH.id()) {
+        // The live bubble already holds the streamed intro: finalize it in
+        // place as the workout message — the card materializes beneath the
+        // exact words the user just read. (Pre-S78 this path REMOVED the
+        // bubble and re-burst a one-liner — the owner-reported flicker.)
+        onUpdateMessage(reqChatId, liveH.id(), {
+          kind: "workout", text: `${intro}\n`,
+          workout: { title: b.title, exercises: b.exercises },
+          intro, outro: b.outro,
+          coachWorkout: res.coachWorkout,
+          _toolCalls: (res && res._toolCalls) || null,
+          streaming: false,
+        });
+        liveH.clear();
+      } else {
+        streamText(`${intro}\n`, {
+          role: "coach", kind: "workout",
+          workout: { title: b.title, exercises: b.exercises },
+          intro, outro: b.outro,
+          coachWorkout: res.coachWorkout,
+          _toolCalls: (res && res._toolCalls) || null,
+        }, reqChatId);
+      }
     } else if (res && res.kind === "reply") {
       if (liveH.id()) {
         onUpdateMessage(reqChatId, liveH.id(), {
@@ -12707,7 +12042,7 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
             accent, slides in where the next Coach message will appear. The
             three dots animate in sequence. Removed the moment a real Coach
             message is appended. */}
-        {((isThinking && !liveTokens) || seedThinking) && (
+        {((isThinking && !liveTokens) || seedThinking || liveBuilding) && (
           <div style={{ marginBottom: 12, display: "flex", justifyContent: "flex-start" }}>
             <div style={{
               padding: "10px 14px",
@@ -12717,7 +12052,7 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
               fontFamily: "Georgia, 'Times New Roman', serif",
               display: "flex", alignItems: "center", gap: 2,
             }}>
-              Coach is thinking
+              {liveBuilding ? "Building your workout" : "Coach is thinking"}
               <span style={{ display: "inline-flex", gap: 2, marginLeft: 4 }}>
                 <span style={{ animation: "coachDot 1.4s infinite", animationDelay: "0s" }}>.</span>
                 <span style={{ animation: "coachDot 1.4s infinite", animationDelay: "0.2s" }}>.</span>
@@ -17877,7 +17212,7 @@ export default function MYGFitness() {
   // Collected on the Name screen (Screen 8). Defaults to Tyler if the
   // user skips or leaves it blank. Threaded to Home, Profile, and Coach
   // so the name renders identically everywhere. See Bible §6.1.
-  const [userName, setUserName] = useState(h.userName || "Tyler");
+  const [userName, setUserName] = useState(h.userName || "");
 
   // ── Fitness level + time-away ──
   // Collected on Screens 3 and 3b. fitnessLevel ∈ {beginner, intermediate, advanced, null}.
@@ -18307,7 +17642,7 @@ export default function MYGFitness() {
   // have no snapshot the file is "opened today" — store now. Last update
   // is whichever of the section mutations was most recent.
   const [coachFileOpenedAt, setCoachFileOpenedAt] = useState(typeof h.coachFileOpenedAt === "number" ? h.coachFileOpenedAt : Date.now());
-  const [coachFileLastUpdatedAt, setCoachFileLastUpdatedAt] = useState(typeof h.coachFileLastUpdatedAt === "number" ? h.coachFileLastUpdatedAt : NOW_FOR_SEED - 2 * DAY);
+  const [coachFileLastUpdatedAt, setCoachFileLastUpdatedAt] = useState(typeof h.coachFileLastUpdatedAt === "number" ? h.coachFileLastUpdatedAt : Date.now());
   // Settings prefs surfaced on the Settings sub-screen.
   const [unitsPref, setUnitsPref] = useState(h.unitsPref === "kg" ? "kg" : "lbs");
   const [streakRemindersOn, setStreakRemindersOn] = useState(typeof h.streakRemindersOn === "boolean" ? h.streakRemindersOn : true);
@@ -19312,7 +18647,7 @@ export default function MYGFitness() {
     setOpenHistoryId(null);
     setActiveTab("home");
     setAppSubScreen(null);
-    setUserName("Tyler");
+    setUserName("");
     setSelectedEquipment(new Set(PRESETS.full));
     setFitnessLevel("advanced");
     setTimeAway("current");
@@ -19341,7 +18676,7 @@ export default function MYGFitness() {
     setProgressPRs(MOCK_PROGRESS_PRS);
     setBodyStats(MOCK_BODY_STATS);
     setCoachFileOpenedAt(Date.now());
-    setCoachFileLastUpdatedAt(NOW_FOR_SEED - 2 * DAY);
+    setCoachFileLastUpdatedAt(Date.now());
     setUnitsPref("lbs");
     setStreakRemindersOn(true);
     setLeaderboardOn(false);
