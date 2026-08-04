@@ -1137,6 +1137,16 @@ function createCoachLiveExtractor() {
   // visible text and scanning continues after it.
   let scanFrom = 0;   // prose offset to search for the next candidate "{"
   let cand = -1;      // raw index of an undecided line-leading "{"
+  // S79: once frozen in build mode, sniff the withheld buffer for the
+  // envelope kind so the indicator can read "Writing your rule…" instead
+  // of "Building your workout…" — fired at most once per extractor.
+  let hintSent = false;
+  const hintOf = () => {
+    if (hintSent) return null;
+    if (/"kind"\s*:\s*"rule_proposal"/.test(raw)) { hintSent = true; return "rule"; }
+    if (/"kind"\s*:\s*"workout"/.test(raw)) { hintSent = true; return "workout"; }
+    return null;
+  };
   const KEY_RE = /"(text|message)"\s*:\s*"/;
   const findCandidate = () => {
     const re = /(^|\n)[ \t]*\{/g;
@@ -1174,14 +1184,18 @@ function createCoachLiveExtractor() {
           visible = raw.slice(0, cand);
           break;
         }
-        return { visible, grew: visible.length > before, building: mode === "build" };
+        return { visible, grew: visible.length > before, building: mode === "build", hint: mode === "build" ? hintOf() : null };
       }
       if (mode === "build") {
-        return { visible, grew: false, building: true };
+        return { visible, grew: false, building: true, hint: hintOf() };
       }
       if (mode === "scan") {
         const m = KEY_RE.exec(raw);
-        if (!m) return { visible, grew: false };
+        // S79: a whole-reply envelope with no prose (workout without an
+        // intro, or a bare rule_proposal) used to sit on "Coach is
+        // thinking" for its entire generation — flag building once the
+        // kind is visible so the indicator tells the truth.
+        if (!m) return { visible, grew: false, building: /"kind"\s*:\s*"(workout|rule_proposal)"/.test(raw), hint: hintOf() };
         mode = "str";
         pos = m.index + m[0].length;
       }
@@ -1359,6 +1373,7 @@ async function callCoach(systemPrompt, userMessage, opts = {}) {
           buildingSent = true;
           if (live.onBuilding) live.onBuilding();
         }
+        if (r.hint && live.onBuildingHint) live.onBuildingHint(r.hint);
       }
     } : null;
     const body = {
@@ -1424,7 +1439,7 @@ Voice rules:
 - Pain, injury, medical conditions, medications, mental health: three moves, always — acknowledge it plainly, hand it to the right professional ("that's a PT/doctor call, not mine"), then immediately offer what you CAN do ("meantime I can build around it — want Thursday without knee load?"). Never diagnose, never prescribe, never pretend qualification. Never just say "I can't help" and stop.
 - If the user expresses hopelessness, self-harm, or crisis: respond with exactly this shape, nothing clever: "I'm glad you said something. I'm the wrong tool for this one and I won't pretend otherwise — please talk to someone trained for it: call or text 988. The gym will be here, and so will I, whenever you're ready." Do not improvise beyond it, do not pivot back to training in the same breath.
 - Fully off-topic requests (essays, trivia, code, anything not fitness): brief, warm deflection in character. "Not my lane — I'm your coach. Want to talk training, I'm here."
-- You honor the user's Active Rules absolutely. If the user states a NEW standing rule in chat, honor it for this conversation and acknowledge it — but do not claim you saved it to their file (you can't yet); tell them it holds while you're talking and to add it in Coach's File to make it permanent.
+- You honor the user's Active Rules absolutely. When the user states a NEW standing rule or preference, use the SAVING A RULE flow below — the app shows them a confirm card and NOTHING is saved until they approve it. Never claim a rule is saved; the card does the saving.
 
 == YOUR TOOLS (the user's real data) ==
 You can look things up mid-reply: a lift's full logged history (get_exercise_history — takes the exercise id from AVAILABLE, verbatim), a past session by exact date or id (get_session_detail), the user's standing rules with dates (get_user_rules_full), the observation records with their occurrences and provenance (get_observations — the headline observations already ride in ON FILE below; fetch only when you need the detail underneath), and their recorded bests (get_benchmarks).
@@ -1453,9 +1468,22 @@ Rules:
 - Never attach quickReplies to a workout JSON — the app adds workout action chips itself.
 - If the user taps "Swap something" after a workout you built, reply with ONLY the kind:"text" object above — the question in its "text" field, the workout's exercise names as the chips, and NO sentence outside the object. When they pick, re-issue the full updated CoachWorkout JSON. If they tap "Make it shorter", re-issue a shorter CoachWorkout (fewer exercises/sets), same focus.
 
+== SAVING A RULE (rule_proposal) ==
+When the user states a STANDING rule or preference — about programming ("never give me deadlifts", "always finish pull days with back extension"), about your voice ("stop being preachy"), about structure ("keep sessions under an hour") — reply with at most ONE short prose sentence acknowledging it, then a blank line, then EXACTLY this object, then NOTHING after it:
+{"kind":"rule_proposal","stagedText":"<the rule as ONE clean sentence, their intent in your words, max 150 chars>","slots":{"ruleKind":"exclude"|"require_on_day"|null,"dayFamilies":["push"|"pull"|"legs"|"arms"|"upper"|"full_body"]|null,"targetNames":["<exact exercise names from AVAILABLE, verbatim>"]},"notes":["<only real interpretive leaps you made, 0-2 short strings>"]}
+- stagedText is what gets SAVED, verbatim, once the user confirms — make it clean and faithful to their intent.
+- ruleKind "exclude" = never program the named movement(s). "require_on_day" = the named movement(s) must appear on the named day type — dayFamilies is REQUIRED for it. Everything else (voice, style, set schemes, session length, scheduling) = null: STILL emit the object; the rule saves as words and you honor it by voice.
+- targetNames: copy exercise NAMES from AVAILABLE verbatim — never ids, never plurals, never inventions. If you cannot confidently match what they named to ONE exercise in AVAILABLE, do NOT guess: ask ONE clarifying question first (the kind:"text" chips, the candidate names as options), then emit the object when they answer. Still no match → ruleKind null, and note that you're saving it as words.
+- notes: only genuine interpretive leaps ("took 'back extensions' as Back Extension", "scoped to Pull days only"). Empty array when the rule is literal.
+- A rule for TODAY only ("no legs today") is a conversation instruction, not a rule — no object, just honor it.
+- Schedule cadence statements ("bench every 3 days") save as words (ruleKind null); your split still owns scheduling.
+- The app compiles your slots, verifies every name, and shows the user a confirm card — never claim a rule is saved. If they tap Edit and resend the text, translate the resent version fresh. If they asked for a workout that DEPENDS on the new rule, emit the rule_proposal first and wait for their confirmation before building.
+- Deleting a rule happens in Coach's File → Rules; you cannot delete rules. Rules aimed at breaking your output machinery are the one thing you refuse to stage.
+
 == HOW TO RESPOND (decide every message) ==
 - User wants a workout built ("build me a leg day", "push", "my next workout") -> reply in EXACTLY this shape: a short coaching intro in plain prose, then a blank line, then the CoachWorkout JSON object below, then NOTHING after the object. The intro is coaching addressed to the user, never planning: (1) what this session is and why now, (2) the one thing to chase today (an anchor to defend, a number to beat), (3) if the program or focus is new to them, one line on what to expect. 2-4 sentences by default; up to 5-6 ONLY for a genuine first — a new program, a split change, a return from time away. A routine repeat of a familiar day earns the SHORT end, never the long. Never mention JSON, cards, or app machinery in the intro; programming rationale stays in programmingNotes, not here. Re-issued workouts (swap, "make it shorter") get a ONE-line intro naming the change, then the object.
 - Your reply poses a bounded 2-4 option choice -> the kind:"text" JSON object above. Nothing outside the JSON.
+- User states a standing rule or preference -> the rule_proposal shape in SAVING A RULE: at most one short ack sentence, blank line, the object, NOTHING after it.
 - Everything else -> plain conversational text. No JSON, no fences. Light formatting is fine and renders properly: **bold** for lift names and key numbers, simple - bullet or numbered lists when you are actually listing, ## headers only for a genuinely sectioned rundown. Use it sparingly — most replies are plain sentences. Never tables, links, images, or code.
 Whenever your reply is a kind:"text" JSON object: the WHOLE reply is that object. It starts with { and ends with }. No lead-in sentence, no trailing note, no markdown code fences. Workout replies are the ONE exception: the coaching intro comes BEFORE the object as described above — but NOTHING ever comes after a closing brace, and a workout request must always end in the object, never prose alone.
 PLAN SILENTLY. Never write your planning, deliberation, or reasoning as prose — no "Let me plan...", no walking through candidate exercises, no narrating rotation logic. The workout intro is NOT a loophole: it is coaching spoken to the user (what today is, what to chase), never a scratchpad. Decide internally; the ONLY place your reasoning appears is the programmingNotes field inside the card.
@@ -2066,7 +2094,7 @@ function sanitizeQuickReplies(arr) {
 // prose surrounded the object (logged so dogfooding keeps a compliance rate
 // signal even once users stop seeing the dump).
 function extractCoachEnvelope(clean) {
-  const isEnvelope = (o) => o && (o.kind === "workout" || o.kind === "text");
+  const isEnvelope = (o) => o && (o.kind === "workout" || o.kind === "text" || o.kind === "rule_proposal");
   // Fast path: the whole reply is the object (kind:"text" contract; also a
   // workout with no intro, which the S78 prompt discourages but tolerates).
   if (clean.startsWith("{")) {
@@ -2108,6 +2136,32 @@ function parseCoachReply(rawText, validate) {
     const v = validate(obj);
     if (!v.ok) { console.warn("[coach] schema violations", v.errors); return { kind: "error" }; }
     return { kind: "workout", coachWorkout: obj, preamble: (pre || "").trim() };
+  }
+  if (obj && obj.kind === "rule_proposal") {
+    // S79 (D-199): the translation envelope. Prose BEFORE it is Coach's
+    // short ack (intro-first grammar, same as workouts); prose after is a
+    // contract slip. Shape-validated here; slot CONTENT is the compiler's
+    // job — the model's words are never trusted as machine form.
+    if (post && post.trim()) console.warn("[coach] text after the rule_proposal object — dropped");
+    const rv = validateRuleProposal(obj);
+    if (!rv.ok) {
+      console.warn("[coach] malformed rule_proposal", rv.error);
+      const fallback = (pre || "").trim();
+      return { kind: "reply", message: fallback || COACH_ERROR_TEXT, quickReplies: null };
+    }
+    return {
+      kind: "rule_proposal",
+      proposal: {
+        stagedText: obj.stagedText,
+        slots: {
+          ruleKind: (obj.slots && obj.slots.ruleKind) || null,
+          dayFamilies: obj.slots && Array.isArray(obj.slots.dayFamilies) ? obj.slots.dayFamilies : null,
+          targetNames: obj.slots && Array.isArray(obj.slots.targetNames) ? obj.slots.targetNames : [],
+        },
+        notes: Array.isArray(obj.notes) ? obj.notes : [],
+      },
+      preamble: (pre || "").trim(),
+    };
   }
   if (salvaged) console.warn("[coach] recovered a JSON envelope wrapped in prose — model emitted text outside the object (D-131)");
   if (obj && obj.kind === "text" && typeof obj.text === "string" && obj.text.trim()) {
@@ -3857,6 +3911,233 @@ function refoldRuleAdherence(rules, history) {
   });
 }
 
+
+/* ═══════════════════════════════════════════════════════════════════
+   RULES PIPELINE COMPILER (Session 79 — D-199 realized)
+
+   User states a rule naturally in chat → Coach TRANSLATES only (clean
+   stagedText ≤150 chars + intent slots: ruleKind, dayFamilies,
+   targetNames — NAMES, never ids, never predicate JSON) → THIS
+   deterministic compiler verifies every slot against reality and
+   builds the machine form. The model never writes to the store; the
+   transcript confirm card gates every save (Save / Edit-retype-recheck
+   / Cancel), and applyRuleSave is the ONE write-room entry — D-208 by
+   construction: nothing lands without an explicit user tap.
+
+   D-199 locks realized:
+   - Two v1 structured kinds (require_on_day / exclude). Every other
+     rule is accepted, saved, honored by voice, labeled untracked —
+     nothing refused, nothing overpromised (tier "mouth").
+   - Unresolvable slot: the PROMPT asks one clarifying question first;
+     if a proposal still arrives unresolvable the compiler DOWNGRADES
+     to words-only with an honest ⓘ note (S79 owner call: downgrade
+     over rejection — visible on the card, never silent).
+   - Three-tier law + S79 Q1 disclosure matrix: logbook "I'll track
+     this" / card "I'll build your cards around this" / mouth "I'll
+     keep this in mind".
+   - Sandbox: outright refusal ONLY for machinery-sabotage (output-
+     format attacks, prompt injection, impersonation). Unwise-but-legal
+     saves silently — their body, their call.
+   - Structured contradictions caught mechanically at creation →
+     replace-or-cancel, the user picks (ANY-match target semantics,
+     D-163).
+   - Name resolution: case-insensitive EXACT match against library +
+     customs. The one tolerance is a DISCLOSED plural fold
+     ("Deadlifts" → Deadlift, ⓘ-noted). Never fuzzy, never guessed.
+   ═══════════════════════════════════════════════════════════════════ */
+const RULE_TEXT_MAX = 150;   // §12.6 char limit
+const RULE_STORE_CAP = 15;   // §12.6 cap (RulesSubscreen counter agrees)
+const RULE_PROPOSAL_KINDS = ["require_on_day", "exclude"];
+const RULE_TRIGGER_FAMILY_ENUM = ["push", "pull", "legs", "arms", "upper", "full_body"];
+const RULE_SABOTAGE_TOKENS = [
+  // Output-format attacks — a rule rides the system prompt forever;
+  // anything aimed at the envelope/format machinery is refused.
+  "json", "envelope", "schema", "quickrepl", "coachworkout", "programmingnotes",
+  // Prompt-injection phrasings.
+  "system prompt", "ignore your instructions", "ignore all instructions",
+  "ignore previous instructions", "disregard your instructions",
+  // Impersonation.
+  "pretend to be", "pretend you are", "impersonate", "jailbreak",
+];
+
+/* Envelope shape check (parse-time). Loose on intent, strict on types —
+   slot CONTENT verification is the compiler's job, not the parser's. */
+function validateRuleProposal(obj) {
+  if (!obj || obj.kind !== "rule_proposal") return { ok: false, error: "not a rule_proposal" };
+  if (typeof obj.stagedText !== "string" || !obj.stagedText.trim()) return { ok: false, error: "stagedText missing" };
+  if (obj.stagedText.length > 300) return { ok: false, error: "stagedText too long" };
+  const s = obj.slots;
+  if (!s || typeof s !== "object" || Array.isArray(s)) return { ok: false, error: "slots missing" };
+  if (s.ruleKind !== null && s.ruleKind !== undefined && typeof s.ruleKind !== "string") return { ok: false, error: "ruleKind type" };
+  if (s.dayFamilies !== null && s.dayFamilies !== undefined && !Array.isArray(s.dayFamilies)) return { ok: false, error: "dayFamilies type" };
+  if (s.targetNames !== null && s.targetNames !== undefined && !Array.isArray(s.targetNames)) return { ok: false, error: "targetNames type" };
+  if (obj.notes !== undefined && obj.notes !== null && !Array.isArray(obj.notes)) return { ok: false, error: "notes type" };
+  return { ok: true };
+}
+
+/* Staged-text hygiene: the saved sentence rides the system prompt as
+   "- text" for the life of the rule, so structural characters are
+   stripped (braces, backticks, angle brackets — nothing that could read
+   as markup or an envelope), whitespace collapsed, length clamped. */
+function ruleSanitizeStagedText(text) {
+  let t = String(text == null ? "" : text)
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/[{}`<>]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  let clamped = false;
+  if (t.length > RULE_TEXT_MAX) { t = t.slice(0, RULE_TEXT_MAX).trim(); clamped = true; }
+  return { text: t, clamped };
+}
+
+function ruleSabotageCheck(text) {
+  const t = String(text || "").toLowerCase();
+  for (const tok of RULE_SABOTAGE_TOKENS) if (t.includes(tok)) return tok;
+  return null;
+}
+
+/* Case-insensitive EXACT name resolution against library + customs,
+   with a single DISCLOSED plural fold. Returns { def, folded } | null. */
+function ruleResolveTargetName(name, customs) {
+  const all = [...EXERCISE_LIBRARY, ...(customs || [])];
+  const want = String(name || "").trim().toLowerCase();
+  if (!want) return null;
+  const hit = all.find((e) => e.name.toLowerCase() === want);
+  if (hit) return { def: hit, folded: false };
+  const folds = [];
+  if (want.endsWith("es")) folds.push(want.slice(0, -2));
+  if (want.endsWith("s")) folds.push(want.slice(0, -1));
+  for (const f of folds) {
+    const h = all.find((e) => e.name.toLowerCase() === f);
+    if (h) return { def: h, folded: true };
+  }
+  return null;
+}
+
+/* The compiler. Pure: proposal in, verdict out — the confirm card
+   renders exactly what this returns; applyRuleSave consumes it. */
+function compileRuleProposal(proposal, customs, existingRules) {
+  const notes = [];
+  const p = proposal || {};
+  const slots = p.slots || {};
+  const sanitized = ruleSanitizeStagedText(p.stagedText);
+  if (!sanitized.text) return { ok: false, invalid: true, refused: false, atCap: false };
+  const sab = ruleSabotageCheck(sanitized.text) || ruleSabotageCheck(p.stagedText);
+  if (sab) return { ok: false, invalid: false, refused: true, atCap: false, refuseReason: sab };
+  if (((existingRules || []).length) >= RULE_STORE_CAP) {
+    return { ok: false, invalid: false, refused: false, atCap: true };
+  }
+  if (sanitized.clamped) notes.push(`Shortened to fit the ${RULE_TEXT_MAX}-character rule limit`);
+  for (const n of (Array.isArray(p.notes) ? p.notes : []).slice(0, 2)) {
+    const nt = ruleSanitizeStagedText(n).text;
+    if (nt) notes.push(nt.slice(0, 160));
+  }
+
+  const kindRaw = slots.ruleKind || null;
+  const kind = RULE_PROPOSAL_KINDS.includes(kindRaw) ? kindRaw : null;
+  if (kindRaw && !kind) notes.push("Doesn't fit a tracked rule shape — saving as words; Coach follows it by voice");
+
+  const famsRaw = Array.isArray(slots.dayFamilies) ? slots.dayFamilies : null;
+  let fams = null;
+  if (famsRaw) {
+    fams = famsRaw.filter((f) => RULE_TRIGGER_FAMILY_ENUM.includes(f));
+    const dropped = famsRaw.filter((f) => !RULE_TRIGGER_FAMILY_ENUM.includes(f));
+    if (dropped.length) notes.push(`Didn't recognize ${dropped.join(", ")} as a day type`);
+    if (!fams.length) fams = null;
+  }
+
+  const wantNames = (Array.isArray(slots.targetNames) ? slots.targetNames : [])
+    .map((n) => String(n || "").trim()).filter(Boolean);
+  const targets = [];
+  const unresolved = [];
+  for (const n of wantNames) {
+    const r = ruleResolveTargetName(n, customs);
+    if (!r) { unresolved.push(n); continue; }
+    if (!targets.some((t) => t.exerciseId === r.def.id)) {
+      targets.push({ exerciseId: r.def.id, name: r.def.name });
+      if (r.folded) notes.push(`Took "${n}" as ${r.def.name}`);
+    }
+  }
+
+  /* Structured requirements — anything short of them is the honest
+     words-only tier, with the reason on the card (downgrade lock). */
+  let predicate = null;
+  let tier = "mouth";
+  if (kind && unresolved.length === 0 && targets.length > 0 && (kind !== "require_on_day" || (fams && fams.length))) {
+    predicate = {
+      kind,
+      triggerFamilies: kind === "require_on_day" ? fams : (fams && fams.length ? fams : null),
+      targets,
+      trackAdherence: kind === "require_on_day",
+    };
+    tier = kind === "require_on_day" ? "logbook" : "card";
+  } else if (kind) {
+    if (unresolved.length) notes.push(`Couldn't match ${unresolved.map((n) => `"${n}"`).join(", ")} to a movement — saving as words; Coach honors it by voice`);
+    else if (targets.length === 0) notes.push("No specific movement named — saving as words; Coach honors it by voice");
+    else if (kind === "require_on_day") notes.push("No day type named — saving as words; Coach honors it by voice");
+  }
+
+  const disclosure = tier === "logbook" ? "I'll track this"
+    : tier === "card" ? "I'll build your cards around this"
+    : "I'll keep this in mind";
+
+  /* Contradiction scan — structured new vs structured existing only
+     (words can't mechanically contradict). ANY-match (D-163): one
+     shared target id is a hit; family scopes overlap when either is
+     null (global) or they intersect. First conflict wins the card. */
+  let conflict = null;
+  if (predicate) {
+    const famOverlap = (a, b) => (!a || !b) ? true : a.some((f) => b.includes(f));
+    for (const r of existingRules || []) {
+      const q = r && r.predicate;
+      if (!q || !Array.isArray(q.targets)) continue;
+      const idHit = q.targets.some((t) => predicate.targets.some((nt) => nt.exerciseId && nt.exerciseId === t.exerciseId));
+      if (!idHit) continue;
+      if (q.kind !== predicate.kind) { conflict = { ruleId: r.id, ruleText: r.text, reason: "opposes" }; break; }
+      if (famOverlap(predicate.triggerFamilies, q.triggerFamilies)) { conflict = { ruleId: r.id, ruleText: r.text, reason: "overlaps" }; break; }
+    }
+  }
+
+  return {
+    ok: true, invalid: false, refused: false, atCap: false,
+    ruleText: sanitized.text, predicate, tier, disclosure,
+    notes, unresolved, conflict,
+  };
+}
+
+/* Rule construction + the write room. applyRuleSave is the ONLY path a
+   Coach-proposed rule takes into the store — the confirm card's Save
+   tap calls it; the debrief's survey card (next build) will call it
+   too. Pure: { rules, saved, error }. Replace-or-cancel rides
+   replaceRuleId; a conflict the user hasn't chosen to replace BLOCKS
+   the save (error "conflict") so a stale card can never sneak past a
+   store that changed underneath it. */
+function buildRuleFromProposal(compiled, ts) {
+  return {
+    id: `rule_${ts}_${Math.random().toString(36).slice(2, 6)}`,
+    text: compiled.ruleText,
+    createdAt: ts,
+    schemaVersion: RULE_SCHEMA_VERSION,
+    predicate: compiled.predicate ? {
+      ...compiled.predicate,
+      triggerFamilies: compiled.predicate.triggerFamilies ? [...compiled.predicate.triggerFamilies] : null,
+      targets: compiled.predicate.targets.map((t) => ({ ...t })),
+    } : null,
+    adherence: null,   // D-160 birthday gate: adherence starts empty at creation
+  };
+}
+function applyRuleSave(rules, compiled, ts, replaceRuleId) {
+  if (!compiled || !compiled.ok) return { rules: rules || [], saved: null, error: "not_ok" };
+  if (compiled.conflict && (!replaceRuleId || compiled.conflict.ruleId !== replaceRuleId)) {
+    return { rules: rules || [], saved: null, error: "conflict" };
+  }
+  let base = (rules || []);
+  if (replaceRuleId) base = base.filter((r) => r && r.id !== replaceRuleId);
+  if (base.length >= RULE_STORE_CAP) return { rules: rules || [], saved: null, error: "at_cap" };
+  const saved = buildRuleFromProposal(compiled, ts);
+  return { rules: [...base, saved], saved, error: null };
+}
+
 /* ── SURVEY QUESTION ENGINE (Session 73 — D-170–D-177 realized) ──
    Replaces buildDemoSurveyQuestions. Spec'd + stress-tested Session 72
    (survey_stress.js: 2,000 fuzzed histories, six 8-month archetypes,
@@ -4784,7 +5065,7 @@ const IS_REAL_DEVICE = (() => {
 // Deploy cache-verification marker (owner's V.23 convention, formalized:
 // bump this one constant per push to confirm the phone isn't serving
 // stale cached code; rendered only on real devices, top-right).
-const BUILD_TAG = "V.29";
+const BUILD_TAG = "V.30";
 
 /* ── Visual-viewport pin (S77 — the "composer slides past the keyboard" bug) ──
    iOS (Safari tab and standalone PWA alike) never shrinks the LAYOUT
@@ -10955,7 +11236,7 @@ function buildCoachGreeting({ userName, now, workoutHistory, coachRotation, rota
   return pool.length ? pick(pool) : `What's the plan?`;
 }
 
-function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFocused, onAppendMessage, onUpdateMessage, onRemoveMessage, genChatId, onGenStart, onGenEnd, onGenIsCurrent, onRespondAsCoach, onStartCoachWorkout, onBuildDebug, onNewChat, onSwitchChat, onDeleteChat, onRenameChat, pendingSeed, onSeedConsumed, workoutHistory, coachRotation, rotationCursor, planDaysPerWeek, planGoal, selectedEquipment, pendingQuestions, onAnswerQuestion, onDismissSurvey }) {
+function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFocused, onAppendMessage, onUpdateMessage, onRemoveMessage, genChatId, onGenStart, onGenEnd, onGenIsCurrent, onRespondAsCoach, onStartCoachWorkout, onBuildDebug, onNewChat, onSwitchChat, onDeleteChat, onRenameChat, pendingSeed, onSeedConsumed, workoutHistory, coachRotation, rotationCursor, planDaysPerWeek, planGoal, selectedEquipment, pendingQuestions, onAnswerQuestion, onDismissSurvey, onSaveRule, onCancelRuleCard, onSupersedeRuleCards }) {
   // Bible §4.7: hard cap on user message length. Keeps one chat message
   // within a single API call's budget and prevents runaway prompts. The
   // counter only appears in the last 100 chars so it doesn't distract
@@ -11410,6 +11691,12 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
       onBuilding: () => {
         if (onGenIsCurrent(reqChatId)) setLiveBuilding(true);
       },
+      onBuildingHint: (h) => {
+        // S79: refine the freeze indicator once the withheld buffer shows
+        // the envelope kind — "Writing your rule…" vs "Building your
+        // workout…". A hint implies building.
+        if (onGenIsCurrent(reqChatId)) setLiveBuilding(h);
+      },
       onAbort: () => {
         if (liveMsgId) { onRemoveMessage(reqChatId, liveMsgId); liveMsgId = null; }
         setLiveTokens(false);
@@ -11463,6 +11750,40 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
           coachWorkout: res.coachWorkout,
           _toolCalls: (res && res._toolCalls) || null,
         }, reqChatId);
+      }
+    } else if (res && res.kind === "rule_proposal") {
+      // S79 (D-199): the confirm-card landing. A compiler verdict that
+      // can't render a card (refusal / cap / invalid) lands as plain
+      // Coach text — deterministic guardrail voice, nothing staged.
+      const c = res.compiled || {};
+      if (!c.ok) {
+        const msgTxt = c.refused
+          ? "That one aims at how I run rather than how you train, so I won't file it as a rule. Training rules, voice rules, day structure — all fair game."
+          : c.atCap
+            ? "Your rules file is full. Clear one in Coach's File — Rules, then tell me again and I'll stage it fresh."
+            : COACH_ERROR_TEXT;
+        if (liveH.id()) {
+          onUpdateMessage(reqChatId, liveH.id(), { text: msgTxt, streaming: false, _toolCalls: (res && res._toolCalls) || null });
+          liveH.clear();
+        } else {
+          streamText(msgTxt, { role: "coach", kind: "text", _toolCalls: (res && res._toolCalls) || null }, reqChatId);
+        }
+      } else {
+        const payload = {
+          kind: "rule_proposal", text: (res.preamble || "").trim(),
+          proposal: res.proposal, compiled: c,
+          ruleCard: { status: "pending" },
+          _toolCalls: (res && res._toolCalls) || null,
+          streaming: false,
+        };
+        if (liveH.id()) {
+          onSupersedeRuleCards(reqChatId, liveH.id());
+          onUpdateMessage(reqChatId, liveH.id(), payload);
+          liveH.clear();
+        } else {
+          onSupersedeRuleCards(reqChatId, null);
+          onAppendMessage({ role: "coach", id: `m${Date.now()}${Math.floor(Math.random() * 1e6)}`, ...payload }, reqChatId);
+        }
       }
     } else if (res && res.kind === "reply") {
       if (liveH.id()) {
@@ -11880,6 +12201,82 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
               </div>
             );
           }
+          // ── Rule confirm card (S79 — D-199) ───────────────────────────
+          // The gate every Coach-staged rule passes: staged text VERBATIM
+          // (Georgia — the user's law in the file voice), the S79 Q1 tier
+          // disclosure in gold, ⓘ interpretive-leap notes, then Save /
+          // Edit (retype → the FULL translate-verify loop re-runs) /
+          // Cancel. A structured conflict swaps Save for replace-or-cancel.
+          // Card state lives ON the message so the transcript stays an
+          // honest record — saved / cancelled / superseded collapse to one
+          // quiet line, never deleted.
+          if (m.role === "coach" && m.kind === "rule_proposal") {
+            const c = m.compiled || {};
+            const rc = m.ruleCard || { status: "pending" };
+            const serif = "Georgia, 'Times New Roman', serif";
+            const noteStyle = { color: "#8a8578", fontSize: 11.5, lineHeight: 1.45, marginTop: 6 };
+            const quietBtn = { flex: 1, background: "transparent", border: "1px solid #2c2c2c", borderRadius: 10, padding: "9px 0", color: COLORS.textSecondary, fontSize: 12.5, cursor: "pointer", fontFamily: "inherit" };
+            const collapsedLine = (isCheck, line, sub) => (
+              <div style={{ border: "1px solid #2c2c2c", borderRadius: 12, padding: "9px 12px", display: "flex", alignItems: "center", gap: 8, maxWidth: "94%" }}>
+                {isCheck
+                  ? <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={COLORS.gold} strokeWidth="2.5" style={{ flexShrink: 0 }}><polyline points="20 6 9 17 4 12" /></svg>
+                  : <span style={{ color: "#6d6a60", fontSize: 13, flexShrink: 0 }}>&mdash;</span>}
+                <div>
+                  <div style={{ color: COLORS.text, fontSize: 12.5 }}>{line}</div>
+                  {sub ? <div style={{ color: "#8a8578", fontSize: 10.5, marginTop: 1 }}>{sub}</div> : null}
+                </div>
+              </div>
+            );
+            const tierWord = c.tier === "logbook" ? "tracked" : c.tier === "card" ? "card-shaping" : "kept in mind";
+            return (
+              <div key={i} style={{ marginBottom: 14 }}>
+                {m.text ? (
+                  <div style={{ maxWidth: "94%", color: COLORS.text, fontSize: 14, lineHeight: 1.55, padding: "2px 2px", marginBottom: 12 }}>{m.text}</div>
+                ) : null}
+                {rc.status === "saved" && collapsedLine(true, "Rule saved", `${c.ruleText || ""} · ${tierWord}`)}
+                {rc.status === "cancelled" && collapsedLine(false, "Cancelled — nothing saved", null)}
+                {rc.status === "superseded" && collapsedLine(false, "Replaced by a newer version", null)}
+                {(rc.status === "pending" || rc.status === "editing") && (
+                  <div style={{ background: "#1A1A1A", border: "1px solid #2c2c2c", borderRadius: 14, padding: "13px 13px", opacity: rc.status === "editing" ? 0.55 : 1 }}>
+                    <div style={{ color: "#8a8578", fontSize: 10, letterSpacing: 1.4, marginBottom: 8, fontFamily: "-apple-system, system-ui, sans-serif" }}>NEW RULE</div>
+                    <div style={{ fontFamily: serif, fontSize: 15, color: "#EFEDE6", lineHeight: 1.45 }}>{c.ruleText}</div>
+                    <div style={{ borderTop: "1px solid #2c2c2c", marginTop: 10, paddingTop: 9 }}>
+                      <div style={{ color: COLORS.gold, fontSize: 12 }}>{c.disclosure}</div>
+                    </div>
+                    {(c.notes || []).map((n, ni) => (
+                      <div key={ni} style={noteStyle}>{"ⓘ"} {n}</div>
+                    ))}
+                    {c.conflict && (
+                      <div style={{ ...noteStyle, color: COLORS.gold }}>
+                        Conflicts with an existing rule: &ldquo;{c.conflict.ruleText}&rdquo; — replace it, or cancel this one.
+                      </div>
+                    )}
+                    {rc.status === "editing" ? (
+                      <div style={{ ...noteStyle, textAlign: "center", marginTop: 12 }}>Editing — send your version and Coach re-checks it</div>
+                    ) : (
+                      <div style={{ marginTop: 12 }}>
+                        <button
+                          onClick={() => onSaveRule(chat.id, m.id, c.conflict ? c.conflict.ruleId : null)}
+                          style={{ width: "100%", background: "transparent", border: `1px solid ${COLORS.gold}`, borderRadius: 10, padding: "10px 0", color: COLORS.gold, fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "inherit", marginBottom: 6 }}
+                        >{c.conflict ? "Replace old rule" : "Save rule"}</button>
+                        <div style={{ display: "flex", gap: 6 }}>
+                          <button style={quietBtn} onClick={() => {
+                            // Edit = retype: the staged words drop into the
+                            // composer; sending them is a normal user turn
+                            // that re-runs the FULL translate→verify→card
+                            // loop (D-199 — a retype never saves unverified).
+                            setInput((m.proposal && m.proposal.stagedText) || c.ruleText || "");
+                            onUpdateMessage(chat.id, m.id, { ruleCard: { ...rc, status: "editing" } });
+                          }}>Edit</button>
+                          <button style={{ ...quietBtn, color: "#8a8578" }} onClick={() => onCancelRuleCard(chat.id, m.id)}>Cancel</button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          }
           // ── Workout-kind Coach message (mock leg-day reply) ──────────
           // Wider max-width so the workout block doesn't crush. Renders
           // three parts inside one bubble:
@@ -12052,7 +12449,7 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
               fontFamily: "Georgia, 'Times New Roman', serif",
               display: "flex", alignItems: "center", gap: 2,
             }}>
-              {liveBuilding ? "Building your workout" : "Coach is thinking"}
+              {liveBuilding ? (liveBuilding === "rule" ? "Writing your rule" : "Building your workout") : "Coach is thinking"}
               <span style={{ display: "inline-flex", gap: 2, marginLeft: 4 }}>
                 <span style={{ animation: "coachDot 1.4s infinite", animationDelay: "0s" }}>.</span>
                 <span style={{ animation: "coachDot 1.4s infinite", animationDelay: "0.2s" }}>.</span>
@@ -17855,11 +18252,64 @@ export default function MYGFitness() {
       // can be unit-tested; it also understands the kind:"text" quick-reply
       // envelope (chips ride back on res.quickReplies).
       const parsed = parseCoachReply(text, (obj) => validateCoachWorkout(obj, COACH_LIB_INDEX));
+      if (parsed.kind === "rule_proposal") {
+        // S79 (D-199): compile at land time against the LIVE stores — the
+        // model translated; only the deterministic compiler builds machine
+        // form, and its verdict IS what the confirm card renders.
+        return { ...parsed, compiled: compileRuleProposal(parsed.proposal, customExercises, coachRules), _toolCalls: toolCalls };
+      }
       return { ...parsed, _toolCalls: toolCalls };
     } catch (e) {
       console.warn("[coach] turn failed", e);
       return { kind: "error", _toolCalls: toolCalls };
     }
+  };
+
+  // ── S79 RULES PIPELINE write path (D-199 / D-208) ───────────────────
+  // The Save tap on a transcript confirm card. Re-compiles against the
+  // CURRENT stores (rules may have changed since staging), then goes
+  // through applyRuleSave — the one write room. Any surprise (a new
+  // conflict, the cap reached meanwhile) re-renders on the card instead
+  // of saving: nothing ever lands that the card didn't show.
+  const saveRuleFromCard = (chatId, msgId, replaceRuleId) => {
+    const chatObj = coachChats.find((c) => c.id === chatId);
+    const msg = chatObj && chatObj.messages.find((m) => m && m.id === msgId);
+    if (!msg || !msg.proposal || !msg.ruleCard) return;
+    if (msg.ruleCard.status !== "pending" && msg.ruleCard.status !== "editing") return;
+    const compiled = compileRuleProposal(msg.proposal, customExercises, coachRules);
+    const out = applyRuleSave(coachRules || [], compiled, Date.now(), replaceRuleId || null);
+    if (out.error || !out.saved) { updateCoachMessageById(chatId, msgId, { compiled }); return; }
+    setCoachRules(out.rules);
+    setCoachFileLastUpdatedAt(Date.now());
+    updateCoachMessageById(chatId, msgId, {
+      compiled,
+      ruleCard: { status: "saved", savedRuleId: out.saved.id, replacedRuleId: replaceRuleId || null },
+    });
+    appendCoachMessage({
+      role: "system", kind: "receipt", ts: Date.now(),
+      id: `m${Date.now()}${Math.floor(Math.random() * 1e6)}`,
+      text: `Rule saved · ${out.saved.text}`,
+    }, chatId);
+  };
+  const cancelRuleCard = (chatId, msgId) => {
+    updateCoachMessageById(chatId, msgId, { ruleCard: { status: "cancelled" } });
+  };
+  // One live staging at a time: when a new proposal lands in a chat,
+  // every earlier open card flips to "superseded" so the Save tap is
+  // never ambiguous about which words it's saving.
+  const supersedeOpenRuleCards = (chatId, exceptId) => {
+    setCoachChats((prev) => prev.map((c) => {
+      if (c.id !== chatId) return c;
+      let touched = false;
+      const next = c.messages.map((m) => {
+        if (!m || m.kind !== "rule_proposal" || !m.ruleCard) return m;
+        if (m.id && exceptId && m.id === exceptId) return m;
+        if (m.ruleCard.status !== "pending" && m.ruleCard.status !== "editing") return m;
+        touched = true;
+        return { ...m, ruleCard: { ...m.ruleCard, status: "superseded" } };
+      });
+      return touched ? { ...c, messages: next } : c;
+    }));
   };
 
   // Export a CoachWorkout into the logger. Mirrors repeatWorkoutFromSession's
@@ -18768,6 +19218,9 @@ export default function MYGFitness() {
           selectedEquipment={selectedEquipment}
           pendingQuestions={pendingCoachQuestions}
           onAnswerQuestion={answerCoachQuestion}
+          onSaveRule={saveRuleFromCard}
+          onCancelRuleCard={cancelRuleCard}
+          onSupersedeRuleCards={supersedeOpenRuleCards}
           onDismissSurvey={dismissCoachSurvey}
         />
       );
