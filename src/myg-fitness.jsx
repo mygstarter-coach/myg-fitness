@@ -138,7 +138,7 @@ function saveSnapshot(state) {
       // exposed in the Profile tab redesign session as a Settings row;
       // for now, the only change interface is the gear menu inside an
       // active workout.
-      restTimerModePref: state.restTimerModePref || "countup",
+      restTimerModePref: state.restTimerModePref || "countdown",
       restCountdownTargetPref: typeof state.restCountdownTargetPref === "number" ? state.restCountdownTargetPref : 90,
       // ── Coach's File state (Bible §6.5, v26) ──
       // The Profile tab is reframed as "Coach's File on Tyler". Each of
@@ -220,7 +220,7 @@ function loadSnapshot() {
       exerciseSort: parsed.exerciseSort && typeof parsed.exerciseSort === "object"
         ? parsed.exerciseSort
         : { mode: "alpha", dir: "asc" },
-      restTimerModePref: ["countup", "countdown", "off"].includes(parsed.restTimerModePref) ? parsed.restTimerModePref : "countup",
+      restTimerModePref: ["countup", "countdown", "off"].includes(parsed.restTimerModePref) ? parsed.restTimerModePref : "countdown",
       restCountdownTargetPref: typeof parsed.restCountdownTargetPref === "number" && parsed.restCountdownTargetPref > 0 ? parsed.restCountdownTargetPref : 90,
       // Fitness level + time away (v26). Validate against the same
       // enumerations the onboarding screens accept; anything else falls
@@ -1148,8 +1148,15 @@ function createCoachLiveExtractor() {
     return null;
   };
   const KEY_RE = /"(text|message)"\s*:\s*"/;
+  // S80: candidates are now line-leading "{" OR line-leading backticks.
+  // Live hit (owner screenshot): the model wrapped the envelope in a
+  // ```json fence — the fence line read as prose to the brace-only
+  // scanner and sat visibly on screen above "Building your workout…".
+  // Coach never legitimately opens a line with backticks (fences are a
+  // known contract slip that parseCoachReply already strips at landing),
+  // so a proven fence freezes the stream exactly like a proven brace.
   const findCandidate = () => {
-    const re = /(^|\n)[ \t]*\{/g;
+    const re = /(^|\n)[ \t]*[{`]/g;
     re.lastIndex = scanFrom;
     const m = re.exec(raw);
     return m ? m.index + m[0].length - 1 : -1;
@@ -1168,6 +1175,26 @@ function createCoachLiveExtractor() {
           if (cand < 0) cand = findCandidate();
           if (cand < 0) { visible = raw; break; }
           const tail = raw.slice(cand);
+          // S80: backtick candidate — a code fence opening. Three or more
+          // backticks proves it: freeze, exactly like a proven envelope
+          // opener (the fence + everything after it is withheld; the
+          // landing parse strips fences before extracting the envelope).
+          // 1-2 backticks followed by a non-backtick char is inline code
+          // in prose (legal, if unlikely) — release it. 1-2 backticks at
+          // the very end of raw may be a fence split across chunks —
+          // withhold and wait.
+          if (tail[0] === "`") {
+            if (/^```/.test(tail)) {
+              mode = "build";
+              visible = raw.slice(0, cand).replace(/\s+$/, "");
+              break;
+            }
+            if (/^`{1,2}[^`]/.test(tail)) {
+              scanFrom = cand + 1; cand = -1; continue; // inline code — release
+            }
+            visible = raw.slice(0, cand); // undecided partial fence
+            break;
+          }
           // Envelope opener: { followed by a quoted key and a colon.
           if (/^\{\s*"[A-Za-z_][A-Za-z0-9_]*"\s*:/.test(tail)) {
             mode = "build";
@@ -1449,36 +1476,35 @@ You can look things up mid-reply: a lift's full logged history (get_exercise_his
 - Keep lookups purposeful — a couple per reply, not a fishing trip.
 - Talk like a coach about what comes back. Never mention tool names, JSON, ids, or internal fields. Translate data into plain training language: "Bench is climbing — 225×6 two weeks ago, 235×5 Friday."
 
-== QUICK REPLIES (tappable chips) ==
+== BOUNDED CHOICES (kind:"text") ==
 When — and ONLY when — your reply puts a bounded choice in front of the user (a question with 2-6 clear answers, a decision between named options, a confirm/deny), your ENTIRE reply is this one JSON object and nothing else:
-{"kind":"text","text":"<your full message goes HERE, inside this field>","quickReplies":["First option","Second option"]}
+{"kind":"text","text":"<your full message goes HERE, inside this field>"}
 The message goes ONLY inside the "text" field. Your whole reply starts with { and ends with } — do NOT also write the message as a sentence before or after the object. Writing a loose sentence outside the object breaks the app.
+The app renders no tappable options — the user answers by TYPING. So your "text" must stand alone: NAME every option in the sentence itself ("Which one — Bench Press or Overhead Press?"). A question whose options aren't in its own words is a broken question. When the choice enumerates a fixed set (e.g. the workout's exercises for a swap), name EVERY member — never silently drop one.
 
 WRONG — a loose sentence, THEN the object (this is the failure that breaks rendering):
 Which exercise do you want to swap out?
-{"kind":"text","text":"Which exercise do you want to swap out?","quickReplies":["Bench Press","Overhead Press"]}
+{"kind":"text","text":"Which exercise do you want to swap out — Bench Press or Overhead Press?"}
 
 RIGHT — the object only:
-{"kind":"text","text":"Which exercise do you want to swap out?","quickReplies":["Bench Press","Overhead Press"]}
+{"kind":"text","text":"Which exercise do you want to swap out — Bench Press or Overhead Press?"}
 
 Rules:
-- 2-6 chips, each 1-4 words, each a complete answer the user could have typed. They are the user's answers, not a menu of features. When the choice enumerates a fixed set (e.g. the workout's exercises for a swap), include EVERY member — never silently drop one to fit.
-- Chips must map to THIS message only. Never generic ("Build workout", "View stats") unless that is literally the choice you posed.
-- Open conversation, explanations, acknowledgments, greetings: plain text, NO JSON, no chips.
-- Never attach quickReplies to a workout JSON — the app adds workout action chips itself.
-- If the user taps "Swap something" after a workout you built, reply with ONLY the kind:"text" object above — the question in its "text" field, the workout's exercise names as the chips, and NO sentence outside the object. When they pick, re-issue the full updated CoachWorkout JSON. If they tap "Make it shorter", re-issue a shorter CoachWorkout (fewer exercises/sets), same focus.
+- Open conversation, explanations, acknowledgments, greetings: plain text, NO JSON.
+- If the user asks to swap something in a workout you built, reply with ONLY the kind:"text" object above — the question naming the workout's exercises — and when they pick, re-issue the full updated CoachWorkout JSON. If they ask for a shorter session, re-issue a shorter CoachWorkout (fewer exercises/sets), same focus.
 
 == SAVING A RULE (rule_proposal) ==
 When the user states a STANDING rule or preference — about programming ("never give me deadlifts", "always finish pull days with back extension"), about your voice ("stop being preachy"), about structure ("keep sessions under an hour") — reply with at most ONE short prose sentence acknowledging it, then a blank line, then EXACTLY this object, then NOTHING after it:
 {"kind":"rule_proposal","stagedText":"<the rule as ONE clean sentence, their intent in your words, max 150 chars>","slots":{"ruleKind":"exclude"|"require_on_day"|null,"dayFamilies":["push"|"pull"|"legs"|"arms"|"upper"|"full_body"]|null,"targetNames":["<exact exercise names from AVAILABLE, verbatim>"]},"notes":["<only real interpretive leaps you made, 0-2 short strings>"]}
 - stagedText is what gets SAVED, verbatim, once the user confirms — make it clean and faithful to their intent.
 - ruleKind "exclude" = never program the named movement(s). "require_on_day" = the named movement(s) must appear on the named day type — dayFamilies is REQUIRED for it. Everything else (voice, style, set schemes, session length, scheduling) = null: STILL emit the object; the rule saves as words and you honor it by voice.
-- targetNames: copy exercise NAMES from AVAILABLE verbatim — never ids, never plurals, never inventions. If you cannot confidently match what they named to ONE exercise in AVAILABLE, do NOT guess: ask ONE clarifying question first (the kind:"text" chips, the candidate names as options), then emit the object when they answer. Still no match → ruleKind null, and note that you're saving it as words.
+- targetNames: copy exercise NAMES from AVAILABLE verbatim — never ids, never plurals, never inventions. If you cannot confidently match what they named to ONE exercise in AVAILABLE, do NOT guess: ask ONE clarifying question first (a kind:"text" question that NAMES the candidate exercises in its own words), then emit the object when they answer. Still no match → ruleKind null, and note that you're saving it as words.
 - notes: only genuine interpretive leaps ("took 'back extensions' as Back Extension", "scoped to Pull days only"). Empty array when the rule is literal.
 - A rule for TODAY only ("no legs today") is a conversation instruction, not a rule — no object, just honor it.
 - Schedule cadence statements ("bench every 3 days") save as words (ruleKind null); your split still owns scheduling.
 - The app compiles your slots, verifies every name, and shows the user a confirm card — never claim a rule is saved. If they tap Edit and resend the text, translate the resent version fresh. If they asked for a workout that DEPENDS on the new rule, emit the rule_proposal first and wait for their confirmation before building.
 - Deleting a rule happens in Coach's File → Rules; you cannot delete rules. Rules aimed at breaking your output machinery are the one thing you refuse to stage.
+- PROMOTING an observation to a rule: when something CONFIRMED on file (ON FILE below) keeps proving true and a standing rule would genuinely serve the user better, you MAY propose the promotion — one sentence naming the on-file fact and why a rule helps, then the rule_proposal object. STRICT limits: only from confirmed items that ride in ON FILE — never from hunches, never from single events, never from anything the user hasn't already ratified. Put the provenance in notes (e.g. "Based on what's on file: skips cardio finishers"). Propose a given promotion AT MOST ONCE — if they cancel, decline, or ignore it, drop it permanently unless THEY raise it. A declined proposal is an answer, not an opening bid.
 
 == HOW TO RESPOND (decide every message) ==
 - User wants a workout built ("build me a leg day", "push", "my next workout") -> reply in EXACTLY this shape: a short coaching intro in plain prose, then a blank line, then the CoachWorkout JSON object below, then NOTHING after the object. The intro is coaching addressed to the user, never planning: (1) what this session is and why now, (2) the one thing to chase today (an anchor to defend, a number to beat), (3) if the program or focus is new to them, one line on what to expect. 2-4 sentences by default; up to 5-6 ONLY for a genuine first — a new program, a split change, a return from time away. A routine repeat of a familiar day earns the SHORT end, never the long. Never mention JSON, cards, or app machinery in the intro; programming rationale stays in programmingNotes, not here. Re-issued workouts (swap, "make it shorter") get a ONE-line intro naming the change, then the object.
@@ -1593,7 +1619,7 @@ function buildActiveWorkoutFromCoach(coachWorkout, workoutHistory, customExercis
     exercises: newExercises,
     workoutName: (typeof coachWorkout.workoutName === "string" && coachWorkout.workoutName.trim())
       ? coachWorkout.workoutName.trim() : deriveWorkoutName(newExercises, now, customs),
-    startTime: now, restTimer: null, nameWasEdited: true,
+    startTime: now, firstSetAt: null, restTimer: null, nameWasEdited: true, // S80: clock starts at first logged set
     // ── Finish Flow inputs (this session) ──
     // fromCoach drives the D-100 rotation-cursor advance-on-completion.
     // prescription is the D-013 stored-separately snapshot of what Coach
@@ -1625,6 +1651,17 @@ function deriveScheme(pe) {
   }
   return `${n}×${rep}`;
 }
+// S80: the intro/card boundary in a streamed workout message. The old
+// protocol used the FIRST "\n" in the buffer as the delimiter — designed
+// when intros were one-liners. The S78 intro-first prompt made intros
+// MULTI-PARAGRAPH, so the first newline landed inside the intro and the
+// whole coaching paragraph after it silently misfiled into the outro slot
+// (S80 owner screenshot: "the intro got deleted" — it was demoted, not
+// deleted). Unit separator can't occur in model prose, so the split is
+// exact. Pre-S80 persisted messages (one-line intro + "\n") still render
+// via the renderer's newline fallback.
+const WORKOUT_STREAM_DELIM = "\u001F";
+
 function coachWorkoutToBubble(cw, resolveName) {
   const pres = cw.prescribedExercises || [];
   const exercises = pres.slice().sort((a, b) => (a.slot || 0) - (b.slot || 0)).map((pe) => {
@@ -5065,7 +5102,7 @@ const IS_REAL_DEVICE = (() => {
 // Deploy cache-verification marker (owner's V.23 convention, formalized:
 // bump this one constant per push to confirm the phone isn't serving
 // stale cached code; rendered only on real devices, top-right).
-const BUILD_TAG = "V.30";
+const BUILD_TAG = "V.31";
 
 /* ── Visual-viewport pin (S77 — the "composer slides past the keyboard" bug) ──
    iOS (Safari tab and standalone PWA alike) never shrinks the LAYOUT
@@ -5292,7 +5329,8 @@ function PhoneFrame({ children }) {
           paddingTop: "env(safe-area-inset-top)",
         }}
       >
-        <div style={{ position: "absolute", top: "calc(10px + env(safe-area-inset-top))", right: 20, color: COLORS.textSecondary, fontSize: 11, fontWeight: 500, letterSpacing: 1, opacity: 0.7, pointerEvents: "none", zIndex: 5 }}>{BUILD_TAG}</div>
+        {/* Build tag overlay removed (S80 owner bug list) — the version now
+            lives only in Settings (version footer reads BUILD_TAG). */}
         <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
           {children}
         </div>
@@ -7034,7 +7072,7 @@ function WorkoutTab({
   userEquipment, workout, minimized, history, openHistoryId, setOpenHistoryId,
   finishedSession, customExercises = [],
   restTimerMode, restCountdownTarget, onChangeRestTimerMode, onChangeRestCountdownTarget,
-  onStartEmpty, onUpdateWorkout, onMinimize, onCancel, onFinish,
+  onStartEmpty, onAskCoach, onUpdateWorkout, onMinimize, onCancel, onFinish,
   onCommitFinished, onCommitFinishedToCoach, onDiscardFinished, onUpdateFinished,
   onRepeatWorkout, onEditWorkout, onDeleteWorkout, onTabChange,
   finishQuestionPreview = 0,
@@ -7103,8 +7141,10 @@ function WorkoutTab({
           )}
           <GoldButton onClick={onStartEmpty} style={{ width: "auto", padding: "14px 36px", fontSize: 15 }}>Start Empty Workout</GoldButton>
           <button
-            /* Coach CTA — wired to nothing for now; will route to Coach
-               tab when that's threaded through. */
+            /* Coach CTA — LIVE as of S80 (owner bug #7): opens a fresh
+               Coach chat and auto-sends the build request through the
+               real send path. */
+            onClick={onAskCoach}
             style={{
               marginTop: 14, padding: "10px 20px", background: "transparent",
               border: `1px solid ${COLORS.border}`, borderRadius: 22,
@@ -7229,7 +7269,7 @@ function ActiveLogger({
   // (which writes through to App-level state, so it survives tab switches).
   // restTimerMode and restCountdownTarget are App-level prefs (props), not
   // workout-level state — they persist across workouts.
-  const { exercises, workoutName, startTime, restTimer } = workout;
+  const { exercises, workoutName, startTime, firstSetAt, restTimer } = workout;
 
   // Helper that hands a transformed exercises array back to the parent.
   // When given an updater function, we resolve it against the current ref
@@ -7248,6 +7288,7 @@ function ActiveLogger({
   const setRestCountdownTarget = (s) => onChangeRestCountdownTarget(s);
 
   const [elapsed, setElapsed] = useState(0);
+  const [restElapsed, setRestElapsed] = useState(0); // S80: header rest pill
   const [editingName, setEditingName] = useState(false);
   const [settingsMenuOpen, setSettingsMenuOpen] = useState(false);
   // Two-level menu: "main" shows the top-level options (Count up / Countdown / Off /
@@ -7275,6 +7316,9 @@ function ActiveLogger({
   const [pickerFilter, setPickerFilter] = useState("All");
   const [pickerOnlyMine, setPickerOnlyMine] = useState(false);
   const [confirmCancel, setConfirmCancel] = useState(false);
+  // S80 (owner): Finish is a one-tap terminal action — it now gets the
+  // same confirm layer Cancel has. Mirrors confirmCancel exactly.
+  const [confirmFinish, setConfirmFinish] = useState(false);
   const [rirHelpOpen, setRirHelpOpen] = useState(false);
 
   // Drag-to-minimize: track pointer Y delta on the drag handle.
@@ -7489,13 +7533,23 @@ function ActiveLogger({
     setReorderDrag(null);
   };
 
-  // Live timer — ticks once per second while logger is mounted
+  // Live timer — ticks once per second while logger is mounted.
+  // S80: the clock measures TRAINING — it sits at 0:00 until the first
+  // set is logged (firstSetAt), then ticks from that moment. Workouts
+  // hydrated from pre-S80 snapshots (no firstSetAt but sets already
+  // done) show 0:00 until finish, where duration falls back to
+  // startTime — an accepted one-deploy migration edge.
+  // The same interval drives restElapsed for the always-visible header
+  // rest pill (S80 owner bug #1) so a scroll can never hide the timer.
   useEffect(() => {
-    const tick = () => setElapsed(Math.floor((Date.now() - startTime.getTime()) / 1000));
+    const tick = () => {
+      setElapsed(firstSetAt ? Math.floor((Date.now() - firstSetAt) / 1000) : 0);
+      setRestElapsed(restTimer ? Math.floor((Date.now() - restTimer.startTs) / 1000) : 0);
+    };
     tick();
     const id = setInterval(tick, 1000);
     return () => clearInterval(id);
-  }, [startTime]);
+  }, [startTime, firstSetAt, restTimer]);
 
   // When the active field changes, scroll its row clear of the keypad.
   //
@@ -7863,7 +7917,19 @@ function ActiveLogger({
       }));
     }
 
+    // S80: stamp the workout clock's true start on the FIRST done set.
+    // Evaluated BEFORE updateSet writes — updateSet syncs exercisesRef
+    // synchronously, so a post-write check would always see this very
+    // set as done and never fire. Guarded on "no other set is done"
+    // (not just !firstSetAt) so a pre-S80 in-progress snapshot — done
+    // sets, no stamp — can't get a misleading mid-workout stamp; it
+    // falls back to startTime at finish. Unchecking never un-stamps:
+    // training started, the clock keeps its anchor.
+    const stampFirstSet = nextDone && !firstSetAt &&
+      !exercisesRef.current.some((e) => e.sets.some((s) => s.done));
+
     updateSet(uid, setIdx, patch);
+    if (stampFirstSet) onUpdateWorkout({ firstSetAt: Date.now() });
 
     if (nextDone) {
       // Start a new rest timer anchored to this set
@@ -8147,45 +8213,8 @@ function ActiveLogger({
   // off-screen past the docked position.
   const effectiveDragY = Math.min(dragY, MAX_SHEET_TOP);
 
-  // ── DEV-ONLY fake drag (desktop testing) ──
-  // Animates dragY from 0 → MAX_SHEET_TOP over 500ms via rAF, mimicking a
-  // finger drag that completes the docking gesture. Triggers onMinimize
-  // at the end (release-past-threshold).
-  // grep marker: DEV_MINIMIZE_BUTTON
-  const fakeDragRafRef = useRef(null);
-  const playFakeDrag = () => {
-    // Don't double-trigger if already playing
-    if (fakeDragRafRef.current !== null) return;
-    const startTime = performance.now();
-    const duration = 500; // ms
-    const targetY = MAX_SHEET_TOP;
-    dragMinRef.current.dragging = true;
-    const tick = (now) => {
-      const t = Math.min(1, (now - startTime) / duration);
-      // Ease-out cubic — feels like a real finger flick deceleration
-      const eased = 1 - Math.pow(1 - t, 3);
-      setDragY(targetY * eased);
-      if (t < 1) {
-        fakeDragRafRef.current = requestAnimationFrame(tick);
-      } else {
-        // Done — release path: commit minimize, clear dragY, clear flag.
-        // The state flip from active → minimized happens here. The real
-        // SessionBar mounts in the same screen position the docked sheet
-        // header just was, so the swap is invisible.
-        fakeDragRafRef.current = null;
-        dragMinRef.current.dragging = false;
-        onMinimize();
-        setDragY(0);
-      }
-    };
-    fakeDragRafRef.current = requestAnimationFrame(tick);
-  };
-  // Cleanup any in-flight animation if logger unmounts mid-drag
-  useEffect(() => () => {
-    if (fakeDragRafRef.current !== null) {
-      cancelAnimationFrame(fakeDragRafRef.current);
-    }
-  }, []);
+  // (S80: the DEV-only fake-drag button + rAF machinery were removed —
+  // owner bug list. Real drag-to-minimize is the only path now.)
 
   return (
     <div style={{
@@ -8214,23 +8243,6 @@ function ActiveLogger({
       transition: dragMinRef.current.dragging ? "none"
         : "top 0.25s ease, background 0.25s ease, border-color 0.25s ease",
     }}>
-      {/* ── DEV-ONLY: play fake drag-down (desktop testing) ──
-          Fixed-position so it stays visible during the morph.
-          Remove before launch. grep marker: DEV_MINIMIZE_BUTTON */}
-      <button
-        onClick={playFakeDrag}
-        style={{
-          position: "fixed", top: 12, right: 12, zIndex: 90,
-          padding: "6px 10px", fontSize: 11, fontWeight: 600,
-          background: "rgba(255,215,0,0.15)",
-          border: `1px dashed ${COLORS.gold}`,
-          borderRadius: 6, color: COLORS.gold, cursor: "pointer",
-          fontFamily: "monospace",
-        }}
-      >
-        DEV: play minimize ↓
-      </button>
-
       {/* ── Morph header — drag region + shared-element interpolation ──
           Container is 52px tall — exactly matches SessionBar. The whole
           surface is the drag-detection region (no separate drag pill).
@@ -8399,9 +8411,52 @@ function ActiveLogger({
               </svg>
             </button>
 
-            {/* ACTIVE-ONLY — Finish button, fades out as sheet docks. */}
+            {/* ACTIVE-ONLY — rest timer pill (S80 owner bug #1). The
+                inline row timer scrolls away with its set; this pill
+                pins the SAME timer in the header so it's visible from
+                anywhere in the card. Sits on the duration row after the
+                gear (left shifts with the H:MM:SS width like the gear
+                does). Active-form only — the docked bar already has its
+                own rest pill, so this fades with the rest of the active
+                chrome. */}
+            {restTimer && (() => {
+              const target = typeof restCountdownTarget === "number" && restCountdownTarget > 0 ? restCountdownTarget : 90;
+              let restDisplay;
+              if (restTimerMode === "countdown") {
+                const remaining = target - restElapsed;
+                restDisplay = remaining <= 0 ? "Time!" : formatDuration(remaining);
+              } else {
+                restDisplay = formatDuration(restElapsed);
+              }
+              return (
+                <div style={{
+                  position: "absolute",
+                  left: elapsed >= 3600 ? 124 : 106, top: 25,
+                  display: "flex", alignItems: "center", gap: 4,
+                  padding: "2px 8px", borderRadius: 10,
+                  background: "#1A1A0A", border: `1px solid ${COLORS.gold}`,
+                  color: COLORS.gold, fontSize: 11, fontWeight: 600,
+                  fontVariantNumeric: "tabular-nums",
+                  opacity: activeChromeOpacity,
+                  pointerEvents: "none",
+                  transition: dragMinRef.current.dragging ? "none"
+                    : "opacity 0.25s ease, left 0.25s ease",
+                }}>
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                    <circle cx="12" cy="13" r="8" />
+                    <line x1="12" y1="9" x2="12" y2="13" />
+                    <line x1="12" y1="13" x2="15" y2="15" />
+                  </svg>
+                  {restDisplay}
+                </div>
+              );
+            })()}
+
+            {/* ACTIVE-ONLY — Finish button, fades out as sheet docks.
+                S80: opens the confirm modal — Finish ends the session, so
+                it gets the same guard Cancel has. */}
             <button
-              onClick={onFinish}
+              onClick={() => setConfirmFinish(true)}
               style={{
                 position: "absolute",
                 right: 18, top: 9,
@@ -8813,6 +8868,50 @@ function ActiveLogger({
                 }}
               >
                 Discard
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* ── Finish confirm modal (S80) — same skeleton as Cancel's.
+          Gold primary (finishing is the happy path, not destructive);
+          Keep Going mirrors Cancel's escape wording. */}
+      {confirmFinish && (
+        <>
+          <div onClick={() => setConfirmFinish(false)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 100 }} />
+          <div style={{
+            position: "fixed", top: "50%", left: "50%", transform: "translate(-50%,-50%)",
+            zIndex: 101, background: COLORS.card, border: `1px solid ${COLORS.border}`,
+            borderRadius: 14, padding: "22px 22px 18px", width: 280,
+            boxShadow: "0 12px 32px rgba(0,0,0,0.7)",
+          }}>
+            <div style={{ color: COLORS.text, fontSize: 16, fontWeight: 600, marginBottom: 8, textAlign: "center" }}>
+              Finish this workout?
+            </div>
+            <div style={{ color: COLORS.textSecondary, fontSize: 13, lineHeight: 1.5, marginBottom: 18, textAlign: "center" }}>
+              This ends the session and takes you to your summary.
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button
+                onClick={() => setConfirmFinish(false)}
+                style={{
+                  flex: 1, padding: "11px", background: "transparent",
+                  border: `1px solid ${COLORS.border}`, borderRadius: 8,
+                  color: COLORS.text, fontSize: 13, fontWeight: 500, cursor: "pointer",
+                }}
+              >
+                Keep Going
+              </button>
+              <button
+                onClick={() => { setConfirmFinish(false); onFinish(); }}
+                style={{
+                  flex: 1, padding: "11px", background: COLORS.gold,
+                  border: "none", borderRadius: 8,
+                  color: COLORS.bg, fontSize: 13, fontWeight: 700, cursor: "pointer",
+                }}
+              >
+                Finish
               </button>
             </div>
           </div>
@@ -10372,7 +10471,8 @@ function SessionBar({ workout, restTimerMode, restCountdownTarget, onTap }) {
   useEffect(() => {
     if (!workout) return;
     const tick = () => {
-      setElapsed(Math.floor((Date.now() - workout.startTime.getTime()) / 1000));
+      // S80: clock measures training — 0:00 until the first logged set.
+      setElapsed(workout.firstSetAt ? Math.floor((Date.now() - workout.firstSetAt) / 1000) : 0);
       if (workout.restTimer) {
         setRestElapsed(Math.floor((Date.now() - workout.restTimer.startTs) / 1000));
       }
@@ -11275,9 +11375,6 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
   // strictly for input-side gating.
   const [isStreaming, setIsStreaming] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
-  // S77: which suggestion source key the user X-ed away (session-local
-  // layer; message-keyed dismissals ALSO persist on the message itself).
-  const [dismissedSrc, setDismissedSrc] = useState(null);
   // ── Post-workout questions pin + INLINE CARD (D-168, Session 71 —
   //    supersedes the D-122 bottom sheet) ──
   // The pin waits above the composer while pendingQuestions has
@@ -11545,31 +11642,26 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
   //      only attaches them to bounded-choice replies, per the system prompt).
   // Hidden while thinking/streaming (chrome mid-stream is noise — same rule
   // as the footer fade-in) and when offline.
-  const greetingDue = walkRotation(resolveRotation(coachRotation, planDaysPerWeek), rotationCursor);
-  let quickReplies = null;
+  // ── S80 (owner call): quick-reply chips are OFF — entirely ──────────
+  // Live verdict from the screenshots: the ghost-bubble stack reads as a
+  // solid wall that cuts the transcript in half, and the owner hasn't
+  // liked a single rendering of them (S60 pills → S76 strip → S77 ghost
+  // bubbles — three shapes, none earned their place). All chip SOURCES
+  // are dead: greeting chip, post-workout "Make it shorter"/"Swap
+  // something", and model-sent bounded-choice quickReplies. The DATA
+  // path stays intact — parseCoachReply still parses quickReplies and
+  // messages still persist them — so a future re-add (owner: "down the
+  // line we can discuss") is a render-layer decision, not a migration.
+  // (The greetingDue rotation walk lived only to label the greeting
+  // chip — retired with it; buildCoachGreeting does its own walk.)
+  const quickReplies = null;
+  const quickReplySrc = null;
   // S77: every suggestion set carries a SOURCE KEY so the X can dismiss
   // exactly this set and nothing else. Message-derived sets key on the
   // message id (dismissal persists on the message via the S75 id-scoped
   // updater); the greeting chip keys on the chat (no message exists yet —
   // dismissal is session-local state); an id-less tail message (pre-S75)
   // falls back to a position key (session-local).
-  let quickReplySrc = null;
-  if (isOnline && !isThinking && !isStreaming && !tailStreaming) {
-    const lastM = messages.length ? messages[messages.length - 1] : null;
-    if (showFirstRunNudge) {
-      quickReplies = null; // owner call: no "Build today's session" chip
-    } else if (showGreeting && greetingDue && greetingDue.label) {
-      quickReplies = ["Build my " + greetingDue.label.toLowerCase()];
-      quickReplySrc = "greeting:" + (chat ? chat.id : "");
-    } else if (lastM && lastM.role === "coach" && !lastM.streaming && !lastM.quickRepliesDismissed) {
-      if (lastM.kind === "workout") {
-        quickReplies = ["Make it shorter", "Swap something"];
-      } else if (lastM.kind === "text" && Array.isArray(lastM.quickReplies) && lastM.quickReplies.length) {
-        quickReplies = lastM.quickReplies;
-      }
-      if (quickReplies) quickReplySrc = lastM.id ? lastM.id : ("tail:" + messages.length);
-    }
-  }
 
   const remaining = MAX_MESSAGE_CHARS - input.length;
   const showCounter = remaining <= COUNTER_SHOW_AT_REMAINING;
@@ -11734,7 +11826,7 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
         // exact words the user just read. (Pre-S78 this path REMOVED the
         // bubble and re-burst a one-liner — the owner-reported flicker.)
         onUpdateMessage(reqChatId, liveH.id(), {
-          kind: "workout", text: `${intro}\n`,
+          kind: "workout", text: `${intro}${WORKOUT_STREAM_DELIM}`,
           workout: { title: b.title, exercises: b.exercises },
           intro, outro: b.outro,
           coachWorkout: res.coachWorkout,
@@ -11743,7 +11835,7 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
         });
         liveH.clear();
       } else {
-        streamText(`${intro}\n`, {
+        streamText(`${intro}${WORKOUT_STREAM_DELIM}`, {
           role: "coach", kind: "workout",
           workout: { title: b.title, exercises: b.exercises },
           intro, outro: b.outro,
@@ -11944,6 +12036,22 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
     if (seedHandledRef.current === pendingSeed) return;
     seedHandledRef.current = pendingSeed;
     const seed = pendingSeed;
+
+    // S80: kind:"live" seeds ("Ask Coach to build one") play the seeded
+    // question through the REAL send path — sendMessage posts the user
+    // turn and runs a genuine Coach generation (workout envelope, stream
+    // freeze, the works). Same macrotask deferral as the canned path so
+    // the mount-time cancelStream() can't clobber the kickoff. The App
+    // created/selected the target chat BEFORE the tab switch, so `chat`
+    // is already the right one. Offline, sendMessage no-ops by its own
+    // guard — the user lands on the offline Coach state, honest.
+    if (seed.kind === "live") {
+      setTimeout(() => {
+        sendMessage(seed.question);
+        if (onSeedConsumed) onSeedConsumed();
+      }, 60);
+      return;
+    }
 
     // ORDERING: tapping "Ask Coach" switches the tab, so CoachTab MOUNTS
     // fresh. The [chat?.id] effect below runs cancelStream() on mount,
@@ -12291,15 +12399,20 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
           // Workout" CTA, rendered only once streaming completes — buttons
           // popping in mid-stream feels jumpy.
           if (m.role === "coach" && m.kind === "workout") {
-            // The streamed buffer is `${intro}\n${outro}`. While streaming,
-            // we split on \n to decide what's "in" vs "still incoming":
-            //   - before the \n is reached → only partial intro is visible
-            //   - after the \n is reached → full intro + workout block
-            //     materialize, outro starts typing in
-            // This matches how real streaming UIs handle structured blocks:
-            // the block appears at its position in the stream, not chunked.
+            // The streamed buffer is `${intro}${WORKOUT_STREAM_DELIM}${outro}`.
+            // While streaming, we split at the delimiter to decide what's
+            // "in" vs "still incoming":
+            //   - before the delimiter is reached → only partial intro visible
+            //   - after → full intro + workout block materialize, outro types in
+            // S80: the delimiter moved from "\n" to WORKOUT_STREAM_DELIM
+            // because intros are multi-paragraph now (S78 intro-first) and
+            // the first newline fell INSIDE the intro — the coaching
+            // paragraph after it misfiled into the outro slot (owner
+            // screenshot bug). Newline fallback keeps pre-S80 persisted
+            // one-liner messages rendering unchanged.
             const buf = m.text || "";
-            const nlIdx = buf.indexOf("\n");
+            let nlIdx = buf.indexOf(WORKOUT_STREAM_DELIM);
+            if (nlIdx < 0 && buf.indexOf("\n") >= 0 && !m.streaming) nlIdx = buf.indexOf("\n");
             const introVisible = nlIdx >= 0 ? buf.slice(0, nlIdx) : buf;
             const outroVisible = nlIdx >= 0 ? buf.slice(nlIdx + 1) : "";
             const showWorkoutBlock = nlIdx >= 0;
@@ -12315,6 +12428,7 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
                   fontSize: 14, lineHeight: 1.55,
                   padding: "2px 2px",
                   marginBottom: showWorkoutBlock ? 13 : 0,
+                  whiteSpace: "pre-wrap", // S80: multi-paragraph intros keep their breaks
                 }}>{introVisible}</div>
 
                 {/* Workout block — the only Coach output that lives in a card.
@@ -12645,75 +12759,12 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
         </div>
       )}
 
-      {/* Quick-reply chips — the user's pre-written CONVERSATIONAL
-          answers above the composer (Claude placement — the user's side
-          of the conversation; the placement has been right since D-117).
-          S76 (owner lock): the FORM changed — the S64/S71 full-width
-          vertical stack read like survey answer cards and ate the
-          composer area ("look at this image… garbage"). Now a wrapping
-          ROW of pill-variant chips: content-hugging, transparent at
-          rest with a hairline border and dim text — NOT the pre-D-167
-          gold-outline pills; gold remains only the press flash — long
-          labels wrap to a second line instead of truncating (the S64
-          case, solved by wrap not by going vertical). Tapping sends the
-          label as a user message
-          via sendMessage (fire-and-forget; pointerFire carries the D-116
-          blur-race handling). D-168's deliberate split: this strip is
-          for conversational chips only ("Make it shorter", "Swap
-          something"); survey ANSWERS live inside the inline question
-          card, never here — that's what lets the survey read as a
-          contained unit. */}
-      {/* S77 (owner lock, Direction C — supersedes the S76 pill strip):
-          suggestions render as GHOST USER BUBBLES — a right-aligned
-          column on the user's edge, dashed outline, dimmed text. They
-          read as drafts of replies you could send; tapping one sends it
-          (same pointerFire flash). Structural fixes over the pill strip:
-          right alignment kills the ragged-left float, bubbles wrap any
-          label length natively (no truncation, no cap-driven ugliness),
-          and the quiet X beneath the stack dismisses THIS set — persisted
-          on the source message when it has an id, session-local for the
-          greeting chip / pre-S75 tails. The stack also hides the moment
-          the user starts typing (a draft you're writing replaces the
-          drafts we offered) and returns if the box is cleared. */}
-      {quickReplies && quickReplies.length > 0 && quickReplySrc !== dismissedSrc && !input.trim() && (
-        <div style={{
-          padding: "0 16px 8px", display: "flex", flexDirection: "column",
-          alignItems: "flex-end", gap: 6, flexShrink: 0,
-        }}>
-          {quickReplies.map((q, qi) => (
-            <SelectableChip
-              key={qi}
-              label={q}
-              pointerFire
-              variant="draft"
-              onClick={() => sendMessage(q)}
-              style={{ whiteSpace: "normal", lineHeight: 1.35, textAlign: "left", maxWidth: "78%" }}
-            />
-          ))}
-          <button
-            onPointerDown={(e) => {
-              // pointerFire convention (D-116): act on pointer-down so a
-              // focused composer's blur can't shift layout under the tap.
-              e.preventDefault();
-              setDismissedSrc(quickReplySrc);
-              // Message-keyed sets persist the dismissal on the message
-              // itself (id-scoped, S75) so a reload or tab switch doesn't
-              // resurrect what the user closed.
-              if (quickReplySrc && !quickReplySrc.startsWith("greeting:") && !quickReplySrc.startsWith("tail:") && chat) {
-                onUpdateMessage(chat.id, quickReplySrc, { quickRepliesDismissed: true });
-              }
-            }}
-            title="Hide suggestions"
-            style={{
-              background: "transparent", border: "none", cursor: "pointer",
-              width: 26, height: 20, display: "flex", alignItems: "center", justifyContent: "center",
-              color: COLORS.inactive, fontSize: 12, padding: 0, lineHeight: 1,
-            }}
-          >
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
-          </button>
-        </div>
-      )}
+      {/* ── Quick-reply chips: RETIRED (S80 owner call) ──
+          The ghost-bubble suggestion stack (S77, which superseded the
+          S76 pill strip, which superseded the S60 pills) rendered here.
+          Removed entirely — live verdict: a wall of boxes cutting off
+          the transcript. quickReplies is hard-null upstream; message
+          data still persists for a possible future re-add. */}
 
       {/* ── Post-workout questions pin (D-122 entry, surviving D-168) ──
           Gold-tinted, quiet, persistent. Shows the session name and how
@@ -15503,7 +15554,10 @@ function SettingsSubscreen({
   // are deferred to a later turn.
   emailDisplay = "alex@email.com",
   membershipDisplay = "Active · Renews Apr 15",
-  appVersion = "v2.6",
+  // S80: the version footer is now the ONLY place the build tag shows
+  // (the app-chrome overlay was removed — owner bug list). Defaults to
+  // the live BUILD_TAG so it can never drift from the deployed build.
+  appVersion = BUILD_TAG,
 }) {
   const [confirmLogout, setConfirmLogout] = useState(false);
   // Data export/import panels (Session 68). "export" | "import" | null.
@@ -17766,8 +17820,48 @@ export default function MYGFitness() {
   // Cleared on logout (like other prefs). Profile tab redesign session
   // will add a Settings row that surfaces these for direct editing;
   // for now the only change UI is the in-workout gear menu.
-  const [restTimerModePref, setRestTimerModePref] = useState(() => h.restTimerModePref || "countup");
+  // S80 (owner): the DEFAULT is now countdown @ 90s (was count-up). A
+  // stored pref always wins — a device that saved "countup" keeps it
+  // until the user changes it in the gear menu or Settings.
+  const [restTimerModePref, setRestTimerModePref] = useState(() => h.restTimerModePref || "countdown");
   const [restCountdownTargetPref, setRestCountdownTargetPref] = useState(() => typeof h.restCountdownTargetPref === "number" ? h.restCountdownTargetPref : 90);
+
+  // ── Rest-countdown alert (S80 owner bug #3) ──
+  // Lives at APP level (not the logger) so it fires no matter where the
+  // user is — logger open, minimized to the bar, or on another tab. One
+  // watcher: when the active countdown crosses zero, buzz the phone
+  // (navigator.vibrate where the platform supports it — Android PWA yes,
+  // iOS Safari no) and flash the gold toast. Fires ONCE per rest timer
+  // (ref keyed on the timer's startTs; checking the next set mints a new
+  // startTs → a fresh watch). When real push notifications land (§16),
+  // this same crossing is where the notification fires.
+  const restAlertFiredRef = useRef(null);
+  const [restAlertVisible, setRestAlertVisible] = useState(false);
+  const restAlertHideRef = useRef(null);
+  const activeRestStartTs = activeWorkout && activeWorkout.restTimer ? activeWorkout.restTimer.startTs : null;
+  useEffect(() => {
+    if (activeRestStartTs == null || restTimerModePref !== "countdown") return undefined;
+    const target = typeof restCountdownTargetPref === "number" && restCountdownTargetPref > 0 ? restCountdownTargetPref : 90;
+    const check = () => {
+      if (restAlertFiredRef.current === activeRestStartTs) return;
+      const sec = Math.floor((Date.now() - activeRestStartTs) / 1000);
+      if (sec >= target) {
+        restAlertFiredRef.current = activeRestStartTs;
+        if (typeof navigator !== "undefined" && typeof navigator.vibrate === "function") {
+          try { navigator.vibrate([200, 100, 200]); } catch (e) { /* unsupported — toast still shows */ }
+        }
+        setRestAlertVisible(true);
+        if (restAlertHideRef.current) clearTimeout(restAlertHideRef.current);
+        restAlertHideRef.current = setTimeout(() => {
+          setRestAlertVisible(false);
+          restAlertHideRef.current = null;
+        }, 3200);
+      }
+    };
+    check();
+    const id = setInterval(check, 500);
+    return () => clearInterval(id);
+  }, [activeRestStartTs, restTimerModePref, restCountdownTargetPref]);
 
   const addCustomExercise = (ex) => {
     setCustomExercises((prev) => [...prev, ex]);
@@ -17845,6 +17939,27 @@ export default function MYGFitness() {
     const newId = `c${Date.now()}`;
     setCoachChats((prev) => [{ id: newId, createdAt: Date.now(), messages: [] }, ...prev]);
     setCurrentCoachChatId(newId);
+  };
+
+  // ── "Ask Coach to build one" (S80 owner bug #7) ────────────────────
+  // The Workout-tab CTA finally works: open a fresh chat (reusing the
+  // current one if it's empty — same spam-prevention rule as New Chat),
+  // switch to the Coach tab, and auto-send a real user turn through the
+  // LIVE send path — Coach answers with an actual built workout, not a
+  // canned reply. The chat is created HERE, before CoachTab mounts, so
+  // the seed effect never races currentCoachChatId (the exact race the
+  // S-era comment in CoachTab warns about — App-side creation sidesteps
+  // it: by mount time the new chat IS the current chat).
+  const askCoachToBuildWorkout = () => {
+    const current = coachChats.find((c) => c.id === currentCoachChatId);
+    if (!current || current.messages.length > 0) {
+      coachGenAbandon(); // same abandon rule as New Chat / switch
+      const newId = `c${Date.now()}`;
+      setCoachChats((prev) => [{ id: newId, createdAt: Date.now(), messages: [] }, ...prev]);
+      setCurrentCoachChatId(newId);
+    }
+    setActiveTab("coach");
+    setPendingCoachSeed({ kind: "live", question: "Hey Coach, build me my next workout." });
   };
 
   // ── "Ask Coach about this observation" deep-link ───────────────────
@@ -18133,6 +18248,14 @@ export default function MYGFitness() {
       exercises: [],
       workoutName: deriveWorkoutName([], now, customExercises),
       startTime: now,
+      // S80 (owner clock decision): the visible workout clock starts at
+      // the FIRST LOGGED SET, not creation — a card built at 8am and
+      // trained at 5pm must not read as a 9-hour session, and the warm-up
+      // ritual before set one isn't training time. firstSetAt (epoch ms,
+      // JSON-safe) is stamped once by toggleSetDone; startTime is KEPT as
+      // the creation record. Duration + session date derive from
+      // firstSetAt when present (buildSessionFromActiveWorkout).
+      firstSetAt: null,
       // restTimerMode and countdown target now live on App-level prefs
       // (restTimerModePref / restCountdownTargetPref) so they persist
       // across workouts. WorkoutTab and SessionBar receive them as props.
@@ -18196,6 +18319,7 @@ export default function MYGFitness() {
       exercises: newExercises,
       workoutName: deriveWorkoutName(newExercises, now, customExercises),
       startTime: now,
+      firstSetAt: null, // S80: clock starts at first logged set
       restTimer: null,
       nameWasEdited: false,
     });
@@ -18441,7 +18565,16 @@ export default function MYGFitness() {
   const buildSessionFromActiveWorkout = (aw) => {
     if (!aw) return null;
     const endTime = new Date();
-    const start = aw.startTime instanceof Date ? aw.startTime : new Date(aw.startTime);
+    // S80: duration + session date anchor on the FIRST LOGGED SET when
+    // one exists (the clock measures training, not card-open time — a
+    // card built at 8am and trained at 5pm records the 5pm session).
+    // firstSetAt-less workouts (zero done sets, or a pre-S80 in-progress
+    // snapshot) fall back to creation time, the old behavior. The edit
+    // flow is untouched either way — aw.editing overrides date/duration
+    // below.
+    const start = aw.firstSetAt
+      ? new Date(aw.firstSetAt)
+      : (aw.startTime instanceof Date ? aw.startTime : new Date(aw.startTime));
     const rawDuration = Math.max(1, Math.floor((endTime - start) / 1000));
     const session = {
       id: `s${Date.now()}`,
@@ -18639,6 +18772,9 @@ export default function MYGFitness() {
       workoutName: session.name,
       startTime: now, // live timer ticks from 0 (measures editing); the
                       // builder restores the ORIGINAL date/duration
+      firstSetAt: null, // S80: stays null in edit (every set arrives done,
+                        // so the first-set stamp never fires) — the
+                        // editing.durationSec restore owns duration anyway
       restTimer: null,
       nameWasEdited: !!session.nameWasEdited,
       fromCoach: !!session.fromCoach,
@@ -19171,6 +19307,7 @@ export default function MYGFitness() {
           onChangeRestTimerMode={setRestTimerModePref}
           onChangeRestCountdownTarget={setRestCountdownTargetPref}
           onStartEmpty={requestStartEmptyWorkout}
+          onAskCoach={askCoachToBuildWorkout}
           onUpdateWorkout={updateActiveWorkout}
           onMinimize={minimizeWorkout}
           onCancel={cancelActiveWorkout}
@@ -19489,6 +19626,39 @@ export default function MYGFitness() {
         </div>
         {showSessionBar && <SessionBar workout={activeWorkout} restTimerMode={restTimerModePref} restCountdownTarget={restCountdownTargetPref} onTap={expandWorkoutFromBar} />}
         {!hideTabBar && <TabBar active={activeTab} onTab={setActiveTab} coachDot={coachQuestionsWaiting} />}
+
+        {/* ── Rest-over toast (S80 owner bug #3) — gold, fixed, shows on
+            any tab. Slides in under the safe area, auto-dismisses after
+            ~3s (the watcher owns the timer); tap dismisses early. */}
+        {restAlertVisible && (
+          <button
+            onClick={() => {
+              setRestAlertVisible(false);
+              if (restAlertHideRef.current) { clearTimeout(restAlertHideRef.current); restAlertHideRef.current = null; }
+            }}
+            style={{
+              position: "fixed",
+              top: "calc(14px + env(safe-area-inset-top))",
+              left: "50%", transform: "translateX(-50%)",
+              zIndex: 200,
+              display: "flex", alignItems: "center", gap: 8,
+              padding: "11px 20px", borderRadius: 22,
+              background: COLORS.gold, border: "none",
+              color: COLORS.bg, fontSize: 14, fontWeight: 700,
+              cursor: "pointer", whiteSpace: "nowrap",
+              boxShadow: "0 6px 24px rgba(255,215,0,0.35), 0 4px 16px rgba(0,0,0,0.5)",
+              animation: "restToastIn 0.25s ease",
+            }}
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+              <circle cx="12" cy="13" r="8" />
+              <line x1="12" y1="9" x2="12" y2="13" />
+              <line x1="12" y1="13" x2="15" y2="15" />
+            </svg>
+            Rest over — next set
+            <style>{`@keyframes restToastIn { from { opacity: 0; transform: translateX(-50%) translateY(-12px); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }`}</style>
+          </button>
+        )}
 
         {showStartConflict && (
           <>
