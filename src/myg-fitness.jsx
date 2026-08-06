@@ -5102,7 +5102,7 @@ const IS_REAL_DEVICE = (() => {
 // Deploy cache-verification marker (owner's V.23 convention, formalized:
 // bump this one constant per push to confirm the phone isn't serving
 // stale cached code; rendered only on real devices, top-right).
-const BUILD_TAG = "V.31.1";
+const BUILD_TAG = "V.31.2";
 
 /* ── Visual-viewport pin (S77 — the "composer slides past the keyboard" bug) ──
    iOS (Safari tab and standalone PWA alike) never shrinks the LAYOUT
@@ -12142,7 +12142,7 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
     setIsStreaming(false);
     setLiveTokens(false);
     setExpandedWhy(new Set());
-    setDismissedSrc(null); // S77: suggestion dismissal is per-source; a chat switch changes the source
+    // (setDismissedSrc call removed S80 — chip dismissal state retired with the chips; V.31.2 hotfix)
     cancelStream(); // finalizes any mid-burst message (S75) rather than stranding it
     // cancelStream is stable enough for this purpose (closes over refs).
     // eslint-disable-next-line react-hooks/exhaustive-deps
