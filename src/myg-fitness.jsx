@@ -5102,7 +5102,7 @@ const IS_REAL_DEVICE = (() => {
 // Deploy cache-verification marker (owner's V.23 convention, formalized:
 // bump this one constant per push to confirm the phone isn't serving
 // stale cached code; rendered only on real devices, top-right).
-const BUILD_TAG = "V.31";
+const BUILD_TAG = "V.31.1";
 
 /* ── Visual-viewport pin (S77 — the "composer slides past the keyboard" bug) ──
    iOS (Safari tab and standalone PWA alike) never shrinks the LAYOUT
@@ -17826,42 +17826,6 @@ export default function MYGFitness() {
   const [restTimerModePref, setRestTimerModePref] = useState(() => h.restTimerModePref || "countdown");
   const [restCountdownTargetPref, setRestCountdownTargetPref] = useState(() => typeof h.restCountdownTargetPref === "number" ? h.restCountdownTargetPref : 90);
 
-  // ── Rest-countdown alert (S80 owner bug #3) ──
-  // Lives at APP level (not the logger) so it fires no matter where the
-  // user is — logger open, minimized to the bar, or on another tab. One
-  // watcher: when the active countdown crosses zero, buzz the phone
-  // (navigator.vibrate where the platform supports it — Android PWA yes,
-  // iOS Safari no) and flash the gold toast. Fires ONCE per rest timer
-  // (ref keyed on the timer's startTs; checking the next set mints a new
-  // startTs → a fresh watch). When real push notifications land (§16),
-  // this same crossing is where the notification fires.
-  const restAlertFiredRef = useRef(null);
-  const [restAlertVisible, setRestAlertVisible] = useState(false);
-  const restAlertHideRef = useRef(null);
-  const activeRestStartTs = activeWorkout && activeWorkout.restTimer ? activeWorkout.restTimer.startTs : null;
-  useEffect(() => {
-    if (activeRestStartTs == null || restTimerModePref !== "countdown") return undefined;
-    const target = typeof restCountdownTargetPref === "number" && restCountdownTargetPref > 0 ? restCountdownTargetPref : 90;
-    const check = () => {
-      if (restAlertFiredRef.current === activeRestStartTs) return;
-      const sec = Math.floor((Date.now() - activeRestStartTs) / 1000);
-      if (sec >= target) {
-        restAlertFiredRef.current = activeRestStartTs;
-        if (typeof navigator !== "undefined" && typeof navigator.vibrate === "function") {
-          try { navigator.vibrate([200, 100, 200]); } catch (e) { /* unsupported — toast still shows */ }
-        }
-        setRestAlertVisible(true);
-        if (restAlertHideRef.current) clearTimeout(restAlertHideRef.current);
-        restAlertHideRef.current = setTimeout(() => {
-          setRestAlertVisible(false);
-          restAlertHideRef.current = null;
-        }, 3200);
-      }
-    };
-    check();
-    const id = setInterval(check, 500);
-    return () => clearInterval(id);
-  }, [activeRestStartTs, restTimerModePref, restCountdownTargetPref]);
 
   const addCustomExercise = (ex) => {
     setCustomExercises((prev) => [...prev, ex]);
@@ -18061,6 +18025,47 @@ export default function MYGFitness() {
   // up counting from the original moment it was started, not from
   // reload time.
   const [activeWorkout, setActiveWorkout] = useState(h.activeWorkout || null);
+
+  // ── Rest-countdown alert (S80 owner bug #3) ──
+  // Declared AFTER activeWorkout (V.31.1 hotfix — the original placement
+  // above it read the const in its temporal dead zone: ReferenceError on
+  // every App render, gray screen; parser + suite were blind to it since
+  // neither renders App. Scope order is load-bearing in a component body).
+  // Lives at APP level (not the logger) so it fires no matter where the
+  // user is — logger open, minimized to the bar, or on another tab. One
+  // watcher: when the active countdown crosses zero, buzz the phone
+  // (navigator.vibrate where the platform supports it — Android PWA yes,
+  // iOS Safari no) and flash the gold toast. Fires ONCE per rest timer
+  // (ref keyed on the timer's startTs; checking the next set mints a new
+  // startTs → a fresh watch). When real push notifications land (§16),
+  // this same crossing is where the notification fires.
+  const restAlertFiredRef = useRef(null);
+  const [restAlertVisible, setRestAlertVisible] = useState(false);
+  const restAlertHideRef = useRef(null);
+  const activeRestStartTs = activeWorkout && activeWorkout.restTimer ? activeWorkout.restTimer.startTs : null;
+  useEffect(() => {
+    if (activeRestStartTs == null || restTimerModePref !== "countdown") return undefined;
+    const target = typeof restCountdownTargetPref === "number" && restCountdownTargetPref > 0 ? restCountdownTargetPref : 90;
+    const check = () => {
+      if (restAlertFiredRef.current === activeRestStartTs) return;
+      const sec = Math.floor((Date.now() - activeRestStartTs) / 1000);
+      if (sec >= target) {
+        restAlertFiredRef.current = activeRestStartTs;
+        if (typeof navigator !== "undefined" && typeof navigator.vibrate === "function") {
+          try { navigator.vibrate([200, 100, 200]); } catch (e) { /* unsupported — toast still shows */ }
+        }
+        setRestAlertVisible(true);
+        if (restAlertHideRef.current) clearTimeout(restAlertHideRef.current);
+        restAlertHideRef.current = setTimeout(() => {
+          setRestAlertVisible(false);
+          restAlertHideRef.current = null;
+        }, 3200);
+      }
+    };
+    check();
+    const id = setInterval(check, 500);
+    return () => clearInterval(id);
+  }, [activeRestStartTs, restTimerModePref, restCountdownTargetPref]);
   const [workoutMinimized, setWorkoutMinimized] = useState(false);
   const [finishedSession, setFinishedSession] = useState(null);
   // workoutHistory: if we have a snapshot, use it (including empty array —
