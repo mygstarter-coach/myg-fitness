@@ -168,7 +168,12 @@ function saveSnapshot(state) {
       rotationCursor: Number.isInteger(state.rotationCursor) ? state.rotationCursor : 0,
       coachRules: Array.isArray(state.coachRules) ? state.coachRules : [],
       coachObservations: Array.isArray(state.coachObservations) ? state.coachObservations : [],
-      // Post-workout questions pin (Finish Flow session).
+      // S81 denial memory: pattern-keyed strikes ("you're wrong" ×2 =
+      // dead forever). User-answer provenance — replay-terminal.
+      obsDenials: Array.isArray(state.obsDenials) ? state.obsDenials : [],
+      // Post-workout questions pin — DEAD SURFACE as of S81 (the survey
+      // is killed; the queue is derived). Kept in the snapshot shape so
+      // stale persisted pins hydrate to null harmlessly.
       pendingCoachQuestions: state.pendingCoachQuestions || null,
       // Survey event log (Session 73, D-176/S3): answers + dismissals are
       // replayable history — the unified refold interleaves them with
@@ -236,6 +241,7 @@ function loadSnapshot() {
       rotationCursor: Number.isInteger(parsed.rotationCursor) && parsed.rotationCursor >= 0 ? parsed.rotationCursor : 0,
       coachRules: Array.isArray(parsed.coachRules) ? parsed.coachRules : null,
       coachObservations: Array.isArray(parsed.coachObservations) ? parsed.coachObservations : null,
+      obsDenials: Array.isArray(parsed.obsDenials) ? parsed.obsDenials : [],
       // Post-workout questions pin (Finish Flow session). One pending set
       // at a time; a new finish replaces a stale unanswered one.
       pendingCoachQuestions: parsed.pendingCoachQuestions && typeof parsed.pendingCoachQuestions === "object"
@@ -1700,14 +1706,14 @@ function buildCoachTurn(state, ctx) {
   // on file (live failure: OHTE prescribed on 2026-07-26 because the retry
   // turn happened not to call get_observations). Deterministic beats
   // instructed: the app decides what Coach sees, not the model's tool
-  // judgment. Only the curated visible set rides (obsVisibleToUser — legacy
-  // Coach-authored notes + engine-ENCODED records); the engine's silent
-  // n=1/n=2 tallies never do, which is what keeps this block small as
-  // observations multiply. get_observations remains the depth tool
-  // (occurrences, provenance, watching/pending records).
+  // judgment. S81 (D-216): only CONFIRMED facts ride (obsRidesGeneration)
+  // — watching/asked/denied tallies never touch generation, and the
+  // legacy silent free-note species is retired (D-213). get_observations
+  // remains the depth tool (occurrences, provenance, watching records
+  // with keep-silent status strings).
   const obsText_ = typeof obsText === "function" ? obsText : (o) => (o && o.text) || "";
   const obsLines = (state.coachObservations || [])
-    .filter(obsVisibleToUser)
+    .filter(obsRidesGeneration)
     .map((o) => "- " + obsText_(o))
     .filter((s) => s.length > 2)
     .join("\n") || "(none yet)";
@@ -2014,18 +2020,23 @@ function coachToolRules(input, state) {
 // patterns). Raw tier integers never appear in the return.
 function coachObservationStatus(o) {
   const monthsSince = (ms) => Math.max(0, Math.round((Date.now() - ms) / (30 * 24 * 3600 * 1000)));
-  if (o.encodedAs === "occasional") {
-    const age = o.encodedAt ? ` — encoded ${monthsSince(o.encodedAt)} month(s) ago` : "";
-    const refresh = o.refreshDueAt && Date.now() > o.refreshDueAt ? "; refresh due — worth re-checking with the user" : "";
-    return `occasional-rotation preference — user chose "keep as occasional"${age}${refresh}`;
-  }
-  // Engine-counted records (Session 68, D-071) speak by status. Raw tier
-  // integers and window counters never appear — D-150 principle.
+  // S81 lifecycle grammar — raw counts, thresholds, and field names
+  // never appear in anything Coach could quote (D-150 principle).
   if (o.source === "engine") {
-    if (o.status === "inquiry_pending") return "pattern confirmed — seen three or more times; a question for the user is pending, do not pre-empt it";
-    if ((o.occurrences || []).length >= 2) return "asking soon — pattern seen twice; okay to raise when clearly relevant, fades on its own if it stops";
-    return "watching — single occurrence, keep silent";
+    if (o.status === "confirmed") {
+      if (o.confirmedAs === "occasional") {
+        const age = o.confirmedAt ? ` — confirmed ${monthsSince(o.confirmedAt)} month(s) ago` : "";
+        const refresh = o.refreshDueAt && Date.now() > o.refreshDueAt ? "; refresh due — worth re-checking with the user" : "";
+        return `occasional-rotation preference — user chose "keep as occasional"${age}${refresh}`;
+      }
+      const age = o.confirmedAt ? ` — confirmed ${monthsSince(o.confirmedAt)} month(s) ago` : "";
+      return `confirmed by the user${age} — a fact you may build with`;
+    }
+    if (o.status === "asked") return "asked — a question is queued for the user; do not pre-empt it, keep silent";
+    if (o.status === "denied") return "denied by the user — they said this read is wrong; never raise it again";
+    return "watching — an engine tally only; keep silent, never act on it or mention it";
   }
+  // Legacy non-engine notes (pre-S81 species — none exist post-wipe).
   if (o.tier >= 3) {
     const age = o.createdAt ? ` — established ${monthsSince(o.createdAt)} month(s) ago` : "";
     return `standing pattern${age}`;
@@ -2036,9 +2047,10 @@ function coachObservationStatus(o) {
 
 function coachToolObservations(input, state) {
   const obs = [...(state.coachObservations || [])]
-    // Closed / revoked engine records are history, not information —
-    // they never reach Coach (or the user).
-    .filter((o) => !(o && o.source === "engine" && (o.status === "closed" || o.status === "revoked")))
+    // S81: all lifecycle states reach the depth tool — the status
+    // strings carry the discipline (watching/asked = keep silent,
+    // denied = never raise again, confirmed = usable fact).
+    .filter((o) => !!o)
     .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
   return {
     count: obs.length,
@@ -3321,87 +3333,136 @@ function migrateHistoryDeviation(history, customs = []) {
 }
 
 /* ═══════════════════════════════════════════════════════════════════
-   OBSERVATION ENGINE (Session 68 — D-071 cluster realized)
+   OBSERVATION ENGINE v2 (Session 81 — the lifecycle rewrite;
+   D-205–D-207 + D-213/D-214/D-216 realized)
 
    Counts behavior patterns off the deviation receipts (D-147: the
    receipts are this engine's event stream). Pure, deterministic, engine-
-   owned — Claude never computes tiers, only reads humanized status via
-   tool (the D-070/D-071 split).
+   owned — Claude never computes states, only reads humanized status via
+   tool (the D-070/D-071 split, carried forward).
 
-   v1 pattern types (the two the receipts can feed — owner lock S68):
-     off_card_add  — occurrence: target appears in deviation.added[]
-                     opportunity: A/B session whose logged work hits the
-                     target's primary muscle group
-     skip_pattern  — occurrence: target appears in deviation.skipped[]
-                     opportunity: A/B session where target was prescribed
-   BOTH C's are gated out for occurrences AND opportunities (D-081
-   extended by owner lock S68: an abandoned card can neither advance nor
-   decay an observation).
+   THE GRAMMAR (S81 owner locks): watching → asked → confirmed / denied.
+   - watching:  an engine tally. Enters silently (D-213), shows honestly
+                in the Profile, feeds NOTHING but future questions.
+   - asked:     a question about the tally has been put in front of the
+                user (the debrief card — future session — calls
+                markObservationAsked). Still feeds nothing.
+   - confirmed: the USER ratified it. A fact Coach believes and builds
+                with (D-216); the ONLY state that rides generation.
+   - denied:    the user said "you're wrong." Terminal, visible,
+                user-deletable. Denial MEMORY lives in a separate store
+                (obsDenials, keyed by pattern — survives record death).
 
-   Tiers (D-024/D-045/D-071): n=1 silent forever (no decay, cost zero);
-   n=2 opens the 4-opportunity decay window — 4 opportunities without
-   recurrence → status "closed" (not even n=1; a fresh occurrence later
-   starts a NEW record); recurrence in-window → n=3 → "inquiry_pending",
-   which persists HEADLESSLY (like stale.surveyPending) until the survey
-   arc builds the ask surface. inquiry_pending does not decay — it earned
-   the ask; D-071 specifies decay for tier 2 only.
+   Pattern types (S81 adds the third, D-185):
+     off_card_add — occurrence: target in deviation.added[]
+                    opportunity: A/B session working the target's
+                    primary muscle
+     skip_pattern — occurrence: target in deviation.skipped[]
+                    opportunity: A/B session where target was prescribed
+     variant_swap — occurrence: target in deviation.kept[] with
+                    variantSwapped, keyed PER DESTINATION variant
+                    (OHP→Smith and OHP→Dumbbells are separate tallies —
+                    S81 owner lock)
+                    opportunity: target kept at a prescribed variant
+                    OTHER than the destination (they faced the choice
+                    and didn't take it). Prescribed AT the destination =
+                    NEUTRAL — no swap possible, no evidence either way
+                    (S81 owner lock).
+   BOTH C's stay gated out for occurrences AND opportunities (D-152).
 
-   Encoding scope (D-082, owner lock S68): derived from variant
-   consistency across occurrences — all same non-null variant → scope
-   "variant"; ANY mixing (or unknown variants) → scope "lift". No
-   "mostly" cleverness. Recomputed on every occurrence.
+   FADE RULES (S81 owner package — uniform across all three types, any
+   count, watching AND asked; "the queue never holds stale news"):
+   - OBS_DECAY_WINDOW quiet opportunities → the record VANISHES from the
+     store (not closed-and-kept: faded tallies show nothing — S81 Q5).
+     Its derived queue question vanishes with it.
+   - Calendar backstop: occurrences older than OBS_OCCURRENCE_TTL_DAYS
+     (judged against the incoming session's date — replay-deterministic)
+     are expired at fold time. Two isolated events a year apart never
+     look like a pattern. A record whose occurrences all expire vanishes.
+   Recurrence resets the opportunity window, as before.
 
-   Occasional rotation (D-083, owner lock S68 — floor AND ceiling,
-   "keep it in rotation"): pool = records with encodedAs "occasional".
-   Ceiling: never two matching-family sessions in a row, min gap
-   ROTATION_MIN_GAP matching sessions since last appearance. Floor: at
-   ROTATION_DUE_GAP matching sessions without an appearance the candidate
-   goes "due" — first in line next day with room. Between the bounds it
-   lands when the day has slot room (Coach's call at prescription time —
-   the engine answers ELIGIBILITY only, deterministically; the natural
-   variance comes from the workouts, not RNG). Effective rate ~1-in-3-to-5.
+   DENIAL (D-205 mechanics, S81-refined): the first "you're wrong"
+   REMOVES the record (tally back to zero) and files a strike in
+   obsDenials; the pattern must now hit OBS_ASK_THRESHOLD +
+   strikes×OBS_DENIAL_STEP sightings to become ask-eligible again
+   (2→4). The second "wrong" flips the record to status "denied" —
+   terminal, dead forever; the fold consults obsDenials and never mints
+   a fresh record for a killed pattern. Strikes are per-PATTERN, not
+   per-record: they survive fading (S81 Q8 — "you were wrong about the
+   pattern, not a database row").
 
-   Record shape (Coach-legible per the schema-editability principle):
+   CONFIRMATION: confirmObservation stamps confirmedAs
+   ("occasional" | "standing" | "exclusion" | "fact") + a 6-month
+   refresh clock (exclusions carry none — their clock lives on the
+   companion rule, D-162). "occasional" keeps feeding the D-083
+   rotation engine unchanged. Confirmed/denied records are TERMINAL to
+   the fold and to replay (D-155/D-135 provenance: user answers
+   supersede counting history).
+
+   Record shape v2 (Coach-legible per the schema-editability principle):
      { schemaVersion, id, source:"engine", type, targets:[{exerciseId,
-       name}], scope, variantLabel, status, tier, occurrences:[{sessionId,
+       name}], scope, variantLabel, status, occurrences:[{sessionId,
        date, variantLabel}], windowOpportunities:[{sessionId, date}],
-       encodedAs, encodedAt, refreshDueAt, lastDismissedAt, closedAt,
-       revokedAt, createdAt, updatedAt }
-   tier is stored AND invariant-checked against occurrences.length
-   (D-148 counts-plus-arrays precedent). Coach-authored free-note
-   observations (no `source` field / source "coach") are a different
-   species — this engine never touches them.
-
-   History backfill (owner lock S68, Q4 = TOTAL fresh start): the legacy
-   hand-simulated Machine Press "occasional" record is WIPED and the
-   receipts replay from scratch under final rules — the live engine
-   re-notices, re-counts, and re-asks through the real loop. Replay is
-   SILENT: an n=3 parks as inquiry_pending, nothing fires at hydration.
-   Encoded/dismissed records, when they exist in the future, are TERMINAL
-   to replay (user answers supersede their own counting history — the
-   D-135/D-067 write-provenance principle).
+       askedAt, confirmedAs, confirmedAt, refreshDueAt, deniedAt,
+       createdAt, updatedAt }
+   The count IS occurrences.length — the stored tier field of v1 (and
+   its invariant) dissolves with the tier grammar. Lands on the EMPTY
+   post-wipe store: no migration, no legacy statuses in the wild.
    ═══════════════════════════════════════════════════════════════════ */
-const OBSERVATION_SCHEMA_VERSION = 1;
-const OBS_DECAY_WINDOW = 4;       // tier-2 opportunities without recurrence → closed (D-071)
+const OBSERVATION_SCHEMA_VERSION = 2;
+const OBS_ASK_THRESHOLD = 2;         // ⚙ sightings → ask-eligible (D-207; rule strikes stay at RULE_ADHERENCE_THRESHOLD = 3)
+const OBS_DENIAL_STEP = 2;           // ⚙ each "you're wrong" adds +2 to the bar (2→4; a future 3 goes to 5 — S81 owner lock)
+const OBS_DENIAL_KILL_STRIKES = 2;   // second denial on the same pattern = dead forever (D-205)
+const OBS_DECAY_WINDOW = 4;          // ⚙ quiet opportunities → the tally vanishes (all types, any count — S81)
+const OBS_OCCURRENCE_TTL_DAYS = 120; // ⚙ calendar backstop: marks older than ~4 months expire (S81)
 const ROTATION_MIN_GAP = 2;       // ceiling: matching sessions required since last appearance
 const ROTATION_DUE_GAP = 5;       // floor: matching sessions without appearance → due
-const OBS_REFRESH_MONTHS = 6;     // encoded-preference refresh timer (D-071)
+const OBS_REFRESH_MONTHS = 6;     // confirmed-fact refresh timer (S81: 6 months re-locked)
+const OBS_DAY_MS = 24 * 3600 * 1000;
 
 // Target identity key — exerciseId when present, lowercased name fallback
 // (nothing is invisible; mirrors the deviation diff's keying).
 function obsTargetKey(exerciseId, name) {
   return exerciseId || `name:${(name || "").trim().toLowerCase()}`;
 }
-function obsRecordKey(type, exerciseId, name) {
-  return `obs_${type}_${obsTargetKey(exerciseId, name)}`;
+/* Pattern identity — the unit denial memory is keyed by. variant_swap
+   patterns are per-destination (S81 owner lock): the destination variant
+   is part of the identity. */
+function obsPatternKey(type, exerciseId, name, destVariant) {
+  const base = `${type}_${obsTargetKey(exerciseId, name)}`;
+  return type === "variant_swap" ? `${base}_to:${(destVariant || "").trim().toLowerCase()}` : base;
+}
+function obsPatternKeyOf(o) {
+  const t = (o.targets && o.targets[0]) || {};
+  return obsPatternKey(o.type, t.exerciseId, t.name, o.variantLabel);
+}
+function obsRecordKey(type, exerciseId, name, destVariant) {
+  return `obs_${obsPatternKey(type, exerciseId, name, destVariant)}`;
 }
 function obsMatchesTarget(o, exerciseId, name) {
   const k = obsTargetKey(exerciseId, name);
   return (o.targets || []).some((t) => obsTargetKey(t.exerciseId, t.name) === k);
 }
 
+/* ── Denial memory (obsDenials store — S81). Array of
+   { key, strikes, lastDeniedAt, label }. User-answer provenance:
+   never written by the fold, TERMINAL to replay, survives record
+   death (that is the point). ── */
+function obsDenialFor(denials, key) {
+  return (Array.isArray(denials) ? denials : []).find((d) => d && d.key === key) || null;
+}
+function obsAskThresholdFor(denials, key) {
+  const d = obsDenialFor(denials, key);
+  return OBS_ASK_THRESHOLD + (d ? (d.strikes || 0) : 0) * OBS_DENIAL_STEP;
+}
+function obsPatternDead(denials, key) {
+  const d = obsDenialFor(denials, key);
+  return !!d && (d.strikes || 0) >= OBS_DENIAL_KILL_STRIKES;
+}
+
 // D-082 scope from variant consistency: all-same non-null → variant;
-// any mixing or unknowns → lift.
+// any mixing or unknowns → lift. (variant_swap records are inherently
+// variant-scoped — every occurrence carries the destination.)
 function obsScopeFromOccurrences(occurrences) {
   const labels = (occurrences || []).map((x) => x.variantLabel || null);
   if (labels.length === 0 || labels.some((l) => l === null)) return { scope: "lift", variantLabel: null };
@@ -3420,8 +3481,10 @@ function obsTargetPrimary(target, customs) {
 
 /* The fold: one committed session (carrying its deviation receipt) into
    the observation store. Pure — returns a new array; untouched records
-   keep reference equality (migration idempotency checks rely on this). */
-function applySessionToObservations(observations, session, customs = []) {
+   keep reference equality (migration idempotency checks rely on this).
+   `denials` (obsDenials) is read-only here: it blocks minting for
+   killed patterns. The fold NEVER writes denial memory. */
+function applySessionToObservations(observations, session, customs = [], denials = []) {
   const obs = Array.isArray(observations) ? observations : [];
   const dev = session && session.deviation;
   // Mode gate (D-081 + owner lock S68): A/B only, never either C — no
@@ -3430,6 +3493,7 @@ function applySessionToObservations(observations, session, customs = []) {
 
   const now = Date.now();
   const sessionRef = { sessionId: session.id, date: session.date };
+  const sessionMs = Date.parse(session.date) || now;
 
   // Events this session, keyed by record identity.
   const events = new Map(); // recordKey → { type, exerciseId, name, variantLabel }
@@ -3440,6 +3504,13 @@ function applySessionToObservations(observations, session, customs = []) {
   for (const sk of dev.skipped || []) {
     events.set(obsRecordKey("skip_pattern", sk.exerciseId, sk.name),
       { type: "skip_pattern", exerciseId: sk.exerciseId || null, name: sk.name, variantLabel: null });
+  }
+  // variant_swap (D-185, S81): the receipt already names prescribed vs
+  // logged; a swap event is keyed per DESTINATION variant.
+  for (const k of dev.kept || []) {
+    if (!k || !k.variantSwapped || !k.loggedVariant) continue;
+    events.set(obsRecordKey("variant_swap", k.exerciseId, k.name, k.loggedVariant),
+      { type: "variant_swap", exerciseId: k.exerciseId || null, name: k.name, variantLabel: k.loggedVariant });
   }
 
   // Primary muscle groups this session actually worked (for off-card-add
@@ -3456,63 +3527,75 @@ function applySessionToObservations(observations, session, customs = []) {
   const prescribedKeys = new Set();
   for (const k of dev.kept || []) prescribedKeys.add(obsTargetKey(k.exerciseId, k.name));
   for (const s of dev.skipped || []) prescribedKeys.add(obsTargetKey(s.exerciseId, s.name));
+  // Kept detail by target (for variant_swap opportunity — prescribed
+  // variant vs destination).
+  const keptByTarget = new Map();
+  for (const k of dev.kept || []) keptByTarget.set(obsTargetKey(k.exerciseId, k.name), k);
+
+  const occFresh = (occ) => (sessionMs - (Date.parse(occ.date) || sessionMs)) <= OBS_OCCURRENCE_TTL_DAYS * OBS_DAY_MS;
 
   const next = obs.map((o) => {
-    if (!o || o.source !== "engine") return o;                       // Coach-authored: never touched
-    const key = obsRecordKey(o.type, (o.targets && o.targets[0] && o.targets[0].exerciseId) || null,
-      (o.targets && o.targets[0] && o.targets[0].name) || "");
-    // Terminal states: encoded / dismissed-cooldown / closed / revoked
-    // records are never advanced or decayed by the fold. (Encoded =
-    // the user answered; the rotation pool reads them; refresh timers
-    // govern their future — D-135/D-067 provenance principle.)
-    if (o.status !== "watching" && o.status !== "inquiry_pending") return o;
+    if (!o || o.source !== "engine") return o;                       // non-engine records: never touched
+    // TERMINAL states (user-owned): confirmed and denied records are
+    // never advanced, decayed, or expired by the fold (D-155/D-135).
+    if (o.status === "confirmed" || o.status === "denied") return o;
+    const t0 = (o.targets && o.targets[0]) || {};
+    const key = obsRecordKey(o.type, t0.exerciseId || null, t0.name || "", o.variantLabel);
+
+    // Calendar backstop (S81): expire stale occurrence marks first.
+    const liveOcc = (o.occurrences || []).filter(occFresh);
 
     const ev = events.get(key);
     if (ev) {
       // Occurrence — once per session max.
-      const occ = o.occurrences || [];
-      if (occ.length && occ[occ.length - 1].sessionId === session.id) return o;
-      const occurrences = [...occ, { ...sessionRef, variantLabel: ev.variantLabel }];
-      const { scope, variantLabel } = obsScopeFromOccurrences(occurrences);
-      const tier = Math.min(occurrences.length, 3);
+      if (liveOcc.length && liveOcc[liveOcc.length - 1].sessionId === session.id) return o;
+      const occurrences = [...liveOcc, { ...sessionRef, variantLabel: ev.variantLabel }];
+      const sc = o.type === "variant_swap"
+        ? { scope: "variant", variantLabel: o.variantLabel }
+        : obsScopeFromOccurrences(occurrences);
       return {
-        ...o, occurrences, tier, scope, variantLabel,
+        ...o, occurrences, scope: sc.scope, variantLabel: sc.variantLabel,
         windowOpportunities: [],                                     // recurrence resets the window
-        status: occurrences.length >= 3 ? "inquiry_pending" : "watching",
         updatedAt: now,
       };
     }
-    // No occurrence — was this session an opportunity? Decay applies to
-    // tier 2 only (n=1 lives forever; inquiry_pending earned the ask).
-    if (o.status !== "watching" || (o.occurrences || []).length < 2) return o;
-    const target = (o.targets || [])[0];
-    if (!target) return o;
+    // All marks expired and nothing new this session → the tally is
+    // stale news; the record (and its derived question) vanishes.
+    if (liveOcc.length === 0) return null;
+    // No occurrence — was this session an opportunity? S81: the fade
+    // rules apply uniformly — watching AND asked, at ANY count.
     let opportunity = false;
     if (o.type === "off_card_add") {
-      const p = obsTargetPrimary(target, customs);
+      const p = obsTargetPrimary(t0, customs);
       opportunity = !!p && workedPrimaries.has(p);
     } else if (o.type === "skip_pattern") {
-      opportunity = prescribedKeys.has(obsTargetKey(target.exerciseId, target.name));
+      opportunity = prescribedKeys.has(obsTargetKey(t0.exerciseId, t0.name));
+    } else if (o.type === "variant_swap") {
+      // Faced the choice and didn't take it: kept, prescribed at a
+      // variant OTHER than the destination, no swap-to-destination.
+      // Prescribed AT the destination = neutral (S81 owner lock).
+      const k = keptByTarget.get(obsTargetKey(t0.exerciseId, t0.name));
+      opportunity = !!(k && k.prescribedVariant && k.prescribedVariant !== o.variantLabel);
     }
-    if (!opportunity) return o;
-    const windowOpportunities = [...(o.windowOpportunities || []), sessionRef];
-    if (windowOpportunities.length >= OBS_DECAY_WINDOW) {
-      return { ...o, windowOpportunities, status: "closed", closedAt: now, updatedAt: now };
-    }
-    return { ...o, windowOpportunities, updatedAt: now };
-  });
+    const base = liveOcc === o.occurrences || liveOcc.length === (o.occurrences || []).length
+      ? o : { ...o, occurrences: liveOcc, updatedAt: now };
+    if (!opportunity) return base;
+    const windowOpportunities = [...(base.windowOpportunities || []), sessionRef];
+    if (windowOpportunities.length >= OBS_DECAY_WINDOW) return null;  // faded — vanishes (S81 Q5)
+    return { ...base, occurrences: liveOcc, windowOpportunities, updatedAt: now };
+  }).filter(Boolean);
 
-  // Fresh events with no live record → new n=1 records. (A closed or
-  // revoked record does NOT resurrect — D-071: decay returns to "no
-  // observation"; a fresh occurrence starts a genuinely new count. The
-  // deterministic id would collide with a terminal record still in the
-  // store, so fresh records get a date-suffixed id in that case.)
+  // Fresh events with no live record → new n=1 watching records.
+  // Killed patterns (two denials) never re-mint — the memory outlives
+  // the record (D-205 / S81 Q8). A confirmed or denied record with the
+  // same identity also blocks minting (the pattern is already settled).
   for (const [key, ev] of events) {
-    const live = next.some((o) => o && o.source === "engine" && o.status !== "closed" && o.status !== "revoked"
-      && obsRecordKey(o.type, o.targets[0] && o.targets[0].exerciseId, o.targets[0] && o.targets[0].name) === key
+    if (obsPatternDead(denials, obsPatternKey(ev.type, ev.exerciseId, ev.name, ev.type === "variant_swap" ? ev.variantLabel : null))) continue;
+    const live = next.some((o) => o && o.source === "engine"
+      && obsRecordKey(o.type, o.targets[0] && o.targets[0].exerciseId, o.targets[0] && o.targets[0].name, o.variantLabel) === key
       && o.type === ev.type);
     if (live) continue;
-    const idBase = obsRecordKey(ev.type, ev.exerciseId, ev.name);
+    const idBase = key;
     const id = next.some((o) => o && o.id === idBase) ? `${idBase}_${session.date || now}` : idBase;
     next.push({
       schemaVersion: OBSERVATION_SCHEMA_VERSION,
@@ -3523,33 +3606,64 @@ function applySessionToObservations(observations, session, customs = []) {
       scope: ev.variantLabel ? "variant" : "lift",
       variantLabel: ev.variantLabel || null,
       status: "watching",
-      tier: 1,
       occurrences: [{ ...sessionRef, variantLabel: ev.variantLabel }],
       windowOpportunities: [],
-      encodedAs: null, encodedAt: null, refreshDueAt: null,
-      lastDismissedAt: null, closedAt: null, revokedAt: null,
+      askedAt: null, confirmedAs: null, confirmedAt: null, refreshDueAt: null, deniedAt: null,
       createdAt: now, updatedAt: now,
     });
   }
   return next;
 }
 
-/* Inquiry resolution (the survey arc will call this; shipped now so the
-   encode path is real and testable — D-083). v1 handles the two
-   resolutions that live INSIDE the observation record: "occasional"
-   (the D-083 soft preference) and "dismiss" (30-day cooldown per
-   §10.10). "standing" / "never" create §12.6 rules — that's engine 3's
-   write path, deliberately not here. */
-function resolveObservationInquiry(o, resolution, nowMs = Date.now()) {
+/* ── Lifecycle resolvers (S81 — shipped headless-but-real, the D-083
+   precedent: the debrief card is the future caller; the machinery and
+   its tests land now). ── */
+
+/* Ask-eligibility is DERIVED, never stored: a watching record whose live
+   tally has reached the pattern's bar (base threshold + denial strikes). */
+function obsAskEligible(o, denials = []) {
+  if (!o || o.source !== "engine" || o.status !== "watching") return false;
+  return (o.occurrences || []).length >= obsAskThresholdFor(denials, obsPatternKeyOf(o));
+}
+
+/* The debrief marks a record asked when its question card is actually
+   put in front of the user. Asked records still feed nothing (D-216)
+   and still fade by the same rules — a question that goes stale before
+   it's answered vanishes with its record (S81 lock). */
+function markObservationAsked(o, nowMs = Date.now()) {
+  if (!o || o.source !== "engine" || o.status !== "watching") return o;
+  return { ...o, status: "asked", askedAt: nowMs, updatedAt: nowMs };
+}
+
+/* The user's "yes" — the ONLY door into generation context (D-216).
+   resolution: "occasional" (feeds the D-083 rotation engine) |
+   "standing" | "exclusion" (companion rule owns the clock, D-162) |
+   "fact". Confirmed facts carry a 6-month still-true clock (S81). */
+function confirmObservation(o, resolution = "fact", nowMs = Date.now()) {
   if (!o || o.source !== "engine") return o;
-  if (resolution === "occasional") {
-    const refreshDueAt = nowMs + OBS_REFRESH_MONTHS * 30 * 24 * 3600 * 1000;
-    return { ...o, status: "encoded", encodedAs: "occasional", encodedAt: nowMs, refreshDueAt, updatedAt: nowMs };
+  const refreshDueAt = resolution === "exclusion" ? null : nowMs + OBS_REFRESH_MONTHS * 30 * OBS_DAY_MS;
+  return { ...o, status: "confirmed", confirmedAs: resolution, confirmedAt: nowMs, refreshDueAt, updatedAt: nowMs };
+}
+
+/* The user's "no, you're wrong" (D-205). Returns { observation, denials }.
+   First strike: the record is REMOVED (observation: null — tally back to
+   zero) and the strike files; the raised bar is derived from the store.
+   Second strike on the same pattern: the record flips to "denied" —
+   terminal, visible in the Profile until the user deletes it, and the
+   fold never mints this pattern again. */
+function denyObservation(o, denials = [], nowMs = Date.now()) {
+  if (!o || o.source !== "engine") return { observation: o, denials };
+  const key = obsPatternKeyOf(o);
+  const prior = obsDenialFor(denials, key);
+  const strikes = (prior ? prior.strikes || 0 : 0) + 1;
+  const entry = { key, strikes, lastDeniedAt: nowMs, label: obsText(o) };
+  const nextDenials = prior
+    ? denials.map((d) => (d && d.key === key ? entry : d))
+    : [...(Array.isArray(denials) ? denials : []), entry];
+  if (strikes >= OBS_DENIAL_KILL_STRIKES) {
+    return { observation: { ...o, status: "denied", deniedAt: nowMs, updatedAt: nowMs }, denials: nextDenials };
   }
-  if (resolution === "dismiss") {
-    return { ...o, status: "watching", lastDismissedAt: nowMs, updatedAt: nowMs };
-  }
-  return o;
+  return { observation: null, denials: nextDenials };
 }
 
 /* D-083 rotation pool eligibility — deterministic, engine-owned. Returns
@@ -3561,10 +3675,12 @@ function resolveObservationInquiry(o, resolution, nowMs = Date.now()) {
                   since last appearance): include if the day has room
      "resting"  — appeared too recently; do not include
    Gap counts committed sessions whose classification.family matches,
-   newest→oldest, until the lift last appeared (working sets only). */
+   newest→oldest, until the lift last appeared (working sets only).
+   S81: the pool is CONFIRMED records with confirmedAs "occasional" —
+   "occasional" stays the keyword that feeds this engine (owner lock). */
 function rotationCandidatesFor(family, history, observations, customs = []) {
   const pool = (observations || []).filter((o) =>
-    o && o.source === "engine" && o.status === "encoded" && o.encodedAs === "occasional");
+    o && o.source === "engine" && o.status === "confirmed" && o.confirmedAs === "occasional");
   if (pool.length === 0) return [];
   const matching = (history || []).filter((s) => s && s.classification && s.classification.family === family);
   // history is stored newest-first; keep that order for gap counting.
@@ -3598,39 +3714,41 @@ function rotationCandidatesFor(family, history, observations, customs = []) {
   return out.sort((a, b) => (a.status === "due" ? 0 : 1) - (b.status === "due" ? 0 : 1));
 }
 
-/* Hydration backfill (D-142 pattern, D-071 flavor — owner locks S68).
-   Runs when the store carries NO engine-source records: wipes the legacy
-   hand-simulated encoded seed (any record with encodedAs but no source —
-   the pre-engine Machine Press "occasional", per the Q4 total-fresh-start
-   lock) and replays the receipt-bearing history oldest→newest through
-   the fold. Silent: n=3s park as inquiry_pending; nothing fires. Value-
-   idempotent: once engine records exist the migration is a no-op; the
-   escape hatch is deleting them (Reset all observations) → next load
-   re-folds. Coach-authored notes pass through untouched. Future encoded
-   records survive as terminal because the fold skips non-watching
-   states. */
-function migrateObservationStore(store, history, customs = []) {
+/* Hydration backfill (D-142 pattern). Post-wipe this is a formality —
+   the store is empty and the replay starts from nothing under S81 final
+   rules — but the contract stays: runs only when the store carries NO
+   engine records, wipes any legacy hand-simulated encoded seed, replays
+   receipt-bearing history oldest→newest through the fold. Silent.
+   Confirmed/denied records, when they exist, are terminal (the fold
+   skips them). */
+function migrateObservationStore(store, history, customs = [], denials = []) {
   const base = Array.isArray(store) ? store : [];
   if (base.some((o) => o && o.source === "engine")) return base;       // already migrated
-  const kept = base.filter((o) => !(o && o.encodedAs && !o.source));   // wipe legacy encoded seed (Q4)
+  const kept = base.filter((o) => !(o && (o.encodedAs || o.confirmedAs) && !o.source));   // wipe legacy encoded seed
   const ordered = [...(history || [])].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
   let engineRecords = [];
   for (const session of ordered) {
-    engineRecords = applySessionToObservations(engineRecords, session, customs);
+    engineRecords = applySessionToObservations(engineRecords, session, customs, denials);
   }
   return [...kept, ...engineRecords];
 }
 
 /* Read-time display text for engine records (D-150 principle: humanized
    strings derived by pure function, never persisted; names names).
-   Coach-authored records keep their own text. */
+   Non-engine records keep their own text. */
 function obsText(o) {
   if (!o) return "";
   if (o.source !== "engine") return o.text || "";
   const name = (o.targets && o.targets[0] && o.targets[0].name) || "an exercise";
+  if (o.type === "variant_swap") {
+    const conf = o.status === "confirmed";
+    return conf
+      ? `Prefers ${name} as ${o.variantLabel || "their variant"}`
+      : `Swaps ${name} to ${o.variantLabel || "another variant"} when prescribed`;
+  }
   const label = o.scope === "variant" && o.variantLabel ? `${name} (${o.variantLabel})` : name;
   if (o.type === "off_card_add") {
-    return o.encodedAs === "occasional"
+    return o.confirmedAs === "occasional"
       ? `${label} — keep in occasional rotation`
       : `Keeps adding ${label} off-card`;
   }
@@ -3640,24 +3758,45 @@ function obsProvenance(o) {
   if (!o) return null;
   if (o.source !== "engine") return o.provenance || null;
   const sessions = (o.occurrences || []).map((x) => x.date).filter(Boolean);
-  const what = o.type === "off_card_add" ? "added off-card" : "skipped though prescribed";
-  const scope = o.scope === "variant" ? ` (consistently the ${o.variantLabel} variant)` : "";
+  const what = o.type === "off_card_add" ? "added off-card"
+    : o.type === "variant_swap" ? `swapped to ${o.variantLabel || "another variant"}`
+    : "skipped though prescribed";
+  const scope = o.type !== "variant_swap" && o.scope === "variant" ? ` (consistently the ${o.variantLabel} variant)` : "";
   return {
     sessions,
     signal: `Engine-counted: ${what} in ${(o.occurrences || []).length} session(s)${scope}. Counted from the workout receipts — Coach-prescribed sessions only.`,
   };
 }
 
-/* User-facing visibility (D-071, the Bible's "n-tier display dissolves"
-   note): engine records surface to the USER only once encoded. n=1/n=2
-   are engine-silent, inquiry_pending waits for the survey arc's ask
-   surface, closed/revoked are history. Coach-authored notes always
-   render. (Coach the LLM sees more via get_observations — watching/
-   pending records DO appear there with keep-silent status strings.) */
-function obsVisibleToUser(o) {
-  if (!o) return false;
-  if (o.source !== "engine") return true;
-  return o.status === "encoded";
+/* Full-visibility Profile label (D-206, S81 exact strings — owner
+   approved the drafts). Derived at read time, never persisted. */
+function obsStatusLabel(o) {
+  if (!o || o.source !== "engine") return "";
+  const n = (o.occurrences || []).length;
+  if (o.status === "watching") {
+    return `watching — seen ${surveyCountWord(n)} ${n === 1 ? "time" : "times"}, haven't asked yet`;
+  }
+  if (o.status === "asked") return "asked — waiting on your answer";
+  if (o.status === "confirmed") {
+    const d = o.confirmedAt ? new Date(o.confirmedAt).toISOString().slice(0, 10) : null;
+    return d ? `confirmed — you told me ${d}` : "confirmed — you told me";
+  }
+  if (o.status === "denied") return "dropped — you said I had it wrong";
+  return "";
+}
+// Profile ordering: confirmed → asked → watching → denied (S81).
+const OBS_STATUS_RANK = { confirmed: 0, asked: 1, watching: 2, denied: 3 };
+function obsStatusRank(o) {
+  return o && o.source === "engine" && o.status in OBS_STATUS_RANK ? OBS_STATUS_RANK[o.status] : 0;
+}
+
+/* Generation context (D-216, S81): Coach BUILDS from CONFIRMED facts
+   only. Watching/asked/denied never ride; legacy free-note records
+   (no status) never ride either — the silent-entry species is retired
+   (D-213). This replaces the v1 obsVisibleToUser split: the USER now
+   sees everything (full visibility, D-206); this gate is generation's. */
+function obsRidesGeneration(o) {
+  return !!(o && o.source === "engine" && o.status === "confirmed");
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -3707,7 +3846,7 @@ function obsVisibleToUser(o) {
      is about the user's day, not Coach's card; unlike the observation
      engine's A/B gate). Base threshold 3 consecutive trigger-day misses
      (matches anchor STALE). At threshold: set checkPending ONCE, park
-     headlessly (like stale.surveyPending / inquiry_pending) until the
+     headlessly (like stale.surveyPending / an ask-eligible tally) until the
      survey arc builds the ask surface. "Keep it" = reaffirmation:
      +2 to the bar, counter CONTINUES (insistence buys longer silence;
      a hit still resets to zero). A hit while a check is pending clears
@@ -3807,7 +3946,7 @@ function applySessionToRuleAdherence(rules, session) {
 
 /* "Keep it" resolution (the survey arc will call this; shipped now so
    the leash path is real and testable — same pattern as
-   resolveObservationInquiry). The counter CONTINUES from where it was;
+   the S81 observation resolvers). The counter CONTINUES from where it was;
    the raised bar (+RULE_LEASH_STEP) is what buys the longer silence.
    There is deliberately no "drop" here — the engine never retires a
    user rule; deletion goes through the user-owned affordances. */
@@ -3924,11 +4063,16 @@ function orderSessionsForReplay(history) {
    notes, the user's answered survey questions — is a real statement with
    independent standing and passes through untouched (owner lock, Session
    70: survey answers survive even if their session is deleted). */
-function refoldObservations(store, history, customs = []) {
-  const kept = (Array.isArray(store) ? store : []).filter((o) => !(o && o.source === "engine"));
-  let engineRecords = [];
+function refoldObservations(store, history, customs = [], denials = []) {
+  const base = Array.isArray(store) ? store : [];
+  const kept = base.filter((o) => !(o && o.source === "engine"));
+  // S81: confirmed/denied engine records are USER ANSWERS — terminal to
+  // replay (D-155/D-135). They seed the fold, which never touches them
+  // and never mints a duplicate for their pattern.
+  let engineRecords = base.filter((o) => o && o.source === "engine"
+    && (o.status === "confirmed" || o.status === "denied"));
   for (const session of orderSessionsForReplay(history)) {
-    engineRecords = applySessionToObservations(engineRecords, session, customs);
+    engineRecords = applySessionToObservations(engineRecords, session, customs, denials);
   }
   return [...kept, ...engineRecords];
 }
@@ -4209,9 +4353,9 @@ function applyRuleSave(rules, compiled, ts, replaceRuleId) {
 
    Constants: ⚙ = provisional tuning (dogfood territory); the shapes and
    hierarchy are the lock. */
-const SURVEY_QUESTION_BUDGET = 3;            // ⚙ D-173 (within the locked D-049 3–4 ceiling)
-const SURVEY_MAX_PER_TYPE = 2;               // ⚙ D-173 (post-vacation interrogation guard)
-const SURVEY_MAX_REFRESH = 1;                // locked §10.10
+const SURVEY_QUESTION_BUDGET = 3;            // ⚙ D-173/D-211 — the DEBRIEF's card-selection budget (the queue itself is uncapped, S81)
+const SURVEY_MAX_PER_TYPE = 2;               // ⚙ D-173 (debrief selection input — unused by the S81 queue)
+const SURVEY_MAX_REFRESH = 1;                // locked §10.10 (debrief selection input — unused by the S81 queue)
 const SURVEY_DISMISS_COOLDOWN_COMMITS = 2;   // ⚙ D-174/S4 — commits, NEVER surveys-shown
 const SURVEY_REFRESH_DISMISS_DAYS = 30;      // locked §10.10 (calendar concept, calendar cooldown)
 const SURVEY_OTHER_REFRESH_REARM_DAYS = 30;  // ⚙ D-172 (refresh "Other" re-arm)
@@ -4219,7 +4363,7 @@ const SURVEY_CLEAN_MIN_OPPS = 3;             // ⚙ D-177 (a rule never exercise
 const SURVEY_REFRESH_DAYS = 180;             // locked (~6 months, matches OBS_REFRESH_MONTHS)
 const SURVEY_VOICE_SHIMMER_MS = 2000;        // ⚙ D-171 (Coach-is-typing floor before canned renders)
 const SURVEY_DAY_MS = 24 * 3600 * 1000;
-const SURVEY_TIER = { stale_anchor: 1, n3_inquiry: 2, rule_check: 3, refresh: 4 };
+const SURVEY_TIER = { stale_anchor: 1, obs_ask: 2, rule_check: 3, refresh: 4 };
 
 /* ── S74 wording pass — vocabulary + validator (Q&A locks 1–6) ──
    Vocabulary is EARNED: stems speak in words the user has met on a
@@ -4477,21 +4621,10 @@ function surveySettleAfterSession(prev, next, commitIndex, sessionDateMs) {
     return a;
   });
 
-  const prevObsById = new Map((prev.observations || []).map((o) => [o.id, o]));
-  const observations = (next.observations || []).map((o) => {
-    if (!o || o.source !== "engine") return o;
-    const po = prevObsById.get(o.id);
-    const nowPending = o.status === "inquiry_pending";
-    const wasPending = !!(po && po.status === "inquiry_pending");
-    if (nowPending && !wasPending) {
-      const sv = o.survey || (po && po.survey) || surveyFreshBookkeeping();
-      return { ...o, survey: { ...sv, cycle: (sv.cycle || 0) + 1, flagBornCommit: commitIndex } };
-    }
-    if (nowPending && !o.survey) {
-      return { ...o, survey: { ...surveyFreshBookkeeping(), cycle: 1, flagBornCommit: commitIndex } };
-    }
-    return o;
-  });
+  // S81: observation records carry NO survey bookkeeping — the queue is
+  // derived (buildQuestionQueue reads ask-eligibility straight off the
+  // records), and the asking surface is the debrief. Pass-through.
+  const observations = next.observations || [];
 
   const prevRuleById = new Map((prev.rules || []).map((r) => [r.id, r]));
   const rules = (next.rules || []).map((r) => {
@@ -4540,10 +4673,16 @@ function surveySettleAfterSession(prev, next, commitIndex, sessionDateMs) {
   return { anchors, observations, rules };
 }
 
-/* ── The builder (D-170/D-171/D-173/D-175) — a PURE READ, run post-fold
-   at first-commit only. Same state → same questions, forever. Returns
-   the ranked, capped pending set; empty array = silence (no pin). ── */
-function buildSurveyQuestions(stores, commitIndex, nowMs) {
+/* ── THE QUESTION QUEUE (S81 — the survey's successor). A PURE READ:
+   same state → same queue, forever. The finish-flow survey pin is DEAD
+   (owner call S81: "kill the survey — everything queues silently"); the
+   queue holds every pending question — stale anchors, ask-eligible
+   observations (S81 grammar), rule checks, clock refreshes — ranked by
+   the D-173 tier hierarchy, UNCAPPED (selection/budget is the debrief
+   card's job, future session). Consumers today: the dev-only queue
+   viewer. Consumer tomorrow: the debrief. A faded flag simply leaves
+   the derivation — the queue never holds stale news (S81 lock). ── */
+function buildQuestionQueue(stores, commitIndex, nowMs, denials = []) {
   const cands = [];
   const cooled = (sv) => sv && sv.dismissedAtCommit >= 0 && commitIndex <= sv.dismissedAtCommit + SURVEY_DISMISS_COOLDOWN_COMMITS;
   const answered = (sv) => sv && sv.answeredCycle >= (sv.cycle || 0);
@@ -4587,38 +4726,34 @@ function buildSurveyQuestions(stores, commitIndex, nowMs) {
     });
   }
 
-  // Tier 2 — n=3 observation inquiries (D-151, parked headless since S68).
+  // Tier 2 — ask-eligible observations (S81: watching records whose
+  // live tally has reached the pattern's bar — base threshold + denial
+  // strikes). Asked records are already with the user; confirmed/denied
+  // are settled. The three-path option grammar (D-205) rides as canned
+  // preview labels — the debrief card owns the final shapes; no
+  // executor consumes these this session.
   for (const o of stores.observations || []) {
-    if (!o || o.source !== "engine" || o.status !== "inquiry_pending") continue;
-    const sv = o.survey;
-    if (!sv || answered(sv) || cooled(sv)) continue;
+    if (!obsAskEligible(o, denials)) continue;
     const name = (o.targets && o.targets[0] && o.targets[0].name) || "this movement";
     const n = (o.occurrences || []).length;
     const isAdd = o.type === "off_card_add";
+    const isSwap = o.type === "variant_swap";
     cands.push({
-      sourceType: "n3_inquiry",
+      sourceType: "obs_ask",
       sourceRef: { obsId: o.id },
-      cycle: sv.cycle, born: sv.flagBornCommit,
-      obsLabel: `${name} ${isAdd ? "add" : "skip"} pattern`,
-      // S74 wording (Q1/Q3 locks): "on your own" replaces off-card; the
-      // add question stays second-person (it's the credit case); the
-      // skip fact is about the record with a neutral verb ("hasn't
-      // gotten done" — the engine counted card appearances that went
-      // undone, and the stem shows that receipt).
-      stemCanned: isAdd
+      cycle: 0, born: commitIndex,
+      obsLabel: isSwap ? `${name} → ${o.variantLabel} swap pattern` : `${name} ${isAdd ? "add" : "skip"} pattern`,
+      stemCanned: isSwap
+        ? `You've swapped ${name} to ${o.variantLabel} ${surveyCountWord(n)} ${n === 1 ? "time" : "times"} running — want me to just prescribe ${o.variantLabel}?`
+        : isAdd
         ? `You've added ${name} on your own ${surveyCountWord(n)} sessions running — want me to start programming it?`
         : `${name} has been on your card ${surveyCountWord(n)} sessions running and hasn't gotten done — drop it?`,
       stemFacts: { names: [name], counts: [n], values: [] },
-      options: isAdd
-        ? [
-            { label: "Put it on my card", effect: { kind: "obs_encode" } },
-            { label: "I'll keep adding it myself — don't program it", effect: { kind: "obs_close_manual" } },
-            { label: "Just a phase", effect: { kind: "obs_close_phase" } },
-          ]
-        : [
-            { label: "Drop it from my card", effect: { kind: "obs_exclude" } },
-            { label: "Keep it on my card — I'll get to it", effect: { kind: "obs_keep" } },
-          ],
+      options: [
+        { label: isSwap ? `Yes — prescribe ${o.variantLabel}` : isAdd ? "Yes — put it on my card" : "Yes — drop it from my card", effect: { kind: "obs_confirm" } },
+        { label: "Not sure — keep watching", effect: { kind: "obs_watch" } },
+        { label: "No, you're wrong", effect: { kind: "obs_deny" } },
+      ],
     });
   }
 
@@ -4670,29 +4805,32 @@ function buildSurveyQuestions(stores, commitIndex, nowMs) {
     });
   }
   for (const o of stores.observations || []) {
-    if (!o || o.source !== "engine" || o.status !== "encoded" || o.refreshDueAt == null) continue;
+    if (!o || o.source !== "engine" || o.status !== "confirmed" || o.refreshDueAt == null) continue;
     if (nowMs < o.refreshDueAt) continue;
-    const rd = o.survey && o.survey.refreshDismissedAt;
-    if (rd != null && nowMs < rd + SURVEY_REFRESH_DISMISS_DAYS * SURVEY_DAY_MS) continue;
     const name = (o.targets && o.targets[0] && o.targets[0].name) || "this preference";
-    // S74 wording (Q1 lock): "standing" eliminated — the user-side truth
-    // of encoding is that the exercise went ON the card, so the card is
-    // the noun. In shipped semantics only add-flavor encoded records
-    // carry a refresh clock (an exclusion's clock lives on its companion
-    // rule), but the skip branch stays as a defensive render for legacy
-    // S68-encoded records. Labels answer the stem's own question; the
-    // effect mapping (reaffirm / drop) is unchanged either way.
+    // S81 refresh (6-month still-true check, re-locked): the card is the
+    // noun the user knows. Swap-flavor confirmed records ask about the
+    // preferred variant; exclusions carry no clock (companion rule owns
+    // it, D-162).
+    const refIsSwap = o.type === "variant_swap";
     const refIsAdd = o.type === "off_card_add";
     cands.push({
       sourceType: "refresh",
       sourceRef: { refKind: "obs", refId: o.id },
       cycle: 0, born: -o.refreshDueAt,
       obsLabel: `refresh — ${name}`,
-      stemCanned: refIsAdd
+      stemCanned: refIsSwap
+        ? `Six months since we locked ${name} as ${o.variantLabel} — still your pick?`
+        : refIsAdd
         ? `Six months since ${name} went on your card — keep it there?`
         : `Six months since ${name} came off your card — keep it out?`,
       stemFacts: { names: [name], counts: [], values: [] },
-      options: refIsAdd
+      options: refIsSwap
+        ? [
+            { label: "Still my pick", effect: { kind: "refresh_reaffirm" } },
+            { label: "Open it back up", effect: { kind: "refresh_drop" } },
+          ]
+        : refIsAdd
         ? [
             { label: "Keep it there", effect: { kind: "refresh_reaffirm" } },
             { label: "Stop programming it", effect: { kind: "refresh_drop" } },
@@ -4712,15 +4850,12 @@ function buildSurveyQuestions(stores, commitIndex, nowMs) {
     || ((y.born === commitIndex) - (x.born === commitIndex))
     || x.born - y.born);
 
+  // S81: NO budget, NO per-type caps — this is the whole queue.
+  // Selection (≤3 per debrief card, D-211) is the debrief's job.
   const out = [];
-  const perType = {};
   for (const c of cands) {
-    if (out.length >= SURVEY_QUESTION_BUDGET) break;
-    const cap = c.sourceType === "refresh" ? SURVEY_MAX_REFRESH : SURVEY_MAX_PER_TYPE;
-    if ((perType[c.sourceType] || 0) >= cap) continue;
-    perType[c.sourceType] = (perType[c.sourceType] || 0) + 1;
     const refKey = c.sourceType === "stale_anchor" ? surveyAnchorKey(c.sourceRef)
-      : c.sourceType === "n3_inquiry" ? c.sourceRef.obsId
+      : c.sourceType === "obs_ask" ? c.sourceRef.obsId
       : c.sourceType === "rule_check" ? c.sourceRef.ruleId
       : `${c.sourceRef.refKind}:${c.sourceRef.refId}`;
     out.push({
@@ -4806,33 +4941,11 @@ function surveyExecuteAnswer(stores, ev, commitIndex) {
     return { stores: { ...stores, anchors: stores.anchors.map((x) => (x === a ? na : x)) }, result: "applied" };
   }
 
-  if (ev.sourceType === "n3_inquiry") {
-    const o = surveyFindObs(stores.observations, ev.sourceRef);
-    if (!o || o.status !== "inquiry_pending") return { stores, result: "noop" };
-    if (ev.option === "other") {
-      const no = { ...o, survey: stampOtherCooldown(o.survey) };
-      return { stores: { ...stores, observations: stores.observations.map((x) => (x === o ? no : x)) }, result: "other" };
-    }
-    const isAdd = o.type === "off_card_add";
-    let no;
-    if (isAdd && ev.option === 0) {
-      // "Put it on my card" — rides the shipped resolver (D-151):
-      // encoded + refreshDueAt +6mo.
-      no = { ...resolveObservationInquiry(o, "occasional", ts), survey: stampAnswered(o.survey) };
-    } else if (!isAdd && ev.option === 0) {
-      // "Drop it from my cards" — encoded exclusion (structured-but-
-      // untracked, D-162). The exclusion RULE is created imperatively in
-      // the App handler (user statement); it owns the future refresh
-      // clock, so the observation's own clock stays off.
-      no = { ...o, status: "encoded", encodedAs: "exclusion", encodedAt: ts, refreshDueAt: null, updatedAt: ts, survey: stampAnswered(o.survey) };
-    } else {
-      // adds: "keep adding it myself" / "just a phase"; skips: "keep
-      // prescribing it". All close the record; a later recurrence starts
-      // a genuinely NEW record (D-151 semantics).
-      no = { ...o, status: "closed", closedAt: ts, updatedAt: ts, survey: stampAnswered(o.survey) };
-    }
-    return { stores: { ...stores, observations: stores.observations.map((x) => (x === o ? no : x)) }, result: "applied" };
-  }
+  // S81: no obs answer branch here. Observation answers (confirm /
+  // keep-watching / deny — D-205) belong to the debrief card's write
+  // path, wired next session onto the shipped resolvers
+  // (confirmObservation / denyObservation / markObservationAsked).
+  // Legacy n3_inquiry events cannot exist post-wipe.
 
   if (ev.sourceType === "rule_check") {
     const r = surveyFindRule(stores.rules, ev.sourceRef);
@@ -4874,15 +4987,19 @@ function surveyExecuteAnswer(stores, ev, commitIndex) {
       return { stores, result: "applied" }; // "Drop it" — deletion is imperative, App-side
     }
     const o = surveyFindObs(stores.observations, { obsId: ev.sourceRef.refId });
-    if (!o || o.status !== "encoded" || o.refreshDueAt == null) return { stores, result: "noop" };
+    if (!o || o.status !== "confirmed" || o.refreshDueAt == null) return { stores, result: "noop" };
     if (ev.option === "other") {
       const no = { ...o, refreshDueAt: ts + SURVEY_OTHER_REFRESH_REARM_DAYS * SURVEY_DAY_MS, updatedAt: ts };
       return { stores: { ...stores, observations: stores.observations.map((x) => (x === o ? no : x)) }, result: "other" };
     }
-    let no;
-    if (ev.option === 0) no = { ...o, refreshDueAt: ts + SURVEY_REFRESH_DAYS * SURVEY_DAY_MS, updatedAt: ts };
-    else no = { ...o, status: "closed", refreshDueAt: null, closedAt: ts, updatedAt: ts };
-    return { stores: { ...stores, observations: stores.observations.map((x) => (x === o ? no : x)) }, result: "applied" };
+    if (ev.option === 0) {
+      const no = { ...o, refreshDueAt: ts + SURVEY_REFRESH_DAYS * SURVEY_DAY_MS, updatedAt: ts };
+      return { stores: { ...stores, observations: stores.observations.map((x) => (x === o ? no : x)) }, result: "applied" };
+    }
+    // "Drop": the user retires the confirmed fact — it ran its course.
+    // Not a denial (Coach wasn't wrong); the record simply leaves the
+    // store (S81 fade semantics for user-retired facts).
+    return { stores: { ...stores, observations: stores.observations.filter((x) => x !== o) }, result: "applied" };
   }
 
   return { stores, result: "noop" };
@@ -4898,9 +5015,6 @@ function surveyApplyDismiss(stores, ev, commitIndex) {
     if (ref.sourceType === "stale_anchor") {
       const a = surveyFindAnchor(anchors, ref.sourceRef);
       if (a) anchors = anchors.map((x) => (x === a ? { ...a, survey: { ...(a.survey || surveyFreshBookkeeping()), dismissedAtCommit: commitIndex } } : x));
-    } else if (ref.sourceType === "n3_inquiry") {
-      const o = surveyFindObs(observations, ref.sourceRef);
-      if (o) observations = observations.map((x) => (x === o ? { ...o, survey: { ...(o.survey || surveyFreshBookkeeping()), dismissedAtCommit: commitIndex } } : x));
     } else if (ref.sourceType === "rule_check") {
       const r = surveyFindRule(rules, ref.sourceRef);
       if (r) rules = rules.map((x) => (x === r ? { ...r, survey: { ...(r.survey || surveyFreshBookkeeping()), dismissedAtCommit: commitIndex } } : x));
@@ -4909,8 +5023,9 @@ function surveyApplyDismiss(stores, ev, commitIndex) {
         const r = surveyFindRule(rules, { ruleId: ref.sourceRef.refId });
         if (r) rules = rules.map((x) => (x === r ? { ...r, survey: { ...(r.survey || surveyFreshBookkeeping()), refreshDismissedAt: ev.ts } } : x));
       } else {
-        const o = surveyFindObs(observations, { obsId: ref.sourceRef.refId });
-        if (o) observations = observations.map((x) => (x === o ? { ...o, survey: { ...(o.survey || surveyFreshBookkeeping()), refreshDismissedAt: ev.ts } } : x));
+        // S81: observation records carry no survey bookkeeping; a
+        // refresh dismissal for a confirmed fact is a debrief-era
+        // concern (the surface that could dismiss is unbuilt). No-op.
       }
     }
   }
@@ -4930,8 +5045,14 @@ function surveyApplyDismiss(stores, ev, commitIndex) {
    (adherence + survey bookkeeping) wiped for replay. Anchors rebuild
    from scratch; closedLoopPending clears at the end (replay is silent —
    hydration-migration semantics, same as foldHistoryIntoAnchors). ── */
-function refoldWorldWithSurveyEvents(history, surveyEvents, observationsStore, rulesStore, customs = []) {
-  const keptObs = (Array.isArray(observationsStore) ? observationsStore : []).filter((o) => !(o && o.source === "engine"));
+function refoldWorldWithSurveyEvents(history, surveyEvents, observationsStore, rulesStore, customs = [], denials = []) {
+  const baseObs = Array.isArray(observationsStore) ? observationsStore : [];
+  const keptObs = baseObs.filter((o) => !(o && o.source === "engine"));
+  // S81: confirmed/denied engine records are user answers — terminal to
+  // replay; they seed the fold (which never touches them and never
+  // mints their pattern again).
+  const terminalObs = baseObs.filter((o) => o && o.source === "engine"
+    && (o.status === "confirmed" || o.status === "denied"));
   const events = Array.isArray(surveyEvents) ? surveyEvents : [];
   const byAfter = new Map();
   for (const ev of events) {
@@ -4942,7 +5063,7 @@ function refoldWorldWithSurveyEvents(history, surveyEvents, observationsStore, r
   const consumed = new Set();
 
   let anchors = [];
-  let engineObs = [];
+  let engineObs = [...terminalObs];
   let rules = (Array.isArray(rulesStore) ? rulesStore : []).map((r) => {
     if (!r || typeof r !== "object") return r;
     const { survey, ...rest } = r;
@@ -4965,7 +5086,7 @@ function refoldWorldWithSurveyEvents(history, surveyEvents, observationsStore, r
   for (const session of orderSessionsForReplay(history)) {
     const prev = { anchors, observations: engineObs, rules };
     anchors = applySessionToAnchors(anchors, session, customs);
-    engineObs = applySessionToObservations(engineObs, session, customs);
+    engineObs = applySessionToObservations(engineObs, session, customs, denials);
     rules = applySessionToRuleAdherence(rules, session);
     commitIndex++;
     ({ anchors, observations: engineObs, rules } = surveySettleAfterSession(
@@ -4997,9 +5118,9 @@ function pruneSurveyPending(pending, stores) {
       const a = surveyFindAnchor(stores.anchors, q.sourceRef);
       return !!(a && a.stale && a.stale.surveyPending);
     }
-    if (q.sourceType === "n3_inquiry") {
+    if (q.sourceType === "obs_ask") {
       const o = surveyFindObs(stores.observations, q.sourceRef);
-      return !!(o && o.status === "inquiry_pending");
+      return !!(o && o.status === "watching");
     }
     if (q.sourceType === "rule_check") {
       const r = surveyFindRule(stores.rules, q.sourceRef);
@@ -5011,7 +5132,7 @@ function pruneSurveyPending(pending, stores) {
         return !!(r && r.survey && r.survey.refreshDueAt != null);
       }
       const o = surveyFindObs(stores.observations, { obsId: q.sourceRef.refId });
-      return !!(o && o.status === "encoded" && o.refreshDueAt != null);
+      return !!(o && o.status === "confirmed" && o.refreshDueAt != null);
     }
     return false;
   };
@@ -5102,7 +5223,11 @@ const IS_REAL_DEVICE = (() => {
 // Deploy cache-verification marker (owner's V.23 convention, formalized:
 // bump this one constant per push to confirm the phone isn't serving
 // stale cached code; rendered only on real devices, top-right).
-const BUILD_TAG = "V.31.2";
+const BUILD_TAG = "V.32";
+// S81 dev-only affordance: the silent question-queue viewer in the
+// Profile. Flip to false (or delete with its subscreen at the debrief
+// build) to remove. Lives here so it precedes every consumer.
+const DEV_SHOW_QUESTION_QUEUE = true;
 
 /* ── Visual-viewport pin (S77 — the "composer slides past the keyboard" bug) ──
    iOS (Safari tab and standalone PWA alike) never shrinks the LAYOUT
@@ -15080,6 +15205,7 @@ function ProfileTab({
   equipmentLabel,
   // Other section data
   coachRules, progressPRs, coachObservations,
+  onOpenDevQueue,
   // Body stats — surfaced in the header intake form (Step 2 this session).
   // Replaces the v27 identity-only header. Cells tap to edit; tap routes
   // to onOpenBodyStats which is a no-op stub until the Body Stats sub-
@@ -15108,7 +15234,7 @@ function ProfileTab({
   const isFirstLaunch = (sessionsCount || 0) === 0
     && (!coachRules || coachRules.length === 0)
     && (!progressPRs || progressPRs.length === 0)
-    && (!coachObservations || coachObservations.filter(obsVisibleToUser).length === 0);
+    && (!coachObservations || coachObservations.length === 0);
 
   // Truncation helpers. Each section shows first 3 rows + a link
   // when there are more. Sort by recency for Rules/Observations,
@@ -15121,7 +15247,11 @@ function ProfileTab({
   // the clipboard. Storage / internal identifiers still use the
   // progressPRs name; only user-facing strings are renamed.
   const sortedRules = [...(coachRules || [])].sort((a, b) => b.createdAt - a.createdAt);
-  const sortedObs = [...(coachObservations || [])].filter(obsVisibleToUser).sort((a, b) => b.createdAt - a.createdAt);
+  // S81 full visibility (D-206): everything shows, status-ranked
+  // confirmed → asked → watching → denied, then recency. Bones now,
+  // pretty later (owner call).
+  const sortedObs = [...(coachObservations || [])].filter(Boolean)
+    .sort((a, b) => obsStatusRank(a) - obsStatusRank(b) || b.createdAt - a.createdAt);
   const sortedPRs = [...(progressPRs || [])]
     .filter((p) => p.isPR || p.isNew)
     .sort((a, b) => b.achievedAt - a.achievedAt);
@@ -15444,9 +15574,14 @@ function ProfileTab({
           ) : (
             <>
               {visibleObs.map((o) => (
-                <div key={o.id} style={rowLineStyle()}>
-                  <span style={{ ...TYPE.body, flex: 1 }}>{obsText(o)}</span>
-                  <span style={{ ...TYPE.meta, whiteSpace: "nowrap", letterSpacing: 1 }}>{formatDaysAgoCap(o.createdAt)}</span>
+                <div key={o.id} style={{ ...rowLineStyle(), flexDirection: "column", alignItems: "stretch", gap: 2 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 14 }}>
+                    <span style={{ ...TYPE.body, flex: 1, opacity: o.source === "engine" && o.status === "denied" ? 0.5 : 1 }}>{obsText(o)}</span>
+                    <span style={{ ...TYPE.meta, whiteSpace: "nowrap", letterSpacing: 1 }}>{formatDaysAgoCap(o.createdAt)}</span>
+                  </div>
+                  {o.source === "engine" && (
+                    <span style={{ ...TYPE.meta, letterSpacing: 0.5, textTransform: "none", color: o.status === "confirmed" ? COLORS.gold : "#555" }}>{obsStatusLabel(o)}</span>
+                  )}
                 </div>
               ))}
               {moreObs > 0 && (
@@ -15492,6 +15627,15 @@ function ProfileTab({
         </div>
 
         {/* ── Signed footer ── */}
+        {DEV_SHOW_QUESTION_QUEUE && onOpenDevQueue && (
+          <button onClick={onOpenDevQueue} style={{
+            width: "100%", marginTop: 18, padding: "9px 0",
+            background: "transparent", border: "1px dashed #333", borderRadius: 8,
+            cursor: "pointer", color: "#666", fontSize: 11,
+            fontFamily: "-apple-system, system-ui, sans-serif", letterSpacing: 1,
+          }}>QUESTION QUEUE (DEV)</button>
+        )}
+
         <div style={{
           marginTop: 22,
           padding: "10px 0",
@@ -16542,6 +16686,53 @@ function ProgressSubscreen({ progressPRs, onBack }) {
   );
 }
 
+/* ── DEV-ONLY: the silent question queue viewer (S81). The survey is
+   dead; every pending question waits in the derived buildQuestionQueue
+   read until the debrief consumes it. This screen exists so the owner
+   can eyeball the queue while the debrief is unbuilt. Flip
+   DEV_SHOW_QUESTION_QUEUE (defined beside BUILD_TAG — it must precede
+   ProfileTab) to false, or delete this block at the debrief build, to
+   remove the affordance — nothing else references it. ── */
+function DevQueueSubscreen({ queue, denials, onBack }) {
+  const TIER_NAME = { stale_anchor: "STALE BENCHMARK", obs_ask: "OBSERVATION", rule_check: "RULE CHECK", refresh: "REFRESH" };
+  const meta = { fontFamily: "-apple-system, system-ui, sans-serif", fontSize: 10, color: "#555", letterSpacing: 1 };
+  const body = { fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 14, color: "#e8e8e8", lineHeight: 1.5 };
+  return (
+    <SubscreenShell
+      title="Question queue (dev)"
+      subtitle="What Coach is waiting to ask. Silent until the debrief ships."
+      onBack={onBack}
+    >
+      {queue.length === 0 ? (
+        <div style={{ ...body, color: "#666", fontStyle: "italic", padding: "14px 0" }}>
+          Queue is empty — nothing pending.
+        </div>
+      ) : queue.map((q) => (
+        <div key={q.id} style={{ padding: "12px 0", borderBottom: "1px solid #1a1a1a" }}>
+          <div style={{ ...meta, color: COLORS.gold, marginBottom: 4 }}>{TIER_NAME[q.sourceType] || q.sourceType}</div>
+          <div style={body}>{q.stemCanned}</div>
+          <div style={{ ...meta, marginTop: 5, textTransform: "none", letterSpacing: 0.4 }}>
+            {(q.options || []).map((o) => o.label).join("  ·  ")}
+          </div>
+        </div>
+      ))}
+      {(denials || []).length > 0 && (
+        <div style={{ marginTop: 24 }}>
+          <div style={{ ...meta, marginBottom: 6 }}>DENIAL MEMORY</div>
+          {denials.map((d) => (
+            <div key={d.key} style={{ padding: "8px 0", borderBottom: "1px solid #1a1a1a" }}>
+              <div style={{ ...body, fontSize: 13, opacity: 0.75 }}>{d.label || d.key}</div>
+              <div style={{ ...meta, marginTop: 3, textTransform: "none", letterSpacing: 0.4 }}>
+                {d.strikes >= 2 ? "dead forever — two strikes" : `one strike — bar raised to ${2 + d.strikes * 2} sightings`}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </SubscreenShell>
+  );
+}
+
 /* ── ObservationsSubscreen (Bible §6.5) ─────────────────────────────
    Same row grammar as Rules: sentence + inline timestamp + ⋯ delete.
    NO CoachCTACard (Coach writes these, user doesn't add). At the bottom:
@@ -16555,7 +16746,10 @@ function ObservationsSubscreen({ coachObservations, onAskCoach, onDeleteObservat
   // honest menu (Ask Coach / Delete), not a delete-only shortcut — the
   // delete-only ⋯ was a long-standing glyph-honesty wart (Bible §6.5).
   const [menuOpenId, setMenuOpenId] = useState(null);
-  const sorted = [...(coachObservations || [])].filter(obsVisibleToUser).sort((a, b) => b.createdAt - a.createdAt);
+  // S81 full visibility (D-206): every lifecycle state renders with its
+  // honest label; denied entries sit last with the delete affordance.
+  const sorted = [...(coachObservations || [])].filter(Boolean)
+    .sort((a, b) => obsStatusRank(a) - obsStatusRank(b) || b.createdAt - a.createdAt);
 
   // Font scale matches the bumped Profile landing.
   const TYPE = {
@@ -16600,7 +16794,12 @@ function ObservationsSubscreen({ coachObservations, onAskCoach, onDeleteObservat
           justifyContent: "space-between", alignItems: "baseline",
           borderBottom: "1px solid #1a1a1a", gap: 14, position: "relative",
         }}>
-          <span style={{ ...TYPE.body, flex: 1 }}>{obsText(o)}</span>
+          <span style={{ ...TYPE.body, flex: 1, opacity: o.source === "engine" && o.status === "denied" ? 0.5 : 1 }}>
+            {obsText(o)}
+            {o.source === "engine" && (
+              <span style={{ display: "block", fontFamily: "-apple-system, system-ui, sans-serif", fontSize: 10, letterSpacing: 0.5, marginTop: 3, color: o.status === "confirmed" ? COLORS.gold : "#555" }}>{obsStatusLabel(o)}</span>
+            )}
+          </span>
           <span style={{ ...TYPE.meta, whiteSpace: "nowrap" }}>{formatDaysAgoCap(o.createdAt)}</span>
           <button
             onClick={() => setMenuOpenId(menuOpenId === o.id ? null : o.id)}
@@ -17947,9 +18146,15 @@ export default function MYGFitness() {
     // Session 68: engine records phrase confidence by status (encoded
     // preference), Coach-authored notes keep the D-045 tier phrasing.
     const tierPhrase = obs.source === "engine"
-      ? (obs.encodedAs === "occasional"
-        ? "This is an encoded preference — the user chose \"keep as occasional\" when asked."
-        : "Engine-counted pattern from the workout receipts.")
+      ? (obs.status === "confirmed"
+        ? (obs.confirmedAs === "occasional"
+          ? "This is a confirmed preference — the user chose \"keep as occasional\" when asked."
+          : "This is a confirmed fact — the user ratified it when asked.")
+        : obs.status === "denied"
+        ? "The user denied this pattern — Coach was wrong and will never raise it again."
+        : obs.status === "asked"
+        ? "A question about this tally is queued for the user; it is not yet a fact."
+        : "An engine tally from the workout receipts — watching only, not yet a fact.")
       : (obs.tier >= 3
         ? "Coach is treating this as a standing pattern (seen 3+ times)."
         : "Coach has noticed this a couple of times and may ask about it (not yet a standing pattern).");
@@ -17957,7 +18162,7 @@ export default function MYGFitness() {
     const displayText = obsText(obs);
     const contextLines = [
       `OBSERVATION: "${displayText}"`,
-      `CONFIDENCE TIER (D-045): n=${obs.tier}. ${tierPhrase}`,
+      `STATUS: ${obs.source === "engine" ? obs.status : `n=${obs.tier}`}. ${tierPhrase}`,
       prov ? `TRIGGERING SIGNAL: ${prov.signal}` : null,
       prov && prov.sessions && prov.sessions.length
         ? `SOURCE SESSIONS: ${prov.sessions.join("; ")}`
@@ -18137,10 +18342,14 @@ export default function MYGFitness() {
   // deviation-receipt history through the fold. Runs on the SAME
   // post-migration history as the anchor backfill (initialHistory ref).
   // Value-idempotent: engine records present → no-op.
+  // S81 denial memory — the pattern-keyed strike store. Declared before
+  // the observation store because the hydration fold consults it.
+  const [obsDenials, setObsDenials] = useState(h.obsDenials || []);
   const [coachObservations, setCoachObservations] = useState(() => migrateObservationStore(
     h.coachObservations !== null && h.coachObservations !== undefined ? h.coachObservations : MOCK_COACH_OBSERVATIONS,
     initialHistory.current,
-    h.customExercises || []
+    h.customExercises || [],
+    h.obsDenials || []
   ));
   // Post-workout questions pin (Finish Flow session). Shape:
   //   { id, sessionId, sessionName, sessionDate, createdAt,
@@ -18203,6 +18412,7 @@ export default function MYGFitness() {
       rotationCursor,
       coachRules,
       coachObservations,
+      obsDenials,
       pendingCoachQuestions,
       coachSurveyEvents,
       progressPRs,
@@ -18234,7 +18444,7 @@ export default function MYGFitness() {
     coachRotation,
     rotationCursor,
     coachRules,
-    coachObservations,
+    coachObservations, obsDenials,
     pendingCoachQuestions,
     coachSurveyEvents,
     progressPRs,
@@ -18654,7 +18864,7 @@ export default function MYGFitness() {
       prevStores,
       {
         anchors: applySessionToAnchors(prevStores.anchors, session, customExercises),
-        observations: applySessionToObservations(prevStores.observations, session, customExercises),
+        observations: applySessionToObservations(prevStores.observations, session, customExercises, obsDenials),
         rules: applySessionToRuleAdherence(prevStores.rules, session),
       },
       workoutHistory.length + 1,
@@ -18703,7 +18913,7 @@ export default function MYGFitness() {
     // premise voids the answer's mechanical effect; the paper trail —
     // non-engine observation records — passes through untouched).
     const rebuilt = refoldWorldWithSurveyEvents(
-      newHistory, coachSurveyEvents || [], coachObservations || [], coachRules || [], customExercises);
+      newHistory, coachSurveyEvents || [], coachObservations || [], coachRules || [], customExercises, obsDenials);
     setAnchors(rebuilt.anchors);
     setCoachObservations(rebuilt.observations);
     setCoachRules(rebuilt.rules);
@@ -18893,7 +19103,7 @@ export default function MYGFitness() {
         prevStores,
         {
           anchors: applySessionToAnchors(prevStores.anchors, finishedSession, customExercises),
-          observations: applySessionToObservations(prevStores.observations, finishedSession, customExercises),
+          observations: applySessionToObservations(prevStores.observations, finishedSession, customExercises, obsDenials),
           rules: applySessionToRuleAdherence(prevStores.rules, finishedSession),
         },
         commitIndex,
@@ -18903,29 +19113,14 @@ export default function MYGFitness() {
       setCoachObservations(settled.observations);
       setCoachRules(settled.rules);
       if (finishedSession.fromCoach) setRotationCursor((c) => c + 1);
-      // SURVEY QUESTION ENGINE (Session 73, D-170–D-175): the derived
-      // queue is read post-fold, at FIRST commit only. The builder is a
-      // pure read; zero candidates → no pin at all (D-175 silence on
-      // empty — every pin is earned). A non-empty set replaces any stale
-      // unanswered pin (D-124 passive replacement, no penalty).
-      const qs = buildSurveyQuestions(settled, commitIndex, Date.now());
-      const pin = qs.length > 0 ? {
-        id: `pq${Date.now()}`,
-        sessionId: finishedSession.id,
-        sessionName: finishedSession.name,
-        sessionDate: finishedSession.date,
-        createdAt: Date.now(),
-        commitIndex,
-        questions: qs,
-        answered: [],
-      } : null;
-      setPendingCoachQuestions(pin);
-      // D-171: Claude voices the question STEMS in the background — the
-      // call rides the taps the user is already making; canned stems are
-      // the floor, answering never blocks on network. S74: the finished
-      // session rides in as the context feed (state hasn't flushed yet,
-      // so it can't be looked up from workoutHistory here).
-      if (pin) voiceSurveyStems(pin, finishedSession);
+      // S81 (owner call): THE SURVEY IS DEAD. No pin is created, no
+      // stems are voiced, nothing pops after a workout. Every pending
+      // question — stale anchors, ask-eligible observations, rule
+      // checks, refreshes — queues SILENTLY in the derived
+      // buildQuestionQueue read until the debrief (the asking surface,
+      // next session) consumes it. The dev-only queue viewer in the
+      // Profile shows what's waiting; nothing else renders it.
+      setPendingCoachQuestions(null);
     }
     setFinishedSession(null);
   };
@@ -19048,7 +19243,7 @@ export default function MYGFitness() {
       let nextEvents = (coachSurveyEvents || []).map((e) => (e.kind === "answer" && e.qid === questionId ? ev : e));
       if (!nextEvents.some((e) => e.kind === "answer" && e.qid === questionId)) nextEvents = [...nextEvents, ev];
       setCoachSurveyEvents(nextEvents);
-      const rebuilt = refoldWorldWithSurveyEvents(workoutHistory, nextEvents, coachObservations || [], rulesReconciled, customExercises);
+      const rebuilt = refoldWorldWithSurveyEvents(workoutHistory, nextEvents, coachObservations || [], rulesReconciled, customExercises, obsDenials);
       setAnchors(rebuilt.anchors);
       setCoachObservations(rebuilt.observations);
       setCoachRules(rebuilt.rules);
@@ -19204,23 +19399,9 @@ export default function MYGFitness() {
   // builder. Nothing is written anywhere (S1: the builder only reads;
   // the appliers are pure). An edit re-commit previews 0 — ceremony
   // fires on a session's FIRST commit only (S70 lock). ──
-  const finishQuestionPreview = useMemo(() => {
-    const sess = finishedSession;
-    if (!sess || !Array.isArray(sess.exercises) || sess.exercises.length === 0) return 0;
-    if (workoutHistory.some((h2) => h2.id === sess.id)) return 0;
-    const prevStores = { anchors: anchors || [], observations: coachObservations || [], rules: coachRules || [] };
-    const settled = surveySettleAfterSession(
-      prevStores,
-      {
-        anchors: applySessionToAnchors(prevStores.anchors, sess, customExercises),
-        observations: applySessionToObservations(prevStores.observations, sess, customExercises),
-        rules: applySessionToRuleAdherence(prevStores.rules, sess),
-      },
-      workoutHistory.length + 1,
-      Date.parse(sess.date) || Date.now()
-    );
-    return buildSurveyQuestions(settled, workoutHistory.length + 1, Date.now()).length;
-  }, [finishedSession, workoutHistory, anchors, coachObservations, coachRules, customExercises]);
+  // S81: the finish-screen "Coach has N questions" ceremony died with
+  // the survey. The queue exists (buildQuestionQueue) but is silent —
+  // the debrief will own the finish-flow door next session.
 
   const discardFinishedSession = () => {
     setFinishedSession(null);
@@ -19260,8 +19441,10 @@ export default function MYGFitness() {
     setCoachObservations(migrateObservationStore(
       MOCK_COACH_OBSERVATIONS,
       migrateHistoryDeviation(migrateHistoryClassification(MOCK_WORKOUT_HISTORY, []), []),
+      [],
       []
     ));
+    setObsDenials([]);
     setPendingCoachQuestions(null);
     setCoachSurveyEvents([]);
     setProgressPRs(MOCK_PROGRESS_PRS);
@@ -19325,7 +19508,6 @@ export default function MYGFitness() {
           onEditWorkout={requestEditWorkout}
           onDeleteWorkout={deleteWorkoutFromHistory}
           onTabChange={setActiveTab}
-          finishQuestionPreview={finishQuestionPreview}
         />
       );
       case "coach": return (
@@ -19435,6 +19617,7 @@ export default function MYGFitness() {
             onOpenRules={() => setAppSubScreen("rules")}
             onOpenProgress={() => setAppSubScreen("progress")}
             onOpenObservations={() => setAppSubScreen("observations")}
+            onOpenDevQueue={() => setAppSubScreen("devqueue")}
             // Body Stats editor — Session 41: BodyStatsSubscreen
             // shipped, route is real. The ProfileTab header passes a
             // fieldKey arg corresponding to the cell tapped (NAME / HEIGHT
@@ -19546,6 +19729,17 @@ export default function MYGFitness() {
         <ProgressSubscreen
           onBack={() => setAppSubScreen(null)}
           progressPRs={progressPRs}
+        />
+      );
+    }
+    if (appSubScreen === "devqueue") {
+      return (
+        <DevQueueSubscreen
+          onBack={() => setAppSubScreen(null)}
+          queue={buildQuestionQueue(
+            { anchors: anchors || [], observations: coachObservations || [], rules: coachRules || [] },
+            workoutHistory.length, Date.now(), obsDenials)}
+          denials={obsDenials}
         />
       );
     }
