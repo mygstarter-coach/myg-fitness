@@ -1626,7 +1626,7 @@ You may say a number "stands" or "your numbers are your numbers" ONLY for lifts 
 == WHAT THE OPENING COVERS ==
 - The headline first — a PR, a real trend, or (on a clean night) the consistency itself. Find meaning in the absence of events: a card run three times as written means the numbers are trustworthy, and say why that matters.
 - Trends across sessions beat recitation of tonight. Compare against the RECENT CONTEXT sessions; name the smallest real trend you can find and, where earned, one concrete hypothesis stated as a reading, not a fact.
-- Multi-session debriefs: tonight (or the newest session) is the headline; older un-analyzed sessions get one or two sentences each, and anything beyond the fully-detailed ones gets a single collective line.
+- Multi-session debriefs: the NEWEST session is ALWAYS the headline and ALWAYS leads — even when an older session is more eventful (PRs included). Older un-analyzed sessions follow with one or two sentences each, and anything beyond the fully-detailed ones gets a single collective line. Never open on an older session.
 - CARD TOPICS ARE OFF-LIMITS IN PROSE. The context lists what the card will ask. Do not discuss, preview, or lean on those topics — the card carries its own evidence. End the opening with ONE short hand-off line ("a couple of things below" / "one question below"). If the card is empty, close cleanly instead ("nothing to ask tonight").
 - NO open questions in the opening — questions you pose in prose would hang unanswered while the user works the card. Your open door comes later, in the reaction turn.
 - Watching tallies not on the card: the raw receipt facts (a skip, an add) are yours to mention as facts; what they MEAN stays a question for a future card. Never state a suspicion as a thing you know.
@@ -1887,6 +1887,9 @@ function buildDebriefTurn(state, ctx) {
       : null;
     return `- ${s.name || "Workout"} — ${s.date} — ${(s.exercises || []).length} exercises${notable ? ` (${notable})` : ""}`;
   }).join("\n");
+  // Everything NOT under analysis rides as context — already-debriefed
+  // sessions AND older ones still awaiting their own debrief (S82.1
+  // tonight-only scope). Trend material, never re-analysis targets.
   const analyzedBefore = history.filter((h) => !sessions.some((s) => s.id === h.id)).slice(0, 5);
   const contextLines = analyzedBefore.map((s) => {
     const vol = totalVolumeFromExercises(s.exercises || []);
@@ -1919,7 +1922,7 @@ ${benchLines}
 == SESSIONS TO ANALYZE (newest first — full receipts) ==
 ${receiptBlocks}${olderLines ? `\n\n== OLDER UN-ANALYZED (one line each — a single collective sentence in prose) ==\n${olderLines}` : ""}
 
-== RECENT CONTEXT (already-debriefed sessions, for trend reading) ==
+== RECENT SESSIONS (context for trend reading ONLY — some may await their own debrief; never analyze or summarize them, only reference for trends) ==
 ${contextLines}
 
 == WATCHING (engine tallies — conversation fuel, NEVER facts to assert as meaning) ==
@@ -5196,7 +5199,7 @@ const IS_REAL_DEVICE = (() => {
 // Deploy cache-verification marker (owner's V.23 convention, formalized:
 // bump this one constant per push to confirm the phone isn't serving
 // stale cached code; rendered only on real devices, top-right).
-const BUILD_TAG = "V.33";
+const BUILD_TAG = "V.35";
 
 /* ── Visual-viewport pin (S77 — the "composer slides past the keyboard" bug) ──
    iOS (Safari tab and standalone PWA alike) never shrinks the LAYOUT
@@ -6399,7 +6402,7 @@ const HOME_NOTES_V1 = [
    (gold-bordered stat cards + outlined recent-workout cards). Unify-
    ing on the same grammar means one type system across the app,
    which is what Session 36 said the typography work was for. */
-function HomeTab({ onTabChange, userName, history, customExercises, nextSession, notes, unanalyzedCount = 0, onAnalyze }) {
+function HomeTab({ onTabChange, userName, history, customExercises, nextSession, notes, unanalyzedCount = 0, unanalyzedPreview = "", onAnalyze }) {
   const hist = history || [];
   const hasWorkouts = hist.length > 0;
 
@@ -6552,18 +6555,29 @@ function HomeTab({ onTabChange, userName, history, customExercises, nextSession,
         <button
           onClick={onAnalyze}
           style={{
-            width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center",
-            background: "#161600", border: "1px solid #3a2e00", borderRadius: 10,
+            width: "100%", display: "flex", alignItems: "center", gap: 12,
+            background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 10,
             padding: "12px 14px", cursor: "pointer", marginTop: 12, fontFamily: "inherit",
+            textAlign: "left",
           }}
         >
-          <span style={{ color: COLORS.gold, fontSize: 11, letterSpacing: 1.5, textTransform: "uppercase", fontWeight: 700 }}>
-            {unanalyzedCount} {unanalyzedCount === 1 ? "workout" : "workouts"} since your last debrief
-          </span>
-          <span style={{ color: COLORS.gold, fontSize: 12, fontWeight: 600, display: "flex", alignItems: "center", gap: 5 }}>
-            Analyze
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={COLORS.gold} strokeWidth="2.5"><polyline points="9 18 15 12 9 6" /></svg>
-          </span>
+          <div style={{
+            width: 32, height: 32, borderRadius: "50%", border: `1.5px solid ${COLORS.gold}`,
+            display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
+          }}>
+            <span style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontStyle: "italic", color: COLORS.gold, fontSize: 15, fontWeight: 700 }}>C</span>
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ color: COLORS.text, fontSize: 13.5, fontWeight: 600 }}>
+              {unanalyzedCount} {unanalyzedCount === 1 ? "workout" : "workouts"} awaiting debrief
+            </div>
+            {unanalyzedPreview ? (
+              <div style={{ color: COLORS.textSecondary, fontSize: 12, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {unanalyzedPreview}
+              </div>
+            ) : null}
+          </div>
+          <span style={{ color: COLORS.gold, fontSize: 20, lineHeight: 1, flexShrink: 0 }}>›</span>
         </button>
       )}
 
@@ -11258,27 +11272,32 @@ function FinishSummaryScreen({ session, history, onDone, onAnalyze, analyzeEnabl
         </>
       )}
 
-      {/* Footer (S82 — D-204's door). The gold line above Done commits
-          AND opens THE DEBRIEF: a new Coach chat where Coach reads
-          tonight (plus anything un-analyzed behind it) and talks first.
-          Done commits and stays put — the debrief waits on the Home
-          card. Hidden offline (the room needs the model) and on edit
-          re-commits of empty sessions like everything else here. */}
-      <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: "auto" }}>
-        {!empty && analyzeEnabled && (
-          <button
-            onClick={onAnalyze}
-            style={{
-              width: "100%", padding: "12px 24px", background: "transparent",
-              border: "none", color: COLORS.gold, fontSize: 13.5, fontWeight: 600,
-              cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
-            }}
-          >
-            Analyze my workout
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={COLORS.gold} strokeWidth="2.5"><polyline points="9 18 15 12 9 6" /></svg>
-          </button>
+      {/* Footer (S82.1 owner ruling — "Analyze my workout is the main
+          feature, needs a main button"). ANALYZE is the primary gold
+          action: it commits AND opens THE DEBRIEF over tonight's
+          session only. Done demotes to the quiet secondary beneath it —
+          commits and stays put; the debrief waits on the Home card.
+          Offline (the room needs the model) or on an empty session,
+          Done returns to being the gold primary — the screen always
+          has exactly one primary action. */}
+      <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: "auto" }}>
+        {!empty && analyzeEnabled ? (
+          <>
+            <GoldButton onClick={onAnalyze}>Analyze my workout</GoldButton>
+            <button
+              onClick={onDone}
+              style={{
+                width: "100%", padding: "11px 24px", background: "transparent",
+                border: "none", color: COLORS.textSecondary, fontSize: 13.5, fontWeight: 600,
+                cursor: "pointer", fontFamily: "inherit",
+              }}
+            >
+              Done
+            </button>
+          </>
+        ) : (
+          <GoldButton onClick={onDone}>Done</GoldButton>
         )}
-        <GoldButton onClick={onDone}>Done</GoldButton>
         {empty && (
           <button
             onClick={onDiscard}
@@ -11453,7 +11472,7 @@ function buildCoachGreeting({ userName, now, workoutHistory, coachRotation, rota
   return pool.length ? pick(pool) : `What's the plan?`;
 }
 
-function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFocused, onAppendMessage, onUpdateMessage, onRemoveMessage, genChatId, onGenStart, onGenEnd, onGenIsCurrent, onRespondAsCoach, onStartCoachWorkout, onBuildDebug, onNewChat, onSwitchChat, onDeleteChat, onRenameChat, pendingSeed, onSeedConsumed, workoutHistory, coachRotation, rotationCursor, planDaysPerWeek, planGoal, selectedEquipment, onRespondAsDebrief, onSubmitDebriefCard, onDebriefOpened, onSaveRule, onCancelRuleCard, onSupersedeRuleCards }) {
+function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFocused, onAppendMessage, onUpdateMessage, onRemoveMessage, genChatId, onGenStart, onGenEnd, onGenIsCurrent, onRespondAsCoach, onStartCoachWorkout, onBuildDebug, onNewChat, onSwitchChat, onDeleteChat, onRenameChat, pendingSeed, onSeedConsumed, workoutHistory, coachRotation, rotationCursor, planDaysPerWeek, planGoal, selectedEquipment, onRespondAsDebrief, onSubmitDebriefCard, onDebriefOpened, onRepeatWorkout, onEditWorkout, onDeleteWorkout, onSaveRule, onCancelRuleCard, onSupersedeRuleCards }) {
   // Bible §4.7: hard cap on user message length. Keeps one chat message
   // within a single API call's budget and prevents runaway prompts. The
   // counter only appears in the last 100 chars so it doesn't distract
@@ -11509,6 +11528,14 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
   // id — deliberately unpersisted, because unsubmitted taps are not
   // answers and must not survive a reload as if they were.
   const [debriefSel, setDebriefSel] = useState({});
+  // S82.2 (owner ruling): the debrief header is a tap target — one tap
+  // opens the SAME HistoryRecapSheet the Workout tab uses, over this
+  // tab, so the statistics Coach is narrating are one tap away. The
+  // chevron on the stat line is the visible handle (bare tappable
+  // titles are undiscoverable — nothing else in the app taps). Single-
+  // session debriefs only; a multi-workout header has no one session
+  // to open.
+  const [debriefRecapId, setDebriefRecapId] = useState(null);
   const dbCardFor = (msgId) => debriefSel[msgId] || { cursor: 0, answers: {}, otherOpen: false, otherText: "" };
   const dbCardPatch = (msgId, patch) => {
     setDebriefSel((prev) => ({ ...prev, [msgId]: { ...dbCardFor(msgId), ...patch } }));
@@ -12025,9 +12052,24 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
     const isWorkout = m.kind === "workout";
     const isCoachText = m.kind === "text";
     const isLastMsg = i === messages.length - 1 && !isStreaming && !isThinking;
-    const showRegen = (isWorkout || isCoachText) && isLastMsg && isOnline;
+    // S82.1: in a debrief chat, the OPENING and the post-card REACTION
+    // have no user turn behind them — regenerate() re-answers the last
+    // user message, so on those it would either no-op or re-answer an
+    // unrelated earlier message under the wrong prompt. The affordance
+    // only renders once a user message precedes the coach reply.
+    const hasPriorUserTurn = messages.slice(0, i).some((x) => x && x.role === "user");
+    const showRegen = (isWorkout || isCoachText) && isLastMsg && isOnline
+      && (chat && chat.kind === "debrief" ? hasPriorUserTurn : true);
     const notes = isWorkout && m.coachWorkout ? m.coachWorkout.programmingNotes : null;
     const showWhy = !!notes;
+    // S82.2 DOCUMENT MODE (owner ruling — "how Claude does it"): in a
+    // debrief chat the scripted beats (opening → card → receipts →
+    // reaction) flow as ONE piece. A footer with no actions is pure
+    // chrome — the floating C + hairline that made the debrief read as
+    // four separate chat messages — so it only renders when it actually
+    // offers something (Regenerate after the user has spoken, or Why
+    // this? on a workout). Normal chats keep their rhythm untouched.
+    if (chat && chat.kind === "debrief" && !showRegen && !showWhy) return null;
     const whyOpen = expandedWhy.has(i);
     const actionStyle = {
       display: "flex", alignItems: "center", gap: 5,
@@ -12393,7 +12435,59 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
               {emptyGreeting}
             </div>
           </div>
-        ) : messages.map((m, i) => {
+        ) : (<>
+        {/* ── THE DEBRIEF header (S82.1 — owner: "a pretty official
+            experience"). Deterministic title block from the meta stamped
+            at chat creation: gold letterspaced eyebrow, serif title +
+            date (the app's payoff-screen register), one quiet stat line,
+            hairline beneath. Renders before a single token streams, so
+            the room announces itself instantly. */}
+        {chat && chat.kind === "debrief" && chat.debriefMeta && (() => {
+          const singleId = (chat.debriefSessionIds || []).length === 1 ? chat.debriefSessionIds[0] : null;
+          const recapSession = singleId ? (workoutHistory || []).find((s) => s && s.id === singleId) : null;
+          const tappable = !!recapSession;
+          const Inner = (
+            <>
+              <div style={{
+                color: COLORS.gold, fontSize: 10, fontWeight: 700,
+                letterSpacing: 2.5, textTransform: "uppercase", marginBottom: 7,
+              }}>The Debrief</div>
+              <div style={{
+                fontFamily: "Georgia, 'Times New Roman', serif",
+                fontSize: 23, color: COLORS.text, lineHeight: 1.25,
+              }}>
+                {chat.debriefMeta.title}
+                <span style={{ color: COLORS.textSecondary }}> · {chat.debriefMeta.dateLabel}</span>
+              </div>
+              {chat.debriefMeta.statLine ? (
+                <div style={{ color: COLORS.textSecondary, fontSize: 12, letterSpacing: 0.5, marginTop: 6, display: "flex", alignItems: "center", gap: 5 }}>
+                  {chat.debriefMeta.statLine}
+                  {tappable && (
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={COLORS.textSecondary} strokeWidth="2.5"><polyline points="9 18 15 12 9 6" /></svg>
+                  )}
+                </div>
+              ) : null}
+            </>
+          );
+          return tappable ? (
+            <button
+              onClick={() => setDebriefRecapId(singleId)}
+              style={{
+                display: "block", width: "100%", textAlign: "left",
+                background: "none", border: "none", borderBottom: "1px solid #262626",
+                padding: "6px 0 16px", marginBottom: 18, cursor: "pointer",
+                fontFamily: "inherit", WebkitTapHighlightColor: "transparent",
+              }}
+            >
+              {Inner}
+            </button>
+          ) : (
+            <div style={{ padding: "6px 0 16px", borderBottom: "1px solid #262626", marginBottom: 18 }}>
+              {Inner}
+            </div>
+          );
+        })()}
+        {messages.map((m, i) => {
           // ── Receipt line (Finish Flow session) ────────────────────────
           // Dropped into the chat when the last post-workout question is
           // answered: quiet, centered, gold check. Role "system" so no
@@ -12424,13 +12518,25 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
             const serif = "Georgia, 'Times New Roman', serif";
             const cs = m.cardState || { status: "open" };
             if (cs.status !== "open") {
+              // S82.2 (owner ruling): the answered card collapses to THE
+              // RECORD — what you were asked, what you ruled — so an old
+              // debrief scrolls like a signed document, not a stub.
+              const record = Array.isArray(m.answers) ? m.answers : [];
               return (
                 <div key={m.id || i} style={{ marginBottom: 14 }}>
-                  <div style={{ border: "1px solid #2c2c2c", borderRadius: 12, padding: "9px 12px", display: "flex", alignItems: "center", gap: 8, maxWidth: "94%" }}>
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={COLORS.gold} strokeWidth="2.5" style={{ flexShrink: 0 }}><polyline points="20 6 9 17 4 12" /></svg>
-                    <div style={{ color: COLORS.text, fontSize: 12.5 }}>
-                      Card answered · {cs.count || (m.questions || []).length} {(cs.count || (m.questions || []).length) === 1 ? "answer" : "answers"}
+                  <div style={{ border: "1px solid #2c2c2c", borderRadius: 12, padding: "12px 14px" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: record.length ? 10 : 0 }}>
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={COLORS.gold} strokeWidth="2.5" style={{ flexShrink: 0 }}><polyline points="20 6 9 17 4 12" /></svg>
+                      <span style={{ color: COLORS.textSecondary, fontSize: 10.5, letterSpacing: 1.5, textTransform: "uppercase", fontWeight: 600 }}>Card answered</span>
                     </div>
+                    {record.map((r, ri) => (
+                      <div key={r.qid || ri} style={{ borderTop: "1px solid #262626", paddingTop: 10, marginTop: ri === 0 ? 0 : 10 }}>
+                        <div style={{ color: COLORS.textSecondary, fontSize: 12, lineHeight: 1.5 }}>{r.stem}</div>
+                        <div style={{ color: COLORS.text, fontSize: 13, marginTop: 4 }}>
+                          <span style={{ color: COLORS.gold }}>›</span> {r.answer}
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 </div>
               );
@@ -12446,13 +12552,21 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
               <div key={m.id || i} style={{ marginBottom: 14 }}>
                 <div style={{
                   background: "#1A1A1A",
-                  border: "1px solid #2c2c2c",
+                  border: "1px solid #4a3d00",
                   borderRadius: 14,
                   padding: "12px 15px 15px",
                 }}>
-                  {/* Header — counter corner only (no X: leaving the
+                  {/* Header (S82.2 owner ruling — the card is the moment,
+                      it announces itself): COACH ASKS eyebrow in the gold
+                      caps register, faint gold border marking the card as
+                      special against ordinary workout blocks. Back arrow +
+                      counter keep the right corner (no X: leaving the
                       chat IS the dismissal; the card just waits). */}
-                  <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", marginBottom: 6 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                    <span style={{
+                      color: COLORS.gold, fontSize: 10, fontWeight: 700,
+                      letterSpacing: 2, textTransform: "uppercase",
+                    }}>Coach asks</span>
                     <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "-2px 0 0" }}>
                       {st.cursor > 0 ? (
                         <button
@@ -12784,6 +12898,7 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
             </div>
           );
         })}
+        </>)}
         {/* Thinking indicator — Bible §4.4. Text-based (no spinner), gold
             accent, slides in where the next Coach message will appear. The
             three dots animate in sequence. Removed the moment a real Coach
@@ -12809,6 +12924,20 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
         )}
         <div ref={bottomRef} />
       </div>
+
+      {/* S82.2: the debrief header's recap sheet — the exact Workout-tab
+          component, anchored to this tab's viewport. Repeat/Edit ride the
+          existing App flows (they switch tabs themselves); Delete runs
+          the same confirm arc, and the debrief bookkeeping self-cleans. */}
+      {debriefRecapId && (
+        <HistoryRecapSheet
+          session={(workoutHistory || []).find((w) => w && w.id === debriefRecapId)}
+          onClose={() => setDebriefRecapId(null)}
+          onRepeat={onRepeatWorkout}
+          onEdit={onEditWorkout}
+          onDelete={(id) => { setDebriefRecapId(null); if (onDeleteWorkout) onDeleteWorkout(id); }}
+        />
+      )}
 
       {/* Offline banner — sits directly above the input. Subtle,
           not intrusive. Only renders when offline. */}
@@ -18534,11 +18663,17 @@ export default function MYGFitness() {
   // session birthed each question. Sessions are only MARKED analyzed
   // when the opening actually lands (markDebriefOpened) — a failed
   // generation leaves the world untouched and the Home card re-offers.
-  const openDebriefChat = (world) => {
+  const openDebriefChat = (world, onlySessionId = null) => {
     if (!isOnline) return; // the room needs the model; the doors hide offline
     const history = world.history || [];
     const covered = new Set(debriefedSessionIds || []);
-    const unanalyzed = history.filter((s) => s && !covered.has(s.id));
+    let unanalyzed = history.filter((s) => s && !covered.has(s.id));
+    // S82.1: finish-door scope — tonight's session only. Older waiting
+    // sessions stay un-analyzed (the Home card keeps offering them) and
+    // still ride the packet as trend CONTEXT. The question card is
+    // untouched by scope: the queue is global, so a pattern earned
+    // across any committed workouts still asks (the loved moment).
+    if (onlySessionId) unanalyzed = unanalyzed.filter((s) => s.id === onlySessionId);
     if (unanalyzed.length === 0) return;
     const queue = buildQuestionQueue(
       { anchors: world.anchors || [], observations: world.observations || [], rules: world.rules || [] },
@@ -18549,12 +18684,34 @@ export default function MYGFitness() {
         rules: world.rules || [], observations: world.observations || [], anchors: world.anchors || [] },
       { sessions: unanalyzed, history, card, depth: debriefDepthPref, customs: customExercises });
     const chatId = `c${Date.now()}`;
+    // S82.1 (owner: "a pretty official experience — a title at the top"):
+    // deterministic header meta, computed once at creation from the
+    // receipts so it survives history edits and renders instantly.
+    const short = (iso) => {
+      const d = new Date(`${iso}T12:00:00`);
+      return isNaN(d) ? (iso || "") : `${d.toLocaleString("en-US", { month: "long" })} ${d.getDate()}`;
+    };
+    const exCount = unanalyzed.reduce((n, s) => n + (s.exercises || []).length, 0);
+    const setCount = unanalyzed.reduce((n, s) => n + (s.exercises || []).reduce((m, ex) => m + (ex.sets || []).filter((t) => t.type !== "warmup").length, 0), 0);
+    const vol = unanalyzed.reduce((n, s) => n + totalVolumeFromExercises(s.exercises || []), 0);
+    const debriefMeta = unanalyzed.length === 1
+      ? {
+          title: unanalyzed[0].name || "Workout",
+          dateLabel: short(unanalyzed[0].date),
+          statLine: `${exCount} ${exCount === 1 ? "exercise" : "exercises"} · ${setCount} sets${vol > 0 ? ` · ${vol.toLocaleString()} lb` : ""}`,
+        }
+      : {
+          title: `${unanalyzed.length} workouts`,
+          dateLabel: `${short(unanalyzed[unanalyzed.length - 1].date)} – ${short(unanalyzed[0].date)}`,
+          statLine: `${exCount} exercises · ${setCount} sets${vol > 0 ? ` · ${vol.toLocaleString()} lb` : ""}`,
+        };
     coachGenAbandon(); // same abandon rule as New Chat / switch
     setCoachChats((prev) => [{
       id: chatId, createdAt: Date.now(), kind: "debrief",
       customName: debriefChatTitle(unanalyzed),
       debriefPacket: packet,
       debriefSessionIds: unanalyzed.map((s) => s.id),
+      debriefMeta,
       messages: [],
     }, ...prev]);
     setCurrentCoachChatId(chatId);
@@ -18615,11 +18772,10 @@ export default function MYGFitness() {
       compiled,
       ruleCard: { status: "saved", savedRuleId: out.saved.id, replacedRuleId: replaceRuleId || null },
     });
-    appendCoachMessage({
-      role: "system", kind: "receipt", ts: Date.now(),
-      id: `m${Date.now()}${Math.floor(Math.random() * 1e6)}`,
-      text: `Rule saved · ${out.saved.text}`,
-    }, chatId);
+    // S82.2 owner ruling (the live screenshots caught the echo): the
+    // saved rule card already displays the exact saved text — the
+    // trailing receipt line repeating it verbatim is gone. Receipts
+    // survive only where no card exists to show the state.
   };
   const cancelRuleCard = (chatId, msgId) => {
     updateCoachMessageById(chatId, msgId, { ruleCard: { status: "cancelled" } });
@@ -19091,6 +19247,7 @@ export default function MYGFitness() {
         history: newHistory,
         anchors: rebuilt.anchors, observations: rebuilt.observations, rules: rebuilt.rules,
         denials: obsDenials || [], watchHolds: obsWatchHolds || [],
+        justCommittedId: finishedSession.id,
       };
     }
     const newHistory = [finishedSession, ...workoutHistory];
@@ -19124,6 +19281,7 @@ export default function MYGFitness() {
       history: newHistory,
       anchors: settled.anchors, observations: settled.observations, rules: settled.rules,
       denials: obsDenials || [], watchHolds: obsWatchHolds || [],
+      justCommittedId: finishedSession.id,
     };
   };
   const commitFinishedSession = () => { commitFinishedSessionCore(); };
@@ -19132,7 +19290,10 @@ export default function MYGFitness() {
   // then open the debrief over the exact world the commit computed.
   const commitFinishedSessionAndAnalyze = () => {
     const world = commitFinishedSessionCore();
-    if (world) openDebriefChat(world);
+    // S82.1 owner ruling: the finish door analyzes TONIGHT ONLY — the
+    // user who just trained wants tonight, not a backlog tour. The Home
+    // catch-up card is the door that covers everything still waiting.
+    if (world) openDebriefChat(world, world.justCommittedId);
   };
 
   // ── THE DEBRIEF CARD WRITE PATH (S82 — D-229; supersedes the S73
@@ -19422,6 +19583,13 @@ Deliver your reaction to these answers now, per THE REACTION TURN section of you
           // while the count is nonzero and the model is reachable, and
           // disappears the moment the user is caught up — never clutter.
           unanalyzedCount={isOnline ? workoutHistory.filter((s) => s && !(debriefedSessionIds || []).includes(s.id)).length : 0}
+          unanalyzedPreview={(() => {
+            const waiting = workoutHistory.filter((s) => s && !(debriefedSessionIds || []).includes(s.id));
+            if (waiting.length === 0) return "";
+            const names = waiting.slice(0, 2).map((s) => s.name || "Workout");
+            const more = waiting.length - names.length;
+            return names.join(", ") + (more > 0 ? ` + ${more} more` : "");
+          })()}
           onAnalyze={analyzeFromHome}
         />
       );
@@ -19489,6 +19657,9 @@ Deliver your reaction to these answers now, per THE REACTION TURN section of you
           onRespondAsDebrief={respondAsDebrief}
           onSubmitDebriefCard={submitDebriefCard}
           onDebriefOpened={markDebriefOpened}
+          onRepeatWorkout={requestRepeatWorkout}
+          onEditWorkout={requestEditWorkout}
+          onDeleteWorkout={deleteWorkoutFromHistory}
           onSaveRule={saveRuleFromCard}
           onCancelRuleCard={cancelRuleCard}
           onSupersedeRuleCards={supersedeOpenRuleCards}
