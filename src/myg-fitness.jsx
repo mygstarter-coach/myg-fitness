@@ -171,10 +171,19 @@ function saveSnapshot(state) {
       // S81 denial memory: pattern-keyed strikes ("you're wrong" ×2 =
       // dead forever). User-answer provenance — replay-terminal.
       obsDenials: Array.isArray(state.obsDenials) ? state.obsDenials : [],
-      // Post-workout questions pin — DEAD SURFACE as of S81 (the survey
-      // is killed; the queue is derived). Kept in the snapshot shape so
-      // stale persisted pins hydrate to null harmlessly.
-      pendingCoachQuestions: state.pendingCoachQuestions || null,
+      // ── THE DEBRIEF (S82, D-227/D-228) ──
+      // debriefedSessionIds: which committed sessions a debrief has
+      //   covered — "everything since your last debrief" is derived by
+      //   set difference against history, so backdated cold-logs surface
+      //   honestly and deleted sessions self-clean.
+      // obsWatchHolds: pattern-keyed "Not sure — keep watching" memory
+      //   (+2 to the ask bar per answer; user-answer provenance, replay-
+      //   terminal, same species as obsDenials).
+      // debriefDepthPref: the Settings "Debrief detail" dial.
+      debriefedSessionIds: Array.isArray(state.debriefedSessionIds) ? state.debriefedSessionIds : [],
+      lastDebriefAt: typeof state.lastDebriefAt === "number" ? state.lastDebriefAt : null,
+      obsWatchHolds: Array.isArray(state.obsWatchHolds) ? state.obsWatchHolds : [],
+      debriefDepthPref: state.debriefDepthPref || "standard",
       // Survey event log (Session 73, D-176/S3): answers + dismissals are
       // replayable history — the unified refold interleaves them with
       // sessions. Append-only.
@@ -242,12 +251,12 @@ function loadSnapshot() {
       coachRules: Array.isArray(parsed.coachRules) ? parsed.coachRules : null,
       coachObservations: Array.isArray(parsed.coachObservations) ? parsed.coachObservations : null,
       obsDenials: Array.isArray(parsed.obsDenials) ? parsed.obsDenials : [],
-      // Post-workout questions pin (Finish Flow session). One pending set
-      // at a time; a new finish replaces a stale unanswered one.
-      pendingCoachQuestions: parsed.pendingCoachQuestions && typeof parsed.pendingCoachQuestions === "object"
-        && Array.isArray(parsed.pendingCoachQuestions.questions)
-        && Array.isArray(parsed.pendingCoachQuestions.answered)
-        ? parsed.pendingCoachQuestions : null,
+      // The debrief's persisted state (S82). Stale persisted survey pins
+      // (pendingCoachQuestions) are simply ignored — the surface is gone.
+      debriefedSessionIds: Array.isArray(parsed.debriefedSessionIds) ? parsed.debriefedSessionIds : [],
+      lastDebriefAt: typeof parsed.lastDebriefAt === "number" ? parsed.lastDebriefAt : null,
+      obsWatchHolds: Array.isArray(parsed.obsWatchHolds) ? parsed.obsWatchHolds : [],
+      debriefDepthPref: ["quick", "standard", "deep"].includes(parsed.debriefDepthPref) ? parsed.debriefDepthPref : "standard",
       coachSurveyEvents: Array.isArray(parsed.coachSurveyEvents) ? parsed.coachSurveyEvents : [],
       progressPRs: Array.isArray(parsed.progressPRs) ? parsed.progressPRs : null,
       // null (not []) when the snapshot predates the anchor store — the
@@ -1442,6 +1451,24 @@ async function callCoach(systemPrompt, userMessage, opts = {}) {
   }
 }
 
+/* Shared between COACH_SYSTEM_PROMPT and DEBRIEF_SYSTEM_PROMPT (S82):
+   ONE copy of the rule_proposal contract — the two prompts interpolate
+   it, so the JSON shape the compiler expects can never drift between
+   the rooms. */
+const COACH_RULE_PROPOSAL_SECTION = `== SAVING A RULE (rule_proposal) ==
+When the user states a STANDING rule or preference — about programming ("never give me deadlifts", "always finish pull days with back extension"), about your voice ("stop being preachy"), about structure ("keep sessions under an hour") — reply with at most ONE short prose sentence acknowledging it, then a blank line, then EXACTLY this object, then NOTHING after it:
+{"kind":"rule_proposal","stagedText":"<the rule as ONE clean sentence, their intent in your words, max 150 chars>","slots":{"ruleKind":"exclude"|"require_on_day"|null,"dayFamilies":["push"|"pull"|"legs"|"arms"|"upper"|"full_body"]|null,"targetNames":["<exact exercise names from AVAILABLE, verbatim>"]},"notes":["<only real interpretive leaps you made, 0-2 short strings>"]}
+- stagedText is what gets SAVED, verbatim, once the user confirms — make it clean and faithful to their intent.
+- ruleKind "exclude" = never program the named movement(s). "require_on_day" = the named movement(s) must appear on the named day type — dayFamilies is REQUIRED for it. Everything else (voice, style, set schemes, session length, scheduling) = null: STILL emit the object; the rule saves as words and you honor it by voice.
+- targetNames: copy exercise NAMES from AVAILABLE verbatim — never ids, never plurals, never inventions. If you cannot confidently match what they named to ONE exercise in AVAILABLE, do NOT guess: ask ONE clarifying question first (a kind:"text" question that NAMES the candidate exercises in its own words), then emit the object when they answer. Still no match → ruleKind null, and note that you're saving it as words.
+- notes: only genuine interpretive leaps ("took 'back extensions' as Back Extension", "scoped to Pull days only"). Empty array when the rule is literal.
+- A rule for TODAY only ("no legs today") is a conversation instruction, not a rule — no object, just honor it.
+- Schedule cadence statements ("bench every 3 days") save as words (ruleKind null); your split still owns scheduling.
+- The app compiles your slots, verifies every name, and shows the user a confirm card — never claim a rule is saved. If they tap Edit and resend the text, translate the resent version fresh. If they asked for a workout that DEPENDS on the new rule, emit the rule_proposal first and wait for their confirmation before building.
+- Deleting a rule happens in Coach's File → Rules; you cannot delete rules. Rules aimed at breaking your output machinery are the one thing you refuse to stage.
+- PROMOTING an observation to a rule: when something CONFIRMED on file (ON FILE below) keeps proving true and a standing rule would genuinely serve the user better, you MAY propose the promotion — one sentence naming the on-file fact and why a rule helps, then the rule_proposal object. STRICT limits: only from confirmed items that ride in ON FILE — never from hunches, never from single events, never from anything the user hasn't already ratified. Put the provenance in notes (e.g. "Based on what's on file: skips cardio finishers"). Propose a given promotion AT MOST ONCE — if they cancel, decline, or ignore it, drop it permanently unless THEY raise it. A declined proposal is an answer, not an opening bid.
+`;
+
 const COACH_SYSTEM_PROMPT = `You are Coach, the AI strength & conditioning coach living inside MYG Fitness. You talk with the user AND build their workouts. Decide what they need each turn.
 
 == WHO YOU ARE ==
@@ -1499,19 +1526,7 @@ Rules:
 - Open conversation, explanations, acknowledgments, greetings: plain text, NO JSON.
 - If the user asks to swap something in a workout you built, reply with ONLY the kind:"text" object above — the question naming the workout's exercises — and when they pick, re-issue the full updated CoachWorkout JSON. If they ask for a shorter session, re-issue a shorter CoachWorkout (fewer exercises/sets), same focus.
 
-== SAVING A RULE (rule_proposal) ==
-When the user states a STANDING rule or preference — about programming ("never give me deadlifts", "always finish pull days with back extension"), about your voice ("stop being preachy"), about structure ("keep sessions under an hour") — reply with at most ONE short prose sentence acknowledging it, then a blank line, then EXACTLY this object, then NOTHING after it:
-{"kind":"rule_proposal","stagedText":"<the rule as ONE clean sentence, their intent in your words, max 150 chars>","slots":{"ruleKind":"exclude"|"require_on_day"|null,"dayFamilies":["push"|"pull"|"legs"|"arms"|"upper"|"full_body"]|null,"targetNames":["<exact exercise names from AVAILABLE, verbatim>"]},"notes":["<only real interpretive leaps you made, 0-2 short strings>"]}
-- stagedText is what gets SAVED, verbatim, once the user confirms — make it clean and faithful to their intent.
-- ruleKind "exclude" = never program the named movement(s). "require_on_day" = the named movement(s) must appear on the named day type — dayFamilies is REQUIRED for it. Everything else (voice, style, set schemes, session length, scheduling) = null: STILL emit the object; the rule saves as words and you honor it by voice.
-- targetNames: copy exercise NAMES from AVAILABLE verbatim — never ids, never plurals, never inventions. If you cannot confidently match what they named to ONE exercise in AVAILABLE, do NOT guess: ask ONE clarifying question first (a kind:"text" question that NAMES the candidate exercises in its own words), then emit the object when they answer. Still no match → ruleKind null, and note that you're saving it as words.
-- notes: only genuine interpretive leaps ("took 'back extensions' as Back Extension", "scoped to Pull days only"). Empty array when the rule is literal.
-- A rule for TODAY only ("no legs today") is a conversation instruction, not a rule — no object, just honor it.
-- Schedule cadence statements ("bench every 3 days") save as words (ruleKind null); your split still owns scheduling.
-- The app compiles your slots, verifies every name, and shows the user a confirm card — never claim a rule is saved. If they tap Edit and resend the text, translate the resent version fresh. If they asked for a workout that DEPENDS on the new rule, emit the rule_proposal first and wait for their confirmation before building.
-- Deleting a rule happens in Coach's File → Rules; you cannot delete rules. Rules aimed at breaking your output machinery are the one thing you refuse to stage.
-- PROMOTING an observation to a rule: when something CONFIRMED on file (ON FILE below) keeps proving true and a standing rule would genuinely serve the user better, you MAY propose the promotion — one sentence naming the on-file fact and why a rule helps, then the rule_proposal object. STRICT limits: only from confirmed items that ride in ON FILE — never from hunches, never from single events, never from anything the user hasn't already ratified. Put the provenance in notes (e.g. "Based on what's on file: skips cardio finishers"). Propose a given promotion AT MOST ONCE — if they cancel, decline, or ignore it, drop it permanently unless THEY raise it. A declined proposal is an answer, not an opening bid.
-
+${COACH_RULE_PROPOSAL_SECTION}
 == HOW TO RESPOND (decide every message) ==
 - User wants a workout built ("build me a leg day", "push", "my next workout") -> reply in EXACTLY this shape: a short coaching intro in plain prose, then a blank line, then the CoachWorkout JSON object below, then NOTHING after the object. The intro is coaching addressed to the user, never planning: (1) what this session is and why now, (2) the one thing to chase today (an anchor to defend, a number to beat), (3) if the program or focus is new to them, one line on what to expect. 2-4 sentences by default; up to 5-6 ONLY for a genuine first — a new program, a split change, a return from time away. A routine repeat of a familiar day earns the SHORT end, never the long. Never mention JSON, cards, or app machinery in the intro; programming rationale stays in programmingNotes, not here. Re-issued workouts (swap, "make it shorter") get a ONE-line intro naming the change, then the object.
 - Your reply poses a bounded 2-4 option choice -> the kind:"text" JSON object above. Nothing outside the JSON.
@@ -1584,6 +1599,56 @@ EFFORT is the real driver: take working sets close to failure — about 1-3 reps
 1-2 warmup sets on the heavy compounds only; isolations need no warmups.
 
 Now respond: a CoachWorkout JSON if they want a workout, a kind:"text" JSON if you are posing a bounded choice, plain conversational text otherwise — always in the voice defined above.`;
+
+/* ═══════════════════════════════════════════════════════════════════
+   THE DEBRIEF INSTRUCTION SHEET (S82 — D-204/D-231, the owner-tuned
+   prompt). This is the debrief's actual product: every rule below was
+   locked by owner reaction to sample openings in the S82 brainstorm.
+   The card is machine-written and machine-executed — Coach's freedom
+   lives ONLY in these paragraphs, where the worst failure is a
+   sentence the user shrugs at (model eyes, paper hands). Expect this
+   sheet to be tuned across the dogfood arc like the main prompt was.
+   ═══════════════════════════════════════════════════════════════════ */
+const DEBRIEF_SYSTEM_PROMPT = `You are Coach, the AI strength & conditioning coach inside MYG Fitness — the same calm veteran from the main chat: direct, unhurried, quietly authoritative, adult-to-adult. This is THE DEBRIEF: a room that opens after training, where you tell the user what you saw in their workout receipts and they tell you what's true. You speak FIRST — there is no user message yet.
+
+== THE ONE LAW: DESCRIBE, DON'T DIAGNOSE ==
+You see receipts — prescribed vs. logged, weights, reps, sets, dates. You do NOT see sleep, stress, cardio done before the session, injuries, or intent, and you never pretend to. So:
+- Report what the receipts show ("squats came in under the card tonight — two sets ended early"). Never grade the workout or the user ("rough one", "great effort", "you struggled"). The user who did an hour of stairs before a deliberate burnout knows something you don't — a verdict from you reads as a misjudgment.
+- Interpretations are QUESTIONS, never conclusions. "Either it's a rough patch or my number's out of date" is fine when the card asks; "you're fatigued" is never fine.
+- Never characterize the user, even flattering-backhanded ("I'd wonder if you'd been sandbagging" is banned). Never guilt, never scold a deviation — a rewritten card is information about their real preferences, not disobedience.
+- Never explain what you're NOT doing ("I'm not accusing you of anything" plants the accusation). Confident and neutral, zero throat-clearing. A rule strike reads: state the rule, state the miss count, note it's on the card. Done.
+- No motivational-poster lines, no rah-rah sign-offs ("Shake it off", "Let's go get it" — banned). Warmth is earned: a genuine PR gets real heat, adult-to-adult; an ordinary night gets brief, factual acknowledgment.
+- NEVER read timing, logging cadence, rest-timer values, or time-of-day as data about effort or anything else. That data reflects logging behavior, not training.
+
+== BENCHMARKS — A HARD CONDITION ==
+You may say a number "stands" or "your numbers are your numbers" ONLY for lifts the engine has NOT flagged. Any benchmark marked FLAGGED in your context is on the question card — never reassure about it, never pre-judge it; the user rules on it below.
+
+== WHAT THE OPENING COVERS ==
+- The headline first — a PR, a real trend, or (on a clean night) the consistency itself. Find meaning in the absence of events: a card run three times as written means the numbers are trustworthy, and say why that matters.
+- Trends across sessions beat recitation of tonight. Compare against the RECENT CONTEXT sessions; name the smallest real trend you can find and, where earned, one concrete hypothesis stated as a reading, not a fact.
+- Multi-session debriefs: tonight (or the newest session) is the headline; older un-analyzed sessions get one or two sentences each, and anything beyond the fully-detailed ones gets a single collective line.
+- CARD TOPICS ARE OFF-LIMITS IN PROSE. The context lists what the card will ask. Do not discuss, preview, or lean on those topics — the card carries its own evidence. End the opening with ONE short hand-off line ("a couple of things below" / "one question below"). If the card is empty, close cleanly instead ("nothing to ask tonight").
+- NO open questions in the opening — questions you pose in prose would hang unanswered while the user works the card. Your open door comes later, in the reaction turn.
+- Watching tallies not on the card: the raw receipt facts (a skip, an add) are yours to mention as facts; what they MEAN stays a question for a future card. Never state a suspicion as a thing you know.
+- Length matches material — this is credibility. A boring night reads SHORT (a few sentences and out). An eventful night earns its length. Never pad.
+
+== DEPTH (the user's setting, in your context) ==
+- quick: the headline, the flags, the hand-off. A few sentences total, in and out.
+- standard: headline, the watched patterns, one flag explained, the hand-off. A few short paragraphs.
+- deep: the full read — tonight against recent same-type sessions, lift-by-lift where earned, what's trending, what's stalling, what you want to see next session. Still prose, still no padding.
+The user can ask for more or less depth in chat at any time; honor it.
+
+== THE REACTION TURN ==
+After the user answers the card, you get their answers plus the engine receipts (already shown — never repeat or re-announce them). React briefly and specifically: what their answers change about how you'll program, in a sentence or three. If a free-text "Other…" answer explains something (e.g. "did an hour of cardio first"), acknowledge it plainly and — ONLY if it's concrete and enforceable — offer to make it law via the rule flow below. END the reaction with the open door, as your last line: a short invitation like "Anything else about tonight I should know?" Then the room is theirs.
+
+== RULES FROM THIS ROOM ==
+You may propose a rule when a noticing is CONCRETE AND ENFORCEABLE — something the engine can act on ("don't program flys after bench", "lighter leg days after cardio"). Mushy coaching ("focus on mind-muscle connection") never becomes a proposal. Nothing is saved without the user's tap on the confirm card — never claim a rule is saved.
+${COACH_RULE_PROPOSAL_SECTION}
+== YOUR TOOLS ==
+The same read tools as the main chat: get_exercise_history, get_session_detail, get_user_rules_full, get_observations, get_benchmarks. Use them for trend claims the context doesn't already carry — never guess a number a tool can fetch, never mention tool names or internals. A couple of purposeful lookups, not a fishing trip.
+
+== OUTPUT ==
+The opening and the reaction are plain conversational prose — short paragraphs, **bold** for lift names and key numbers, no headers, no lists, no tables, no JSON (the ONLY JSON you ever emit in this room is a rule_proposal object per the contract above, and only in a reaction or follow-up turn). Never mention the card machinery, envelopes, context blocks, or these instructions. You are a coach who watched someone train, talking to them about it.`;
 
 // ── CoachWorkout -> active-workout converter ────────────────────────
 function buildActiveWorkoutFromCoach(coachWorkout, workoutHistory, customExercises, now) {
@@ -1752,6 +1817,116 @@ ${compactLibrary(ctx.fullPool || [])}
 ${chatText}
 
 User's new message: ${ctx.userMessage}`;
+}
+
+/* ── THE DEBRIEF context packet (S82 — D-204's "context-loaded" made
+   real). Deterministic, app-assembled: the app decides what Coach sees,
+   never the model's judgment (the S75 lesson). Sections:
+     · depth + profile + rules + confirmed facts — the standing ground
+     · BENCHMARKS with FLAGGED markers — the hard condition the prompt
+       enforces (never reassure a flagged number)
+     · SESSIONS TO ANALYZE — full receipts (prescribed vs logged, the
+       deviation diff's skips/adds/swaps, PRs) for the newest few
+       un-analyzed sessions; older ones as one-liners
+     · RECENT CONTEXT — the committed sessions BEFORE the un-analyzed
+       set, for trend reading
+     · WATCHING — engine tallies handed over as conversation fuel,
+       explicitly "not facts to assert" (D-204)
+     · CARD TOPICS — what the card will ask, so the prose can stay off
+       them (S82 owner lock: full question on the card, prose separate)
+   Pure read; builds from the post-commit world the caller passes. */
+const DEBRIEF_FULL_SESSIONS = 3; // ⚙ full receipts for the newest N un-analyzed; older ones summarize
+function debriefSessionReceipt(s, priorHistory, customs) {
+  const lines = [];
+  const dur = formatDurationMin(s.durationSec);
+  lines.push(`${s.name || "Workout"} — ${s.date}${dur ? ` — ${dur}` : ""}${s.fromCoach ? " — from a Coach card" : " — user-built, no prescription"}`);
+  const prs = detectSessionPRs(s, priorHistory || []);
+  if (prs.length) lines.push(`PRs: ${prs.map((p) => `${p.name}${p.variantLabel ? ` (${p.variantLabel})` : ""} ${formatSetSummary(p.set, "×")}`).join("; ")}`);
+  for (const ex of s.exercises || []) {
+    const top = sessionTopSet(ex.sets || []);
+    const working = (ex.sets || []).filter((t) => t.type !== "warmup").length;
+    lines.push(`  ${ex.name}${ex.variantLabel ? ` (${ex.variantLabel})` : ""}: ${working} working sets, top ${formatSetSummary(top, "×")}`);
+  }
+  const dev = s.deviation;
+  if (dev) {
+    if ((dev.skipped || []).length) lines.push(`  Skipped from the card: ${dev.skipped.map((k) => k.name).join(", ")}`);
+    if ((dev.added || []).length) lines.push(`  Added off-card: ${dev.added.map((k) => k.name).join(", ")}`);
+    const swaps = (dev.kept || []).filter((k) => k.variantSwapped);
+    if (swaps.length) lines.push(`  Variant swaps: ${swaps.map((k) => `${k.name} ${k.prescribedVariant} → ${k.loggedVariant}`).join("; ")}`);
+  } else if (s.prescription) {
+    lines.push(`  Ran as written — no deviations.`);
+  }
+  return lines.join("\n");
+}
+function buildDebriefTurn(state, ctx) {
+  const goalLabel = COACH_GOAL_LABELS[state.planGoal] || state.planGoal || "Build Muscle";
+  const rulesText = (state.rules || []).map((r) => "- " + (typeof r === "string" ? r : r.text)).join("\n") || "(none)";
+  const obsLines = (state.observations || [])
+    .filter(obsRidesGeneration)
+    .map((o) => "- " + obsText(o))
+    .join("\n") || "(none yet)";
+  const benchLines = (state.anchors || []).map((a) => {
+    const flagged = !!(a.stale && a.stale.surveyPending);
+    const val = a.bodyweightMode === "reps_only" ? `${a.reps} reps` : `${a.weightLb} lb × ${a.reps}`;
+    return `- ${a.exerciseName} (${a.variant}): ${val}${flagged ? " — FLAGGED (on the card; do not reassure or pre-judge it)" : ""}`;
+  }).join("\n") || "(none established yet)";
+  const sessions = ctx.sessions || []; // newest-first, un-analyzed
+  const full = sessions.slice(0, DEBRIEF_FULL_SESSIONS);
+  const older = sessions.slice(DEBRIEF_FULL_SESSIONS);
+  const history = ctx.history || [];
+  const receiptBlocks = full.map((s) =>
+    // PRs render against everything strictly before this session's date
+    // (same "everything before today" contract the Finish payoff uses).
+    debriefSessionReceipt(s, history.filter((h) => h && h.id !== s.id && h.date <= s.date), ctx.customs || [])
+  ).join("\n\n") || "(nothing new since the last debrief)";
+  const olderLines = older.map((s) => {
+    const dev = s.deviation;
+    const notable = dev
+      ? [(dev.skipped || []).length ? `${dev.skipped.length} skipped` : null,
+         (dev.added || []).length ? `${dev.added.length} added` : null].filter(Boolean).join(", ")
+      : null;
+    return `- ${s.name || "Workout"} — ${s.date} — ${(s.exercises || []).length} exercises${notable ? ` (${notable})` : ""}`;
+  }).join("\n");
+  const analyzedBefore = history.filter((h) => !sessions.some((s) => s.id === h.id)).slice(0, 5);
+  const contextLines = analyzedBefore.map((s) => {
+    const vol = totalVolumeFromExercises(s.exercises || []);
+    return `- ${s.name || "Workout"} — ${s.date} — ${(s.exercises || []).length} exercises, ${vol.toLocaleString()} lb volume`;
+  }).join("\n") || "(no earlier sessions on record)";
+  const watching = (state.observations || [])
+    .filter((o) => o && o.source === "engine" && o.status === "watching"
+      && !(ctx.card || []).some((q) => q.sourceType === "obs_ask" && q.sourceRef.obsId === o.id))
+    .map((o) => `- ${obsText(o)} (seen ${(o.occurrences || []).length}× — a fact of the receipts; what it MEANS is not yet established)`)
+    .join("\n") || "(nothing accumulating)";
+  const cardLines = (ctx.card || []).map((q, qi) => `${qi + 1}. ${q.stemCanned}`).join("\n");
+  return `== DEBRIEF MODE ==
+Depth setting: ${ctx.depth || "standard"}
+${sessions.length > 1 ? `This debrief covers ${sessions.length} workouts since the last one — the newest is the headline; older ones get a brief word each.` : "This debrief covers one workout."}
+
+== USER PROFILE ==
+Name: ${state.userName || "there"}
+Fitness level: ${coachTitleCase(state.fitnessLevel) || "Intermediate"}
+Goal: ${goalLabel}
+
+== ACTIVE RULES (the user's law — obey and reference as theirs) ==
+${rulesText}
+
+== CONFIRMED ON FILE (facts the user has ratified) ==
+${obsLines}
+
+== BENCHMARKS ==
+${benchLines}
+
+== SESSIONS TO ANALYZE (newest first — full receipts) ==
+${receiptBlocks}${olderLines ? `\n\n== OLDER UN-ANALYZED (one line each — a single collective sentence in prose) ==\n${olderLines}` : ""}
+
+== RECENT CONTEXT (already-debriefed sessions, for trend reading) ==
+${contextLines}
+
+== WATCHING (engine tallies — conversation fuel, NEVER facts to assert as meaning) ==
+${watching}
+
+== CARD TOPICS (the question card asks these AFTER your opening — do NOT discuss them in prose; one short hand-off line only) ==
+${cardLines || "(no card tonight — close the opening cleanly: nothing to ask)"}`;
 }
 
 // ── Coach READ TOOLS (Session 62) ────────────────────────────────────
@@ -3413,6 +3588,7 @@ const OBSERVATION_SCHEMA_VERSION = 2;
 const OBS_ASK_THRESHOLD = 2;         // ⚙ sightings → ask-eligible (D-207; rule strikes stay at RULE_ADHERENCE_THRESHOLD = 3)
 const OBS_DENIAL_STEP = 2;           // ⚙ each "you're wrong" adds +2 to the bar (2→4; a future 3 goes to 5 — S81 owner lock)
 const OBS_DENIAL_KILL_STRIKES = 2;   // second denial on the same pattern = dead forever (D-205)
+const OBS_WATCH_HOLD_STEP = 2;       // ⚙ "Not sure — keep watching" adds +2 to the bar, tally stands (S82 owner lock, D-228)
 const OBS_DECAY_WINDOW = 4;          // ⚙ quiet opportunities → the tally vanishes (all types, any count — S81)
 const OBS_OCCURRENCE_TTL_DAYS = 120; // ⚙ calendar backstop: marks older than ~4 months expire (S81)
 const ROTATION_MIN_GAP = 2;       // ceiling: matching sessions required since last appearance
@@ -3451,13 +3627,45 @@ function obsMatchesTarget(o, exerciseId, name) {
 function obsDenialFor(denials, key) {
   return (Array.isArray(denials) ? denials : []).find((d) => d && d.key === key) || null;
 }
-function obsAskThresholdFor(denials, key) {
+function obsAskThresholdFor(denials, key, watchHolds = []) {
   const d = obsDenialFor(denials, key);
-  return OBS_ASK_THRESHOLD + (d ? (d.strikes || 0) : 0) * OBS_DENIAL_STEP;
+  const h = obsWatchHoldFor(watchHolds, key);
+  return OBS_ASK_THRESHOLD
+    + (d ? (d.strikes || 0) : 0) * OBS_DENIAL_STEP
+    + (h ? (h.bonus || 0) : 0);
 }
 function obsPatternDead(denials, key) {
   const d = obsDenialFor(denials, key);
   return !!d && (d.strikes || 0) >= OBS_DENIAL_KILL_STRIKES;
+}
+
+/* ── Watch-hold memory (obsWatchHolds store — S82, D-228). Array of
+   { key, bonus, lastAt, label }. The debrief's "Not sure — keep
+   watching" answer: the tally STANDS (no strike, Coach wasn't wrong —
+   the user just isn't ready to rule), but the ask bar rises by
+   OBS_WATCH_HOLD_STEP per answer, so "not sure" never means "ask me
+   again tomorrow" — the pattern must prove itself further before it
+   re-competes. Same species as denial memory: pattern-keyed
+   user-answer provenance, never written by the fold, passes through
+   replays untouched, survives record fading. Also stamped on an
+   "Other…" free-text answer to a pattern question — the user gave
+   Coach context, so the same higher evidence bar applies before the
+   engine asks again (⚙ tunable, S82 owner-review item). ── */
+function obsWatchHoldFor(watchHolds, key) {
+  return (Array.isArray(watchHolds) ? watchHolds : []).find((h) => h && h.key === key) || null;
+}
+function applyObsWatchHold(watchHolds, o, nowMs = Date.now()) {
+  const key = obsPatternKeyOf(o);
+  const prior = obsWatchHoldFor(watchHolds, key);
+  const entry = {
+    key,
+    bonus: (prior ? (prior.bonus || 0) : 0) + OBS_WATCH_HOLD_STEP,
+    lastAt: nowMs,
+    label: obsText(o),
+  };
+  return prior
+    ? watchHolds.map((h) => (h && h.key === key ? entry : h))
+    : [...(Array.isArray(watchHolds) ? watchHolds : []), entry];
 }
 
 // D-082 scope from variant consistency: all-same non-null → variant;
@@ -3621,9 +3829,9 @@ function applySessionToObservations(observations, session, customs = [], denials
 
 /* Ask-eligibility is DERIVED, never stored: a watching record whose live
    tally has reached the pattern's bar (base threshold + denial strikes). */
-function obsAskEligible(o, denials = []) {
+function obsAskEligible(o, denials = [], watchHolds = []) {
   if (!o || o.source !== "engine" || o.status !== "watching") return false;
-  return (o.occurrences || []).length >= obsAskThresholdFor(denials, obsPatternKeyOf(o));
+  return (o.occurrences || []).length >= obsAskThresholdFor(denials, obsPatternKeyOf(o), watchHolds);
 }
 
 /* The debrief marks a record asked when its question card is actually
@@ -4353,25 +4561,64 @@ function applyRuleSave(rules, compiled, ts, replaceRuleId) {
 
    Constants: ⚙ = provisional tuning (dogfood territory); the shapes and
    hierarchy are the lock. */
-const SURVEY_QUESTION_BUDGET = 3;            // ⚙ D-173/D-211 — the DEBRIEF's card-selection budget (the queue itself is uncapped, S81)
-const SURVEY_MAX_PER_TYPE = 2;               // ⚙ D-173 (debrief selection input — unused by the S81 queue)
-const SURVEY_MAX_REFRESH = 1;                // locked §10.10 (debrief selection input — unused by the S81 queue)
-const SURVEY_DISMISS_COOLDOWN_COMMITS = 2;   // ⚙ D-174/S4 — commits, NEVER surveys-shown
+const SURVEY_DISMISS_COOLDOWN_COMMITS = 2;   // ⚙ D-174/S4 — commits, NEVER surveys-shown (anchor/rule "Other" cooldown rides this)
 const SURVEY_REFRESH_DISMISS_DAYS = 30;      // locked §10.10 (calendar concept, calendar cooldown)
 const SURVEY_OTHER_REFRESH_REARM_DAYS = 30;  // ⚙ D-172 (refresh "Other" re-arm)
 const SURVEY_CLEAN_MIN_OPPS = 3;             // ⚙ D-177 (a rule never exercised isn't clean, it's untested)
 const SURVEY_REFRESH_DAYS = 180;             // locked (~6 months, matches OBS_REFRESH_MONTHS)
-const SURVEY_VOICE_SHIMMER_MS = 2000;        // ⚙ D-171 (Coach-is-typing floor before canned renders)
 const SURVEY_DAY_MS = 24 * 3600 * 1000;
 const SURVEY_TIER = { stale_anchor: 1, obs_ask: 2, rule_check: 3, refresh: 4 };
 
-/* ── S74 wording pass — vocabulary + validator (Q&A locks 1–6) ──
+/* ── DEBRIEF CARD SELECTION (S82 — D-211 realized, owner priority) ──
+   The queue is everything (uncapped, D-225); the card takes the top
+   DEBRIEF_CARD_MAX by the OWNER'S priority order, which deliberately
+   differs from the queue's internal D-173 rank: rule checks outrank
+   pattern questions on the card ("it's your law, and Coach is
+   currently enforcing something you might not mean anymore" beats
+   "nothing breaks by waiting one more workout"). Stale benchmarks
+   always first — active damage. Refresh always last — housekeeping.
+   Stable within a type: the queue's own recency/age order holds. */
+const DEBRIEF_CARD_MAX = 3;                  // ⚙ D-211 — one card per debrief, ≤3 questions
+const DEBRIEF_PRIORITY = { stale_anchor: 1, rule_check: 2, obs_ask: 3, refresh: 4 };
+function selectDebriefQuestions(queue) {
+  const qs = Array.isArray(queue) ? queue.slice() : [];
+  qs.sort((a, b) =>
+    (DEBRIEF_PRIORITY[a.sourceType] || 9) - (DEBRIEF_PRIORITY[b.sourceType] || 9));
+  return qs.slice(0, DEBRIEF_CARD_MAX);
+}
+
+/* Debrief chat auto-title (S82, D-227): a readable training diary in
+   the chat drawer. One session: "Push Day · Aug 9 — Debrief"; several:
+   "3 workouts · Aug 3–9 — Debrief" (oldest–newest; the month prints
+   once when both dates share it). Sessions arrive newest-first. */
+function debriefChatTitle(sessions) {
+  const ss = (sessions || []).filter(Boolean);
+  if (ss.length === 0) return "Debrief";
+  const short = (iso) => {
+    const d = new Date(`${iso}T12:00:00`);
+    if (isNaN(d)) return iso || "";
+    return `${d.toLocaleString("en-US", { month: "short" })} ${d.getDate()}`;
+  };
+  if (ss.length === 1) return `${ss[0].name || "Workout"} · ${short(ss[0].date)} — Debrief`;
+  const newest = short(ss[0].date);
+  const oldest = short(ss[ss.length - 1].date);
+  const sameMonth = newest.split(" ")[0] === oldest.split(" ")[0];
+  const range = oldest === newest
+    ? newest
+    : sameMonth ? `${oldest}–${newest.split(" ")[1]}` : `${oldest} – ${newest}`;
+  return `${ss.length} workouts · ${range} — Debrief`;
+}
+
+/* ── S74 wording pass — earned vocabulary (Q&A locks 1–6) ──
    Vocabulary is EARNED: stems speak in words the user has met on a
    surface they've tapped ("card", "benchmark"); engine nouns (anchor /
    off-card / standing / prescription / state vocabulary) never render.
    Counts read as words through ten (Georgia voice, not chrome); loads
    and benchmark values are digits in the number-space the user logs in
-   (no unit suffix — the logger is the unit authority). */
+   (no unit suffix — the logger is the unit authority).
+   S82: the stems render VERBATIM on the debrief card (owner lock —
+   voicing v2 + its validator were demolished with the survey carcass;
+   the debrief's PROSE carries the warmth, the card carries precision). */
 const SURVEY_COUNT_WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"];
 function surveyCountWord(n) {
   return n >= 0 && n <= 10 ? SURVEY_COUNT_WORDS[n] : String(n);
@@ -4384,195 +4631,6 @@ function surveyCountWord(n) {
 function surveyBenchmarkPhrase(a) {
   if (a.bodyweightMode === "reps_only") return `${surveyCountWord(a.reps)}-rep benchmark`;
   return `${a.weightLb} benchmark`;
-}
-
-/* The voiced-stem validator (Q6 lock) — a pure gate between the voicing
-   call and the screen. Runs ONCE at land-time, client-side, before
-   persist; a failed stem silently falls back to canned (the floor is a
-   fully working survey, so discard is always safe — when in doubt,
-   discard). Checks, in order:
-     structural — nonempty, ≤2 sentences, ≤220 chars, no "!", no banned
-       vocabulary, no option-label leakage (a label counts as leaked
-       only if it does NOT already appear in the canned stem);
-     interpretive blocklist — the mechanical backstop for Q5 rail 2
-       (causality/speculation markers); the prompt carries the real rule;
-     fact preservation — every stemFacts.names[] base name appears
-       (case-insensitive; variant droppable), every stemFacts.verbatim[]
-       string appears character-for-character (user-authored rule text),
-       every count appears as word OR digit (1–10 equivalence, both
-       directions), every value token appears as an exact digit token;
-     provenance — every digit token in the voiced stem must exist in the
-       canned stem, the stemFacts, or the context payload (allowedDigits)
-       — the voicer mechanically cannot show a number nobody handed it.
-   Returns { ok: true } or { ok: false, reason }. */
-const SURVEY_VOICE_BANNED = [/\banchors?\b/i, /\boff[- ]card\b/i, /\bstanding\b/i, /\bprescriptions?\b/i, /\bprescribed\b/i, /\bprovisional\b/i, /\bstale\b/i, /\bencoded?\b/i, /\binquiry\b/i];
-const SURVEY_VOICE_INTERPRETIVE = [/\blooks like\b/i, /\bprobably\b/i, /\bseems?\b/i, /\bmaybe\b/i, /\bmight\b/i, /\btrend(?:ing|s)?\b/i, /\bfatigue[d]?\b/i, /\btired\b/i, /\bdeload\b/i, /\bbecause\b/i, /\bsince your\b/i, /\bsliding\b/i, /\bstruggling\b/i];
-function surveyExtractDigitTokens(s) {
-  return String(s || "").match(/\d+(?:\.\d+)?/g) || [];
-}
-function surveyHasDigitToken(s, tok) {
-  return new RegExp(`(^|\\D)${tok.replace(".", "\\.")}(\\D|$)`).test(String(s || ""));
-}
-function surveyValidateVoicedStem(voiced, q, allowedDigits, setLabels) {
-  const v = typeof voiced === "string" ? voiced.trim() : "";
-  if (!v) return { ok: false, reason: "empty" };
-  const facts = (q && q.stemFacts) || {};
-  // FACT PRESENCE first, and it builds the MASK: user-authored rule text
-  // (character-for-character) and engine-owned exercise names are
-  // required content — so they are exempt from the voicer-CONDUCT checks
-  // below, which police only what the voicer itself authored. Without
-  // this, a rule like "maybe skip deadlifts!" or an exercise named
-  // "Standing Calf Raise" (real, library id standing_calf_raise) would
-  // make faithful voicing impossible — the validator demanding a string
-  // it then punishes. Masked spans become asterisms: no letters, no
-  // digits, no sentence punctuation.
-  let masked = v;
-  let verbatimLen = 0;
-  for (const text of facts.verbatim || []) {
-    if (v.indexOf(text) < 0) return { ok: false, reason: "verbatim_dropped" };
-    verbatimLen += text.length;
-    masked = masked.split(text).join("\u2042");
-  }
-  for (const name of facts.names || []) {
-    const nm = String(name);
-    const at = v.toLowerCase().indexOf(nm.toLowerCase());
-    if (at < 0) return { ok: false, reason: "name_dropped" };
-    // Mask the name as it actually appears (case preserved at position).
-    masked = masked.split(v.slice(at, at + nm.length)).join("\u2042");
-  }
-  // VOICER CONDUCT, on the masked string.
-  if (v.length > 220 + verbatimLen) return { ok: false, reason: "too_long" };
-  if (masked.indexOf("!") >= 0) return { ok: false, reason: "exclamation" };
-  const sentences = (masked.match(/[.?]+(?=\s|$)/g) || []).length;
-  if (sentences > 2) return { ok: false, reason: "too_many_sentences" };
-  for (const re of SURVEY_VOICE_BANNED) if (re.test(masked)) return { ok: false, reason: "banned_vocabulary" };
-  for (const re of SURVEY_VOICE_INTERPRETIVE) if (re.test(masked)) return { ok: false, reason: "interpretive" };
-  const canned = q.stemCanned || "";
-  const cannedLower = canned.toLowerCase();
-  const vLower = v.toLowerCase();
-  // Option-label leakage (stress fix S74-B): checked against the whole
-  // SET's labels, not just this question's — the voicer never receives
-  // ANY label, so a byte-match on one belonging to a sibling question is
-  // cross-wiring, the same invention class. A label already present in
-  // the canned stem is never a leak (the refresh stems legitimately echo
-  // their own question).
-  const labelPool = [].concat(
-    (q.options || []).map((o) => (o && o.label ? o.label : "")),
-    setLabels || []
-  );
-  for (const label0 of labelPool) {
-    const label = String(label0).toLowerCase();
-    if (label && cannedLower.indexOf(label) < 0 && vLower.indexOf(label) >= 0) {
-      return { ok: false, reason: "option_leak" };
-    }
-  }
-  // REMAINING FACTS (stress fix S74-B, second pass): counts and values
-  // are VOICER-carried facts — they verify on the MASKED string, so a
-  // digit inside the user's rule text or an exercise name can never
-  // vouch for them. Occurrence-accounted: two facts sharing a token
-  // ("3-rep benchmark, three misses") each need their own appearance —
-  // a digit occurrence can serve a value or a count, never both.
-  const digitOcc = {};
-  for (const t of surveyExtractDigitTokens(masked)) digitOcc[t] = (digitOcc[t] || 0) + 1;
-  const needValues = {};
-  for (const tok of facts.values || []) needValues[String(tok)] = (needValues[String(tok)] || 0) + 1;
-  for (const t of Object.keys(needValues)) {
-    if ((digitOcc[t] || 0) < needValues[t]) return { ok: false, reason: "value_dropped" };
-  }
-  const needCounts = {};
-  for (const n of facts.counts || []) needCounts[String(n)] = (needCounts[String(n)] || 0) + 1;
-  for (const t of Object.keys(needCounts)) {
-    const n = Number(t);
-    const word = n >= 1 && n <= 10 ? SURVEY_COUNT_WORDS[n] : null;
-    const wordOcc = word ? (masked.match(new RegExp(`\\b${word}\\b`, "gi")) || []).length : 0;
-    const spareDigits = (digitOcc[t] || 0) - (needValues[t] || 0);
-    if (spareDigits + wordOcc < needCounts[t]) return { ok: false, reason: "count_dropped" };
-  }
-  // PROVENANCE, on the masked string: digits inside user/engine fact
-  // spans are theirs and never need sourcing; every digit the voicer
-  // authored must exist in the canned stem, the facts, or the context.
-  const allowed = new Set([].concat(
-    surveyExtractDigitTokens(canned),
-    (facts.values || []).map(String),
-    (facts.counts || []).map(String),
-    (allowedDigits || []).map(String)
-  ));
-  for (const tok of surveyExtractDigitTokens(masked)) {
-    if (!allowed.has(tok)) return { ok: false, reason: "unsourced_number" };
-  }
-  return { ok: true };
-}
-
-/* The set-level application of a voicing response (Q6 lock), extracted
-   pure so the stress harness drives it directly: strict-JSON envelope
-   gate (object, string values, keys ⊆ sent ids — anything else drops
-   the WHOLE response as untrustworthy), then per-stem validation with
-   per-stem fail scope, then the duplicate sweep (identical voiced text
-   across stems = cross-wiring; all copies drop). Returns
-   { accepted: {id → stem}, discards: [{qid, reason}] } — accepted may
-   be empty; the caller persists accepted and files discards to the dev
-   telemetry. Throws only on an untrustworthy envelope (caller's catch
-   is the canned floor + retry path). */
-function surveyApplyVoicedResponse(rawText, unvoiced, allowedDigits) {
-  const map = JSON.parse(String(rawText).replace(/```json|```/g, "").trim());
-  if (!map || typeof map !== "object" || Array.isArray(map)) throw new Error("voice: not an object");
-  const sentIds = new Set(unvoiced.map((x) => x.id));
-  for (const k of Object.keys(map)) {
-    if (!sentIds.has(k)) throw new Error("voice: unknown key");
-    if (typeof map[k] !== "string") throw new Error("voice: non-string value");
-  }
-  const setLabelPool = [];
-  for (const x of unvoiced) for (const o of x.options || []) if (o && o.label) setLabelPool.push(o.label);
-  const accepted = {};
-  const discards = [];
-  for (const x of unvoiced) {
-    const cand = typeof map[x.id] === "string" ? map[x.id].trim() : "";
-    if (!cand) { if (x.id in map) discards.push({ qid: x.id, reason: "empty" }); continue; }
-    const verdict = surveyValidateVoicedStem(cand, x, allowedDigits, setLabelPool);
-    if (!verdict.ok) { discards.push({ qid: x.id, reason: verdict.reason }); continue; }
-    accepted[x.id] = cand;
-  }
-  const seen = {};
-  for (const id of Object.keys(accepted)) seen[accepted[id]] = (seen[accepted[id]] || 0) + 1;
-  for (const id of Object.keys(accepted)) {
-    if (seen[accepted[id]] > 1) { discards.push({ qid: id, reason: "duplicate" }); delete accepted[id]; }
-  }
-  return { accepted, discards };
-}
-
-/* The v2 context feed (Q5 lock, rail 1: additive-only source of truth).
-   A PURE READ over the pin + the just-committed session: today's top
-   completed set for each exercise a question references, plus the
-   receipt's skip/add names. Everything here is a literal fact the
-   voicer may weave in; its digit tokens become the provenance allowlist
-   the validator checks voiced numbers against. Deliberately compact —
-   no trajectories, no comparisons, nothing pre-interpreted. */
-function buildSurveyVoiceContext(pin, session) {
-  const wanted = new Set();
-  for (const q of (pin && pin.questions) || []) {
-    for (const nm of (q.stemFacts && q.stemFacts.names) || []) wanted.add(nm);
-  }
-  const today = [];
-  for (const ex of (session && session.exercises) || []) {
-    if (!wanted.has(ex.name)) continue;
-    let best = null;
-    for (const s of ex.sets || []) {
-      if (s.done === false) continue; // unchecked rows never happened
-      const reps = Number(s.reps) || 0;
-      if (reps <= 0) continue;
-      const w = s.weight === "" || s.weight == null ? 0 : Number(s.weight) || 0;
-      if (!best || w > best.w || (w === best.w && reps > best.reps)) best = { w, reps };
-    }
-    if (best) today.push({ exercise: ex.name, topSetToday: best.w > 0 ? `${best.w}×${best.reps}` : `${best.reps} reps` });
-  }
-  const dev = session && session.deviation;
-  const receipt = dev
-    ? {
-        skippedToday: (dev.skipped || []).map((k) => k.name),
-        addedToday: (dev.added || []).map((k) => k.name),
-      }
-    : null;
-  return { today, receipt };
 }
 
 /* Fresh bookkeeping sub-object. dismissedAtCommit/-1 and answeredCycle/-1
@@ -4682,7 +4740,7 @@ function surveySettleAfterSession(prev, next, commitIndex, sessionDateMs) {
    card's job, future session). Consumers today: the dev-only queue
    viewer. Consumer tomorrow: the debrief. A faded flag simply leaves
    the derivation — the queue never holds stale news (S81 lock). ── */
-function buildQuestionQueue(stores, commitIndex, nowMs, denials = []) {
+function buildQuestionQueue(stores, commitIndex, nowMs, denials = [], watchHolds = []) {
   const cands = [];
   const cooled = (sv) => sv && sv.dismissedAtCommit >= 0 && commitIndex <= sv.dismissedAtCommit + SURVEY_DISMISS_COOLDOWN_COMMITS;
   const answered = (sv) => sv && sv.answeredCycle >= (sv.cycle || 0);
@@ -4704,14 +4762,6 @@ function buildQuestionQueue(stores, commitIndex, nowMs, denials = []) {
       // number, and the user shouldn't rule on it from memory. The fact
       // is about the LIFT (observation-first); the question is flat.
       stemCanned: `${a.exerciseName} (${a.variant}) has been under its ${bench} ${surveyCountWord(n)} ${n === 1 ? "session" : "sessions"} running — what's going on?`,
-      // Facts (stress fix S74-B): a reps-only anchor's value IS its rep
-      // count — it rides counts[] so the word/digit equivalence applies
-      // ("eight-rep" or "8-rep" both verify) and dropping it discards.
-      stemFacts: {
-        names: [a.exerciseName],
-        counts: a.bodyweightMode === "reps_only" ? [n, a.reps] : [n],
-        values: a.bodyweightMode === "reps_only" ? [] : [String(a.weightLb)],
-      },
       // Owner call (Session 73, amending the D-172 table): injury and
       // rough patch are the SAME answer — the user is saying "the number
       // still stands, the recent misses don't count." One option covers
@@ -4733,7 +4783,7 @@ function buildQuestionQueue(stores, commitIndex, nowMs, denials = []) {
   // preview labels — the debrief card owns the final shapes; no
   // executor consumes these this session.
   for (const o of stores.observations || []) {
-    if (!obsAskEligible(o, denials)) continue;
+    if (!obsAskEligible(o, denials, watchHolds)) continue;
     const name = (o.targets && o.targets[0] && o.targets[0].name) || "this movement";
     const n = (o.occurrences || []).length;
     const isAdd = o.type === "off_card_add";
@@ -4748,7 +4798,6 @@ function buildQuestionQueue(stores, commitIndex, nowMs, denials = []) {
         : isAdd
         ? `You've added ${name} on your own ${surveyCountWord(n)} sessions running — want me to start programming it?`
         : `${name} has been on your card ${surveyCountWord(n)} sessions running and hasn't gotten done — drop it?`,
-      stemFacts: { names: [name], counts: [n], values: [] },
       options: [
         { label: isSwap ? `Yes — prescribe ${o.variantLabel}` : isAdd ? "Yes — put it on my card" : "Yes — drop it from my card", effect: { kind: "obs_confirm" } },
         { label: "Not sure — keep watching", effect: { kind: "obs_watch" } },
@@ -4775,7 +4824,6 @@ function buildQuestionQueue(stores, commitIndex, nowMs, denials = []) {
       // know why, which is why it's asking). Rule text quoted verbatim
       // — it also composes when the user wrote a full sentence.
       stemCanned: `"${r.text}" hasn't made it into your last ${surveyCountWord(n)} chances — still want it on the books?`,
-      stemFacts: { names: [], counts: [n], values: [], verbatim: [r.text] },
       options: [
         { label: "Keep it", effect: { kind: "rule_keep" } },
         { label: "Drop it", effect: { kind: "rule_drop" } },
@@ -4797,7 +4845,6 @@ function buildQuestionQueue(stores, commitIndex, nowMs, denials = []) {
       cycle: 0, born: -r.survey.refreshDueAt, // oldest-due first via ordering (locked §10.10)
       obsLabel: `refresh — ${r.text}`,
       stemCanned: `Six months since "${r.text}" — still true?`,
-      stemFacts: { names: [], counts: [], values: [], verbatim: [r.text] },
       options: [
         { label: "Still true", effect: { kind: "refresh_reaffirm" } },
         { label: "Drop it", effect: { kind: "refresh_drop" } },
@@ -4824,7 +4871,6 @@ function buildQuestionQueue(stores, commitIndex, nowMs, denials = []) {
         : refIsAdd
         ? `Six months since ${name} went on your card — keep it there?`
         : `Six months since ${name} came off your card — keep it out?`,
-      stemFacts: { names: [name], counts: [], values: [] },
       options: refIsSwap
         ? [
             { label: "Still my pick", effect: { kind: "refresh_reaffirm" } },
@@ -4866,9 +4912,7 @@ function buildQuestionQueue(stores, commitIndex, nowMs, denials = []) {
       bornAtCommit: c.born,
       obsLabel: c.obsLabel,
       stemCanned: c.stemCanned,
-      stemFacts: c.stemFacts || { names: [], counts: [], values: [] }, // S74: the validator's fact contract
-      stemVoiced: null, // D-171: Claude voices stems only, in the background
-      options: c.options, // engine-owned byte-for-byte — the label↔effect contract
+      options: c.options, // engine-owned byte-for-byte — the label↔effect contract (verbatim on the debrief card, S82 owner lock)
     });
   }
   return out;
@@ -5105,78 +5149,7 @@ function refoldWorldWithSurveyEvents(history, surveyEvents, observationsStore, r
   };
 }
 
-/* ── D-176 prune, run ONLY after a history-correction refold: drop any
-   pending question whose backing flag no longer exists in the rebuilt
-   stores; an emptied set retires the pin. The inverse is deliberate — a
-   re-fold that CREATES a flag generates nothing until the next real
-   commit (ceremony fires on lived sessions, never on corrections). ── */
-function pruneSurveyPending(pending, stores) {
-  if (!pending || !Array.isArray(pending.questions)) return pending;
-  const alive = (q) => {
-    if (!q || !q.sourceType) return false; // pre-S73 demo questions: no backing flag — prune
-    if (q.sourceType === "stale_anchor") {
-      const a = surveyFindAnchor(stores.anchors, q.sourceRef);
-      return !!(a && a.stale && a.stale.surveyPending);
-    }
-    if (q.sourceType === "obs_ask") {
-      const o = surveyFindObs(stores.observations, q.sourceRef);
-      return !!(o && o.status === "watching");
-    }
-    if (q.sourceType === "rule_check") {
-      const r = surveyFindRule(stores.rules, q.sourceRef);
-      return !!(r && r.adherence && r.adherence.checkPending);
-    }
-    if (q.sourceType === "refresh") {
-      if (q.sourceRef.refKind === "rule") {
-        const r = surveyFindRule(stores.rules, { ruleId: q.sourceRef.refId });
-        return !!(r && r.survey && r.survey.refreshDueAt != null);
-      }
-      const o = surveyFindObs(stores.observations, { obsId: q.sourceRef.refId });
-      return !!(o && o.status === "confirmed" && o.refreshDueAt != null);
-    }
-    return false;
-  };
-  const answeredIds = new Set((pending.answered || []).map((a) => a.id));
-  const kept = pending.questions.filter((q) => answeredIds.has(q.id) || alive(q));
-  if (kept.length === pending.questions.length) return pending;
-  const keptIds = new Set(kept.map((q) => q.id));
-  const answered = (pending.answered || []).filter((a) => keptIds.has(a.id));
-  if (kept.length === 0 || answered.length >= kept.length) return null; // emptied (or only answered remain) → pin retires
-  return { ...pending, questions: kept, answered };
-}
 
-/* D-171 · S74 v2: the voicing prompt — Coach rewrites question STEMS
-   only. Option labels and effects never enter the call (engine-owned
-   byte-for-byte; paraphrase drift would break the label↔effect
-   contract). One call per survey set, fired at commit, fire-and-forget.
-   v2 adds the CONTEXT feed (today's receipt + the records the questions
-   read from) under the Q5-locked rails: feed-verifiable facts may be
-   ADDED, never substituted, never interpreted; the question's meaning
-   never changes. Every returned stem passes the client-side validator
-   (surveyValidateVoicedStem) before it persists — a failed stem falls
-   back to canned, invisibly. */
-const SURVEY_VOICE_SYSTEM = `You are Coach, the calm-veteran strength coach inside MYG Fitness. Voice: state, don't sell; economical; adult-to-adult; warmth is earned, not ambient; never guilt. These are flat bookkeeping questions after a workout — no softeners, no pep, no praise inflation.
-
-You receive JSON: the just-finished session's name and date, a "questions" list (each with an id, a type, a mechanically written "stem", and its locked "facts"), and a "context" block with real numbers from today's session and the records behind each question.
-
-Rewrite ONLY the stems, one or two short sentences each. Rules, all hard:
-1. Every fact in the original stem survives into yours: exercise names verbatim (you may drop a parenthetical variant, never rename or abbreviate), every count (as a word or a digit), every value exactly as written, any quoted rule text character-for-character in its quotes.
-2. You may ADD facts, but only numbers and events that appear literally in the context block — e.g. today's top set. Never replace or contradict a stem fact with a context fact.
-3. No interpretation. You report numbers and events; you never explain them. No "looks like", "probably", "seems", "trending", "fatigue", no causes, no guesses about why. The user answers why — that is the whole point of asking.
-4. The question you end on must mean exactly what the original stem's question meant. Never mention, hint at, or invent answer options.
-5. Vocabulary: say "card" and "benchmark". Never say anchor, off-card, standing, prescription, prescribed, encoded, provisional, stale, or any internal term.
-6. Negative facts are stated about the lift, the rule, or the record — never as an accusation about the person. Second person is fine when neutral or crediting ("You've added...").
-7. No exclamation points. No emoji. Plain, unhurried, direct.
-
-Examples:
-Input stem: "Bench Press (Barbell) has been under its 185 benchmark three sessions running — what's going on?" with context showing today's top set 165×5.
-Good: "Bench Press again under its 185 benchmark — three sessions running now, 165×5 today. What's going on?"
-Bad: "Bench looks like it's sliding — fatigue? What's going on?" (interpretation, dropped the 185)
-Input stem: "You've added Hammer Curl on your own three sessions running — want me to start programming it?"
-Good: "Hammer Curl's shown up three sessions running on your own initiative. Want me to start programming it?"
-Bad: "Love the initiative on Hammer Curl! Should I add it?" (praise inflation, exclamation, changed question)
-
-Return STRICT JSON mapping each id to its rewritten stem, e.g. {"q_1":"...","q_2":"..."} — no markdown fences, no commentary.`;
 
 /* ── Shared Components ───────────────────────────────────────── */
 
@@ -5223,11 +5196,7 @@ const IS_REAL_DEVICE = (() => {
 // Deploy cache-verification marker (owner's V.23 convention, formalized:
 // bump this one constant per push to confirm the phone isn't serving
 // stale cached code; rendered only on real devices, top-right).
-const BUILD_TAG = "V.32";
-// S81 dev-only affordance: the silent question-queue viewer in the
-// Profile. Flip to false (or delete with its subscreen at the debrief
-// build) to remove. Lives here so it precedes every consumer.
-const DEV_SHOW_QUESTION_QUEUE = true;
+const BUILD_TAG = "V.33";
 
 /* ── Visual-viewport pin (S77 — the "composer slides past the keyboard" bug) ──
    iOS (Safari tab and standalone PWA alike) never shrinks the LAYOUT
@@ -6430,7 +6399,7 @@ const HOME_NOTES_V1 = [
    (gold-bordered stat cards + outlined recent-workout cards). Unify-
    ing on the same grammar means one type system across the app,
    which is what Session 36 said the typography work was for. */
-function HomeTab({ onTabChange, userName, history, customExercises, nextSession, notes }) {
+function HomeTab({ onTabChange, userName, history, customExercises, nextSession, notes, unanalyzedCount = 0, onAnalyze }) {
   const hist = history || [];
   const hasWorkouts = hist.length > 0;
 
@@ -6572,6 +6541,31 @@ function HomeTab({ onTabChange, userName, history, customExercises, nextSession,
           <span style={{ color: COLORS.gold, fontSize: 20, lineHeight: 1, flexShrink: 0 }}>›</span>
         </div>
       </button>
+
+      {/* ── THE DEBRIEF catch-up card (S82, D-230) ──
+          The skipper's door: exists ONLY while un-analyzed workouts do,
+          vanishes the moment the user is caught up. Deadpan counting per
+          the standing owner rule — never corny, never a nag; the same
+          quiet gold-tinted register as the dead survey pin, one line and
+          a plain verb. Tapping opens a debrief over everything waiting. */}
+      {unanalyzedCount > 0 && onAnalyze && (
+        <button
+          onClick={onAnalyze}
+          style={{
+            width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center",
+            background: "#161600", border: "1px solid #3a2e00", borderRadius: 10,
+            padding: "12px 14px", cursor: "pointer", marginTop: 12, fontFamily: "inherit",
+          }}
+        >
+          <span style={{ color: COLORS.gold, fontSize: 11, letterSpacing: 1.5, textTransform: "uppercase", fontWeight: 700 }}>
+            {unanalyzedCount} {unanalyzedCount === 1 ? "workout" : "workouts"} since your last debrief
+          </span>
+          <span style={{ color: COLORS.gold, fontSize: 12, fontWeight: 600, display: "flex", alignItems: "center", gap: 5 }}>
+            Analyze
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={COLORS.gold} strokeWidth="2.5"><polyline points="9 18 15 12 9 6" /></svg>
+          </span>
+        </button>
+      )}
 
       {!hasWorkouts ? (
         /* ── Cold-start ── Sections hidden until first workout
@@ -7198,9 +7192,8 @@ function WorkoutTab({
   finishedSession, customExercises = [],
   restTimerMode, restCountdownTarget, onChangeRestTimerMode, onChangeRestCountdownTarget,
   onStartEmpty, onAskCoach, onUpdateWorkout, onMinimize, onCancel, onFinish,
-  onCommitFinished, onCommitFinishedToCoach, onDiscardFinished, onUpdateFinished,
+  onCommitFinished, onCommitFinishedAnalyze, analyzeEnabled, onDiscardFinished, onUpdateFinished,
   onRepeatWorkout, onEditWorkout, onDeleteWorkout, onTabChange,
-  finishQuestionPreview = 0,
 }) {
   // Hooks live ABOVE the early return (§15 hygiene fix, this session —
   // the prior early-return-above-useRef ordering was verified benign but
@@ -7226,10 +7219,10 @@ function WorkoutTab({
            for first commits (fresh id matches nothing). */
         history={history.filter((s) => s.id !== finishedSession.id)}
         onDone={onCommitFinished}
-        onDoneToCoach={onCommitFinishedToCoach}
+        onAnalyze={onCommitFinishedAnalyze}
+        analyzeEnabled={analyzeEnabled}
         onDiscard={onDiscardFinished}
         onUpdateSession={onUpdateFinished}
-        questionPreview={finishQuestionPreview}
       />
     );
   }
@@ -11096,7 +11089,7 @@ function HistoryRecapSheet({ session, onClose, onRepeat, onEdit, onDelete }) {
    when questions exist, a gold "Coach has N questions →" line above
    Done commits AND jumps to the Coach tab. Done commits and stays.
    Either way the workout is saved — questions are never a hostage. */
-function FinishSummaryScreen({ session, history, onDone, onDoneToCoach, onDiscard, onUpdateSession, questionPreview = 0 }) {
+function FinishSummaryScreen({ session, history, onDone, onAnalyze, analyzeEnabled = true, onDiscard, onUpdateSession }) {
   const [editingDate, setEditingDate] = useState(false);
 
   const empty = session.exercises.length === 0;
@@ -11107,10 +11100,6 @@ function FinishSummaryScreen({ session, history, onDone, onDoneToCoach, onDiscar
   // screen, so `history` is exactly "everything before today". The same
   // two pure functions run again at commit (App) to build the pin.
   const prs = useMemo(() => detectSessionPRs(session, history), [session.id, history]);
-  // "Coach has N questions →" (Session 73): N comes from App's PREVIEW of
-  // the real survey build (D-170) — a simulated fold + the pure builder,
-  // nothing written (S1). The demo builder is gone. An edit re-commit
-  // previews 0 (ceremony on FIRST commit only, S70 lock).
 
   // Coach's File grammar tokens (Session 49: "Coach's File grammar is
   // the app's grammar" — first non-Profile surface wearing it).
@@ -11269,20 +11258,23 @@ function FinishSummaryScreen({ session, history, onDone, onDoneToCoach, onDiscar
         </>
       )}
 
-      {/* Footer. When questions exist, the gold line above Done commits
-          AND deep-links to the Coach tab where the pin is waiting. Done
-          commits and stays put — the pin waits either way. */}
+      {/* Footer (S82 — D-204's door). The gold line above Done commits
+          AND opens THE DEBRIEF: a new Coach chat where Coach reads
+          tonight (plus anything un-analyzed behind it) and talks first.
+          Done commits and stays put — the debrief waits on the Home
+          card. Hidden offline (the room needs the model) and on edit
+          re-commits of empty sessions like everything else here. */}
       <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: "auto" }}>
-        {!empty && questionPreview > 0 && (
+        {!empty && analyzeEnabled && (
           <button
-            onClick={onDoneToCoach}
+            onClick={onAnalyze}
             style={{
               width: "100%", padding: "12px 24px", background: "transparent",
               border: "none", color: COLORS.gold, fontSize: 13.5, fontWeight: 600,
               cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
             }}
           >
-            Coach has {questionPreview} {questionPreview === 1 ? "question" : "questions"}
+            Analyze my workout
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={COLORS.gold} strokeWidth="2.5"><polyline points="9 18 15 12 9 6" /></svg>
           </button>
         )}
@@ -11461,7 +11453,7 @@ function buildCoachGreeting({ userName, now, workoutHistory, coachRotation, rota
   return pool.length ? pick(pool) : `What's the plan?`;
 }
 
-function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFocused, onAppendMessage, onUpdateMessage, onRemoveMessage, genChatId, onGenStart, onGenEnd, onGenIsCurrent, onRespondAsCoach, onStartCoachWorkout, onBuildDebug, onNewChat, onSwitchChat, onDeleteChat, onRenameChat, pendingSeed, onSeedConsumed, workoutHistory, coachRotation, rotationCursor, planDaysPerWeek, planGoal, selectedEquipment, pendingQuestions, onAnswerQuestion, onDismissSurvey, onSaveRule, onCancelRuleCard, onSupersedeRuleCards }) {
+function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFocused, onAppendMessage, onUpdateMessage, onRemoveMessage, genChatId, onGenStart, onGenEnd, onGenIsCurrent, onRespondAsCoach, onStartCoachWorkout, onBuildDebug, onNewChat, onSwitchChat, onDeleteChat, onRenameChat, pendingSeed, onSeedConsumed, workoutHistory, coachRotation, rotationCursor, planDaysPerWeek, planGoal, selectedEquipment, onRespondAsDebrief, onSubmitDebriefCard, onDebriefOpened, onSaveRule, onCancelRuleCard, onSupersedeRuleCards }) {
   // Bible §4.7: hard cap on user message length. Keeps one chat message
   // within a single API call's budget and prevents runaway prompts. The
   // counter only appears in the last 100 chars so it doesn't distract
@@ -11502,107 +11494,24 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
   const [historyOpen, setHistoryOpen] = useState(false);
   // ── Post-workout questions pin + INLINE CARD (D-168, Session 71 —
   //    supersedes the D-122 bottom sheet) ──
-  // The pin waits above the composer while pendingQuestions has
-  // unanswered items; tapping it drops the survey INTO THE TRANSCRIPT
-  // as a framed, one-question-at-a-time card (workout-block framing)
-  // instead of opening the old sheet. Why the sheet died (S71): the
-  // coherence goal — a sheet is a second look-alike surface to maintain
-  // forever — and iOS reality: a partial sheet with an "Other…" text
-  // field must promote to near-full height when the keyboard rises
-  // (detent work we'd have to build), whereas an inline surface
-  // inherits the chat composer's already-solved keyboard handling.
-  // The D-049 one-question shell carries over intact, now living
-  // inline. Dismissing the card (quiet X, D-169) keeps the pin —
-  // answers are never lost, nothing is ever forced (D-124), so leaving
-  // is low-stakes and recoverable.
-  //
-  // qIndex is the card's cursor. The card ADVANCES IN PLACE (answering
-  // Q1 turns the same card into Q2 — never a new card per question).
-  // qIndex usually equals answered.length, but Back (Q2+ only, D-169)
-  // can walk it into already-answered territory — those questions
-  // re-render with the earlier answer lit gold, so changing an answer
-  // is tap → re-tap (D-168). Answers flow up through onAnswerQuestion
-  // (App files each to Coach's File — REPLACING the filed observation
-  // on a re-answer — and drops the receipt when the set completes,
-  // which clears the pin and collapses this card to the receipt line).
-  const [surveyCardOpen, setSurveyCardOpen] = useState(false);
-  const [qIndex, setQIndex] = useState(0);
-  const [qOtherOpen, setQOtherOpen] = useState(false);
-  const [qOtherText, setQOtherText] = useState("");
-  const answeredCount = pendingQuestions ? pendingQuestions.answered.length : 0;
-  const totalQuestions = pendingQuestions ? pendingQuestions.questions.length : 0;
-  const cardQuestion = surveyCardOpen && pendingQuestions ? (pendingQuestions.questions[qIndex] || null) : null;
-  // The answer already on file for the question the card is showing —
-  // non-null only when Back walked into answered territory. Drives the
-  // lit-gold preset chip, or a lit "Other…" slot carrying the free text.
-  const cardPriorAnswer = cardQuestion
-    ? (pendingQuestions.answered.find((a) => a.id === cardQuestion.id) || null)
-    : null;
-  // Session 73: options are typed { label, effect } objects (D-172); a
-  // legacy pre-S73 pin may still carry plain strings — normalize for
-  // render (answering a legacy pin retires it App-side; see
-  // answerCoachQuestion).
-  const cardOptions = cardQuestion
-    ? (cardQuestion.options || []).map((o) => (typeof o === "string" ? { label: o, effect: null } : o))
-    : [];
-  const cardPriorIsPreset = !!(cardPriorAnswer && cardOptions.some((o) => o.label === cardPriorAnswer.answer));
-  // D-171 stem display: Claude's voiced stem when it landed, else the
-  // canned template (never blocks); .text is the legacy demo field.
-  const cardStem = cardQuestion ? (cardQuestion.stemVoiced || cardQuestion.stemCanned || cardQuestion.text) : null;
-  // Coach-is-typing shimmer (D-171): when the card reaches an unvoiced
-  // question while online, hold a quiet beat (⚙ SURVEY_VOICE_SHIMMER_MS)
-  // for the voiced stem to land, then render canned. Offline skips
-  // straight to canned — a fully working survey.
-  const [stemShimmer, setStemShimmer] = useState(false);
-  useEffect(() => {
-    if (!cardQuestion || cardQuestion.stemVoiced || !cardQuestion.stemCanned || !isOnline) {
-      setStemShimmer(false);
-      return;
-    }
-    setStemShimmer(true);
-    const t = setTimeout(() => setStemShimmer(false), SURVEY_VOICE_SHIMMER_MS);
-    return () => clearTimeout(t);
-  }, [cardQuestion ? cardQuestion.id : null, cardQuestion ? cardQuestion.stemVoiced : null, isOnline]);
-  useEffect(() => {
-    // A DIFFERENT pending set, or none: the set completed (receipt
-    // dropped, pin cleared) or a newer session replaced a stale one
-    // (D-124). Either way the card closes and the cursor resets — a
-    // stale qIndex must never point into a new set's questions.
-    setSurveyCardOpen(false);
-    setQIndex(0);
-    setQOtherOpen(false);
-    setQOtherText("");
-  }, [pendingQuestions ? pendingQuestions.id : null]);
-  const openSurveyCard = () => {
-    // Entry (D-168): the D-122 pin survives; tapping it drops the first
-    // UNANSWERED question in (clamped defensively against a persisted
-    // answered[] that somehow ran ahead of questions[]).
-    setQIndex(Math.min(answeredCount, Math.max(0, totalQuestions - 1)));
-    setQOtherOpen(false);
-    setQOtherText("");
-    setSurveyCardOpen(true);
-  };
-  const answerCardQuestion = (payload) => {
-    // payload: { kind: "preset", index } for a typed option (the engine
-    // executes its effect — D-172) or { kind: "other", text } for the
-    // free-text escape (note filed, flag held, cooldown — S2).
-    if (!cardQuestion || !onAnswerQuestion) return;
-    const isLast = qIndex + 1 >= totalQuestions;
-    onAnswerQuestion(cardQuestion.id, payload);
-    setQOtherOpen(false);
-    setQOtherText("");
-    // Advance in place (D-168). On the LAST question App drops the
-    // receipt and clears the pin; the reset effect above collapses the
-    // card, so there is nothing left to advance to.
-    if (!isLast) setQIndex((i) => i + 1);
-  };
-  const stepSurveyBack = () => {
-    // Back (D-169: Q2 onward only). Returns to the previous question
-    // with its earlier answer already lit gold — see cardPriorAnswer.
-    if (qIndex <= 0) return;
-    setQOtherOpen(false);
-    setQOtherText("");
-    setQIndex((i) => i - 1);
+  // ── THE DEBRIEF CARD (S82 — D-211/D-212 realized) ──
+  // The question card is a TRANSCRIPT MESSAGE (kind "debrief_card")
+  // appended by the debrief opening when it lands — the D-168 inline
+  // stepped shell carries over intact (one question at a time, "N of M"
+  // top-right, Back from Q2 with the earlier pick lit, "Other…" opening
+  // an in-place text box), with the S82 all-or-nothing contract on top:
+  // taps only light selections; the FINAL answer submits the whole set
+  // (owner: "the final tap is what submits — leaving doesn't complete
+  // it"). No X, no dismissal bookkeeping — the card just waits in the
+  // transcript, and walking away is as if it was never opened: every
+  // question returns at the next debrief until answered (seeing is not
+  // answering, D-229). Selections are COMPONENT state keyed by message
+  // id — deliberately unpersisted, because unsubmitted taps are not
+  // answers and must not survive a reload as if they were.
+  const [debriefSel, setDebriefSel] = useState({});
+  const dbCardFor = (msgId) => debriefSel[msgId] || { cursor: 0, answers: {}, otherOpen: false, otherText: "" };
+  const dbCardPatch = (msgId, patch) => {
+    setDebriefSel((prev) => ({ ...prev, [msgId]: { ...dbCardFor(msgId), ...patch } }));
   };
   // Per-message "Why this?" disclosure — Set of message indices whose
   // programmingNotes rationale is currently expanded. Keyed by index, which is
@@ -12020,6 +11929,34 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
     }
   };
 
+  const dbCardTap = (m, payload) => {
+    // payload: { kind: "preset", index } | { kind: "other", text }.
+    const st = dbCardFor(m.id);
+    const questions = m.questions || [];
+    const q = questions[st.cursor];
+    if (!q) return;
+    const answers = { ...st.answers, [q.id]: payload };
+    const isLast = st.cursor + 1 >= questions.length;
+    if (!isLast) {
+      dbCardPatch(m.id, { answers, cursor: st.cursor + 1, otherOpen: false, otherText: "" });
+      return;
+    }
+    // The final tap SUBMITS (all-or-nothing). App executes every effect
+    // against one working copy, collapses the card, drops the receipts,
+    // and hands back Coach's reaction turn — which streams through the
+    // exact proven live path below.
+    dbCardPatch(m.id, { answers, otherOpen: false, otherText: "" });
+    const ordered = questions.map((qq) => answers[qq.id]);
+    if (ordered.some((a) => !a)) return; // defensive — Back left a hole
+    const reactionTurn = onSubmitDebriefCard ? onSubmitDebriefCard(chat.id, m.id, ordered) : null;
+    if (reactionTurn && isOnline) {
+      const reqChatId = chat.id;
+      onGenStart(reqChatId);
+      const liveH = makeLiveHandlers(reqChatId);
+      onRespondAsDebrief(reactionTurn, liveH).then((res) => landCoachResult(res, reqChatId, liveH));
+    }
+  };
+
   const sendMessage = (raw) => {
     const u = (raw || "").trim();
     if (!u || !isOnline || isThinking || isStreaming) return;
@@ -12178,6 +12115,43 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
       return;
     }
 
+    // S82: THE DEBRIEF opening (D-204 realized). No user turn exists —
+    // Coach talks FIRST. The App already created the chat (auto-titled,
+    // packet attached) and selected the card questions before the tab
+    // switch, so by mount time `chat` IS the debrief chat. Same
+    // macrotask deferral as the other seed kinds (the mount-time
+    // cancelStream() must not clobber the kickoff), then the proven
+    // live streaming path. When the opening LANDS: the question card
+    // message drops beneath it (client-appended, engine-worded — the
+    // model never writes the card, S82 owner lock), and onDebriefOpened
+    // marks the covered sessions analyzed. On a failed generation:
+    // nothing is marked, no card drops — the user re-taps from Home and
+    // the debrief honestly re-offers itself.
+    if (seed.kind === "debrief") {
+      setTimeout(() => {
+        const reqChatId = seed.chatId || (chat && chat.id);
+        if (!isOnline || !onRespondAsDebrief) { if (onSeedConsumed) onSeedConsumed(); return; }
+        onGenStart(reqChatId);
+        const liveH = makeLiveHandlers(reqChatId);
+        onRespondAsDebrief(seed.turn, liveH).then((res) => {
+          landCoachResult(res, reqChatId, liveH);
+          if (res && res.kind !== "error") {
+            if (Array.isArray(seed.card) && seed.card.length > 0) {
+              onAppendMessage({
+                role: "coach", kind: "debrief_card",
+                id: `m${Date.now()}${Math.floor(Math.random() * 1e6)}`,
+                questions: seed.card,
+                cardState: { status: "open" },
+              }, reqChatId);
+            }
+            if (onDebriefOpened) onDebriefOpened(reqChatId);
+          }
+        });
+        if (onSeedConsumed) onSeedConsumed();
+      }, 60);
+      return;
+    }
+
     // ORDERING: tapping "Ask Coach" switches the tab, so CoachTab MOUNTS
     // fresh. The [chat?.id] effect below runs cancelStream() on mount,
     // and React runs mount effects in definition order — a synchronously
@@ -12227,11 +12201,11 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
     const container = el.parentElement;
     if (!container) return;
     container.scrollTo({ top: container.scrollHeight, behavior: "smooth" });
-    // surveyCardOpen / qIndex / qOtherOpen: the inline question card
-    // (D-168) renders at the transcript's tail — opening it, stepping
-    // it in place, and swapping "Other…" for the text box all change
-    // its height, and it should stay in view like a new message would.
-  }, [messages.length, isThinking, seedThinking, surveyCardOpen, qIndex, qOtherOpen]);
+    // debriefSel: the inline debrief card (D-168 shell, S82) steps in
+    // place at the transcript's tail — advancing it and swapping
+    // "Other…" for the text box change its height, and it should stay
+    // in view like a new message would.
+  }, [messages.length, isThinking, seedThinking, debriefSel]);
 
   // Keep the bottom pinned WHILE a reply streams. The effect above only fires
   // on messages.length / isThinking changes; during the word-burst reveal the
@@ -12431,6 +12405,142 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
               <div key={i} style={{ textAlign: "center", padding: "10px 0", color: COLORS.textSecondary, fontSize: 11.5, letterSpacing: 0.3 }}>
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={COLORS.gold} strokeWidth="2.5" style={{ verticalAlign: "-1px", marginRight: 5 }}><polyline points="20 6 9 17 4 12" /></svg>
                 {m.text}
+              </div>
+            );
+          }
+          // ── THE DEBRIEF QUESTION CARD (S82 — D-211/D-212) ─────────────
+          // A transcript message, dropped by the debrief opening. The
+          // D-168 inline stepped shell intact — workout-block framing
+          // (#1A1A1A, hairline, 14px radius; gold never a fill), one
+          // question at a time, "N of M" top-right, Back (Q2+) with the
+          // earlier pick lit, "Other…" as an in-place text box riding
+          // the composer's inputFocused path. S82 differences from the
+          // dead survey card: NO X (walking away is the dismissal —
+          // nothing is recorded, everything returns next debrief), and
+          // ALL-OR-NOTHING — chips only light until the final tap
+          // submits the set (dbCardTap). Answered cards collapse to a
+          // quiet line, never deleted — same law as rule cards.
+          if (m.role === "coach" && m.kind === "debrief_card") {
+            const serif = "Georgia, 'Times New Roman', serif";
+            const cs = m.cardState || { status: "open" };
+            if (cs.status !== "open") {
+              return (
+                <div key={m.id || i} style={{ marginBottom: 14 }}>
+                  <div style={{ border: "1px solid #2c2c2c", borderRadius: 12, padding: "9px 12px", display: "flex", alignItems: "center", gap: 8, maxWidth: "94%" }}>
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={COLORS.gold} strokeWidth="2.5" style={{ flexShrink: 0 }}><polyline points="20 6 9 17 4 12" /></svg>
+                    <div style={{ color: COLORS.text, fontSize: 12.5 }}>
+                      Card answered · {cs.count || (m.questions || []).length} {(cs.count || (m.questions || []).length) === 1 ? "answer" : "answers"}
+                    </div>
+                  </div>
+                </div>
+              );
+            }
+            const st = dbCardFor(m.id);
+            const questions = m.questions || [];
+            const q = questions[Math.min(st.cursor, questions.length - 1)];
+            if (!q) return null;
+            const prior = st.answers[q.id] || null;
+            const priorIsPreset = !!(prior && prior.kind === "preset");
+            const opts = q.options || [];
+            return (
+              <div key={m.id || i} style={{ marginBottom: 14 }}>
+                <div style={{
+                  background: "#1A1A1A",
+                  border: "1px solid #2c2c2c",
+                  borderRadius: 14,
+                  padding: "12px 15px 15px",
+                }}>
+                  {/* Header — counter corner only (no X: leaving the
+                      chat IS the dismissal; the card just waits). */}
+                  <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", marginBottom: 6 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "-2px 0 0" }}>
+                      {st.cursor > 0 ? (
+                        <button
+                          onClick={() => dbCardPatch(m.id, { cursor: st.cursor - 1, otherOpen: false, otherText: "" })}
+                          aria-label="Previous question"
+                          style={{ background: "none", border: "none", cursor: "pointer", padding: "6px 4px", color: COLORS.textSecondary, display: "flex" }}
+                        >
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="19" y1="12" x2="5" y2="12" /><polyline points="12 19 5 12 12 5" /></svg>
+                        </button>
+                      ) : (
+                        <div style={{ width: 24 }} />
+                      )}
+                      <span style={{ color: COLORS.textSecondary, fontSize: 12, fontVariantNumeric: "tabular-nums", letterSpacing: 1 }}>
+                        {st.cursor + 1} of {questions.length}
+                      </span>
+                    </div>
+                  </div>
+                  {/* The question — engine stem VERBATIM (S82 owner lock). */}
+                  <div style={{
+                    fontFamily: serif, fontSize: 18,
+                    color: COLORS.text, lineHeight: 1.45, marginBottom: 14, fontWeight: 400,
+                  }}>
+                    {q.stemCanned}
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    {opts.map((opt, oi) => (
+                      <SelectableChip
+                        key={opt.label}
+                        label={opt.label}
+                        pointerFire
+                        selected={priorIsPreset && prior.index === oi}
+                        onClick={() => dbCardTap(m, { kind: "preset", index: oi })}
+                        style={{ width: "100%", textAlign: "left", whiteSpace: "normal", lineHeight: 1.3 }}
+                      />
+                    ))}
+                    {!st.otherOpen ? (
+                      <SelectableChip
+                        label={prior && !priorIsPreset ? prior.text : "Other…"}
+                        muted={!(prior && !priorIsPreset)}
+                        selected={!!(prior && !priorIsPreset)}
+                        pointerFire
+                        leadingIcon={<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" /></svg>}
+                        onClick={() => dbCardPatch(m.id, { otherOpen: true, otherText: prior && !priorIsPreset ? prior.text : "" })}
+                        style={{ width: "100%", textAlign: "left", whiteSpace: "normal", lineHeight: 1.3 }}
+                      />
+                    ) : (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                        <textarea
+                          autoFocus
+                          value={st.otherText}
+                          onChange={(e) => dbCardPatch(m.id, { otherText: e.target.value })}
+                          onFocus={() => onSetInputFocused && onSetInputFocused(true)}
+                          onBlur={() => onSetInputFocused && onSetInputFocused(false)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" && !e.shiftKey) {
+                              e.preventDefault();
+                              if (st.otherText.trim()) dbCardTap(m, { kind: "other", text: st.otherText.trim() });
+                            }
+                          }}
+                          placeholder="Tell Coach in your own words"
+                          rows={2}
+                          style={{
+                            width: "100%", boxSizing: "border-box", padding: "12px 14px",
+                            background: COLORS.card, border: `1.5px solid ${COLORS.gold}`,
+                            borderRadius: 10, color: COLORS.text, fontSize: 15,
+                            fontFamily: "inherit", lineHeight: 1.3, resize: "none", outline: "none",
+                          }}
+                        />
+                        <button
+                          onPointerDown={(e) => {
+                            e.preventDefault();
+                            if (st.otherText.trim()) dbCardTap(m, { kind: "other", text: st.otherText.trim() });
+                          }}
+                          style={{
+                            alignSelf: "flex-end", padding: "9px 22px",
+                            background: st.otherText.trim() ? COLORS.gold : COLORS.card,
+                            border: `1px solid ${st.otherText.trim() ? COLORS.gold : COLORS.border}`,
+                            borderRadius: 8, color: st.otherText.trim() ? "#000" : COLORS.textSecondary,
+                            fontSize: 13.5, fontWeight: 600, cursor: st.otherText.trim() ? "pointer" : "default",
+                            fontFamily: "inherit",
+                          }}
+                        >
+                          Send
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
               </div>
             );
           }
@@ -12697,175 +12807,6 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
             </div>
           </div>
         )}
-        {/* ── Post-workout survey — inline stepped card (D-168/D-169,
-            Session 71; supersedes the D-122 bottom sheet) ──
-            Lives IN the transcript, framed like the workout block
-            (#1A1A1A fill, hairline border, 14px radius — gold is never
-            a fill) so Coach keeps one card grammar. One question at a
-            time (D-049 shell intact); the card ADVANCES IN PLACE.
-            Header is two clean corners (D-169), nothing floating in the
-            middle — no eyebrow label, and NO per-question Skip
-            (reaffirms D-049: Skip is the biggest completion-killer and
-            it was redundant — "Other…" already means never forced into
-            a preset, X already means never trapped): quiet X top-left
-            (dismiss; the pin persists per D-124, so a dismissed survey
-            is recoverable, never a trap), back arrow (Q2+ only)
-            immediately left of the "N of M" counter top-right; Q1
-            keeps an empty back slot so the counter never shifts.
-            Answer chips are the D-167 unified chip. A prior answer
-            (reached via Back) arrives lit gold — changing it is
-            tap → re-tap. "Other…" (leading pencil, secondary text)
-            swaps itself for an in-place text box: typing stays INSIDE
-            the survey card (D-167 — overrides the old §10.10 "opens
-            the chat pre-focused" note), and its focus drives the same
-            onSetInputFocused the composer uses, so the header/tab-bar
-            collapse and keyboard handling are inherited, not rebuilt. */}
-        {surveyCardOpen && cardQuestion && (
-          <div style={{ marginBottom: 14 }}>
-            <div style={{
-              background: "#1A1A1A",
-              border: "1px solid #2c2c2c",
-              borderRadius: 14,
-              padding: "12px 15px 15px",
-            }}>
-              {/* Header — two corners only (D-169). */}
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-                <button
-                  onClick={() => {
-                    // D-169: the pin persists — dismissing is recoverable,
-                    // never a trap. D-174 (S73): the X also records the
-                    // soft "not now" — the showing flags sit out 2 commits.
-                    setSurveyCardOpen(false);
-                    if (onDismissSurvey) onDismissSurvey();
-                  }}
-                  aria-label="Dismiss questions"
-                  style={{ background: "none", border: "none", cursor: "pointer", padding: "6px 8px 6px 0", margin: "-2px 0 0 -2px", color: COLORS.textSecondary, display: "flex" }}
-                >
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
-                </button>
-                <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "-2px 0 0" }}>
-                  {qIndex > 0 ? (
-                    <button
-                      onClick={stepSurveyBack}
-                      aria-label="Previous question"
-                      style={{ background: "none", border: "none", cursor: "pointer", padding: "6px 4px", color: COLORS.textSecondary, display: "flex" }}
-                    >
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="19" y1="12" x2="5" y2="12" /><polyline points="12 19 5 12 12 5" /></svg>
-                    </button>
-                  ) : (
-                    /* Q1: empty back slot — width reserved so the counter
-                       doesn't shift when the arrow appears on Q2 (D-169). */
-                    <div style={{ width: 24 }} />
-                  )}
-                  <span style={{ color: COLORS.textSecondary, fontSize: 12, fontVariantNumeric: "tabular-nums", letterSpacing: 1 }}>
-                    {qIndex + 1} of {totalQuestions}
-                  </span>
-                </div>
-              </div>
-              {/* Question — the sheet's Georgia register carries over. */}
-              {stemShimmer && !cardQuestion.stemVoiced ? (
-                /* Coach-is-typing shimmer (D-171): a quiet beat in the
-                   stem's slot while the voiced phrasing lands; the ⚙ 2s
-                   cap falls back to the canned stem. */
-                <div style={{
-                  fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 18,
-                  color: COLORS.textSecondary, lineHeight: 1.45, marginBottom: 14,
-                  fontStyle: "italic",
-                }}>
-                  Coach is typing…
-                </div>
-              ) : (
-                <div style={{
-                  fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 18,
-                  color: COLORS.text, lineHeight: 1.45, marginBottom: 14, fontWeight: 400,
-                }}>
-                  {cardStem}
-                </div>
-              )}
-              {/* Answers live inside the card, never on the composer
-                  strip (the D-168 split). */}
-              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                {cardOptions.map((opt, oi) => (
-                  <SelectableChip
-                    key={opt.label}
-                    label={opt.label}
-                    pointerFire
-                    selected={cardPriorIsPreset && cardPriorAnswer.answer === opt.label}
-                    onClick={() => answerCardQuestion({ kind: "preset", index: oi })}
-                    style={{ width: "100%", textAlign: "left", whiteSpace: "normal", lineHeight: 1.3 }}
-                  />
-                ))}
-                {!qOtherOpen ? (
-                  /* "Other…" — same chip family, with a job (D-167): the
-                     leading pencil marks the one chip that changes mode.
-                     Revisited via Back with a free-text answer on file,
-                     the slot shows that text, lit gold. */
-                  <SelectableChip
-                    label={cardPriorAnswer && !cardPriorIsPreset ? cardPriorAnswer.answer : "Other…"}
-                    muted={!(cardPriorAnswer && !cardPriorIsPreset)}
-                    selected={!!(cardPriorAnswer && !cardPriorIsPreset)}
-                    pointerFire
-                    leadingIcon={<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" /></svg>}
-                    onClick={() => {
-                      setQOtherText(cardPriorAnswer && !cardPriorIsPreset ? cardPriorAnswer.answer : "");
-                      setQOtherOpen(true);
-                    }}
-                    style={{ width: "100%", textAlign: "left", whiteSpace: "normal", lineHeight: 1.3 }}
-                  />
-                ) : (
-                  /* In-place text box — you type your answer where the
-                     chip was, the way you'd type a reply in Claude. Focus
-                     rides the composer's inputFocused path so the header
-                     and tab bar collapse exactly like the composer. */
-                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                    <textarea
-                      autoFocus
-                      value={qOtherText}
-                      onChange={(e) => setQOtherText(e.target.value)}
-                      onFocus={() => onSetInputFocused && onSetInputFocused(true)}
-                      onBlur={() => onSetInputFocused && onSetInputFocused(false)}
-                      onKeyDown={(e) => {
-                        // Same convention as the composer: Enter sends on
-                        // desktop; on mobile Return is a newline and the
-                        // Send button is the only send.
-                        if (e.key === "Enter" && !e.shiftKey) {
-                          e.preventDefault();
-                          if (qOtherText.trim()) answerCardQuestion({ kind: "other", text: qOtherText.trim() });
-                        }
-                      }}
-                      placeholder="Tell Coach in your own words"
-                      rows={2}
-                      style={{
-                        width: "100%", boxSizing: "border-box", padding: "12px 14px",
-                        background: COLORS.card, border: `1.5px solid ${COLORS.gold}`,
-                        borderRadius: 10, color: COLORS.text, fontSize: 15,
-                        fontFamily: "inherit", lineHeight: 1.3, resize: "none", outline: "none",
-                      }}
-                    />
-                    <button
-                      onPointerDown={(e) => {
-                        // pointerFire rationale (D-116): the textarea blur
-                        // fires first on click and shifts layout under the tap.
-                        e.preventDefault();
-                        if (qOtherText.trim()) answerCardQuestion({ kind: "other", text: qOtherText.trim() });
-                      }}
-                      style={{
-                        alignSelf: "flex-end", padding: "9px 22px",
-                        background: qOtherText.trim() ? COLORS.gold : COLORS.card,
-                        border: `1px solid ${qOtherText.trim() ? COLORS.gold : COLORS.border}`,
-                        borderRadius: 8, color: qOtherText.trim() ? "#000" : COLORS.textSecondary,
-                        fontSize: 13.5, fontWeight: 600, cursor: qOtherText.trim() ? "pointer" : "default",
-                        fontFamily: "inherit",
-                      }}
-                    >
-                      Send
-                    </button>
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
         <div ref={bottomRef} />
       </div>
 
@@ -12890,33 +12831,6 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
           Removed entirely — live verdict: a wall of boxes cutting off
           the transcript. quickReplies is hard-null upstream; message
           data still persists for a possible future re-add. */}
-
-      {/* ── Post-workout questions pin (D-122 entry, surviving D-168) ──
-          Gold-tinted, quiet, persistent. Shows the session name and how
-          many questions remain; never nags, survives reloads, retired
-          only by answering or by a newer completed session (D-124).
-          Tapping it drops the question card into the transcript (D-168)
-          instead of opening the retired bottom sheet. Hidden while
-          composing (matches the header) and while the card is open. */}
-      {pendingQuestions && totalQuestions > answeredCount && !surveyCardOpen && !inputFocused && (
-        <div style={{ padding: "8px 16px 0", flexShrink: 0 }}>
-          <button
-            onPointerDown={(e) => { e.preventDefault(); openSurveyCard(); }}
-            style={{
-              width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center",
-              background: "#161600", border: "1px solid #3a2e00", borderRadius: 10,
-              padding: "10px 14px", cursor: "pointer",
-            }}
-          >
-            <span style={{ color: COLORS.gold, fontSize: 11, letterSpacing: 1.5, textTransform: "uppercase", fontWeight: 700 }}>
-              {pendingQuestions.sessionName} · {answeredCount === 0
-                ? `${totalQuestions} ${totalQuestions === 1 ? "question" : "questions"}`
-                : `${totalQuestions - answeredCount} left`}
-            </span>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={COLORS.gold} strokeWidth="2.5"><polyline points="18 15 12 9 6 15" /></svg>
-          </button>
-        </div>
-      )}
 
       {/* Input */}
       <div style={{ padding: "12px 24px", borderTop: `1px solid ${COLORS.border}`, flexShrink: 0 }}>
@@ -15205,7 +15119,6 @@ function ProfileTab({
   equipmentLabel,
   // Other section data
   coachRules, progressPRs, coachObservations,
-  onOpenDevQueue,
   // Body stats — surfaced in the header intake form (Step 2 this session).
   // Replaces the v27 identity-only header. Cells tap to edit; tap routes
   // to onOpenBodyStats which is a no-op stub until the Body Stats sub-
@@ -15627,15 +15540,6 @@ function ProfileTab({
         </div>
 
         {/* ── Signed footer ── */}
-        {DEV_SHOW_QUESTION_QUEUE && onOpenDevQueue && (
-          <button onClick={onOpenDevQueue} style={{
-            width: "100%", marginTop: 18, padding: "9px 0",
-            background: "transparent", border: "1px dashed #333", borderRadius: 8,
-            cursor: "pointer", color: "#666", fontSize: 11,
-            fontFamily: "-apple-system, system-ui, sans-serif", letterSpacing: 1,
-          }}>QUESTION QUEUE (DEV)</button>
-        )}
-
         <div style={{
           marginTop: 22,
           padding: "10px 0",
@@ -15681,6 +15585,7 @@ function SettingsSubscreen({
   onBack,
   // Real props wired to App state
   unitsPref, onChangeUnits,
+  debriefDepth, onChangeDebriefDepth,
   restTimerMode, onChangeRestTimerMode,
   restCountdownTarget, onChangeRestCountdownTarget,
   streakRemindersOn, onChangeStreakReminders,
@@ -15894,6 +15799,25 @@ function SettingsSubscreen({
           segmentedValue={unitsPref}
           segmentedOptions={[{ value: "lbs", label: "Lbs" }, { value: "kg", label: "Kg" }]}
           onSegmentedChange={onChangeUnits}
+        />
+        {/* S82 (D-232): the debrief depth dial — how deep Coach's
+            opening analysis reads. Quick hits / Standard / Deep dive;
+            Standard is the out-of-box default (owner lock). Any chat
+            can override live ("go deeper on incline") without touching
+            this — the setting is a default, not a cage. */}
+        <Row
+          label="Debrief detail"
+          desc={debriefDepth === "quick" ? "Quick hits — headline and out"
+            : debriefDepth === "deep" ? "Deep dive — the full read"
+            : "Standard — headline, patterns, flags"}
+          type="segmented"
+          segmentedValue={debriefDepth}
+          segmentedOptions={[
+            { value: "quick", label: "Quick" },
+            { value: "standard", label: "Standard" },
+            { value: "deep", label: "Deep" },
+          ]}
+          onSegmentedChange={onChangeDebriefDepth}
         />
         <Row
           label="Workout preferences"
@@ -16686,52 +16610,6 @@ function ProgressSubscreen({ progressPRs, onBack }) {
   );
 }
 
-/* ── DEV-ONLY: the silent question queue viewer (S81). The survey is
-   dead; every pending question waits in the derived buildQuestionQueue
-   read until the debrief consumes it. This screen exists so the owner
-   can eyeball the queue while the debrief is unbuilt. Flip
-   DEV_SHOW_QUESTION_QUEUE (defined beside BUILD_TAG — it must precede
-   ProfileTab) to false, or delete this block at the debrief build, to
-   remove the affordance — nothing else references it. ── */
-function DevQueueSubscreen({ queue, denials, onBack }) {
-  const TIER_NAME = { stale_anchor: "STALE BENCHMARK", obs_ask: "OBSERVATION", rule_check: "RULE CHECK", refresh: "REFRESH" };
-  const meta = { fontFamily: "-apple-system, system-ui, sans-serif", fontSize: 10, color: "#555", letterSpacing: 1 };
-  const body = { fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 14, color: "#e8e8e8", lineHeight: 1.5 };
-  return (
-    <SubscreenShell
-      title="Question queue (dev)"
-      subtitle="What Coach is waiting to ask. Silent until the debrief ships."
-      onBack={onBack}
-    >
-      {queue.length === 0 ? (
-        <div style={{ ...body, color: "#666", fontStyle: "italic", padding: "14px 0" }}>
-          Queue is empty — nothing pending.
-        </div>
-      ) : queue.map((q) => (
-        <div key={q.id} style={{ padding: "12px 0", borderBottom: "1px solid #1a1a1a" }}>
-          <div style={{ ...meta, color: COLORS.gold, marginBottom: 4 }}>{TIER_NAME[q.sourceType] || q.sourceType}</div>
-          <div style={body}>{q.stemCanned}</div>
-          <div style={{ ...meta, marginTop: 5, textTransform: "none", letterSpacing: 0.4 }}>
-            {(q.options || []).map((o) => o.label).join("  ·  ")}
-          </div>
-        </div>
-      ))}
-      {(denials || []).length > 0 && (
-        <div style={{ marginTop: 24 }}>
-          <div style={{ ...meta, marginBottom: 6 }}>DENIAL MEMORY</div>
-          {denials.map((d) => (
-            <div key={d.key} style={{ padding: "8px 0", borderBottom: "1px solid #1a1a1a" }}>
-              <div style={{ ...body, fontSize: 13, opacity: 0.75 }}>{d.label || d.key}</div>
-              <div style={{ ...meta, marginTop: 3, textTransform: "none", letterSpacing: 0.4 }}>
-                {d.strikes >= 2 ? "dead forever — two strikes" : `one strike — bar raised to ${2 + d.strikes * 2} sightings`}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-    </SubscreenShell>
-  );
-}
 
 /* ── ObservationsSubscreen (Bible §6.5) ─────────────────────────────
    Same row grammar as Rules: sentence + inline timestamp + ⋯ delete.
@@ -18358,7 +18236,11 @@ export default function MYGFitness() {
   // unanswered set (asking about Tuesday's bench on Friday is stale coach
   // behavior; owner-locked this session). Persisted so the pin survives
   // reloads; cleared when all questions are answered.
-  const [pendingCoachQuestions, setPendingCoachQuestions] = useState(h.pendingCoachQuestions || null);
+  // ── THE DEBRIEF's App state (S82) — replaces the dead survey pin ──
+  const [debriefedSessionIds, setDebriefedSessionIds] = useState(h.debriefedSessionIds || []);
+  const [lastDebriefAt, setLastDebriefAt] = useState(h.lastDebriefAt || null);
+  const [obsWatchHolds, setObsWatchHolds] = useState(h.obsWatchHolds || []);
+  const [debriefDepthPref, setDebriefDepthPref] = useState(h.debriefDepthPref || "standard");
   // Survey event log (Session 73): the replayable record of answers and
   // dismissals — see refoldWorldWithSurveyEvents. Never pruned.
   const [coachSurveyEvents, setCoachSurveyEvents] = useState(h.coachSurveyEvents || []);
@@ -18413,7 +18295,7 @@ export default function MYGFitness() {
       coachRules,
       coachObservations,
       obsDenials,
-      pendingCoachQuestions,
+      debriefedSessionIds, lastDebriefAt, obsWatchHolds, debriefDepthPref,
       coachSurveyEvents,
       progressPRs,
       anchors,
@@ -18445,7 +18327,7 @@ export default function MYGFitness() {
     rotationCursor,
     coachRules,
     coachObservations, obsDenials,
-    pendingCoachQuestions,
+    debriefedSessionIds, lastDebriefAt, obsWatchHolds, debriefDepthPref,
     coachSurveyEvents,
     progressPRs,
     anchors,
@@ -18559,11 +18441,20 @@ export default function MYGFitness() {
       text: m.text || (m.workout ? `[built workout: ${m.workout.title}]` : ""),
     }));
     const state = { userName, fitnessLevel, planGoal, planDaysPerWeek, coachRules, coachObservations, workoutHistory };
-    const turn = buildCoachTurn(state, {
+    let turn = buildCoachTurn(state, {
       rotation, dueFocusLabel: due ? due.label : null,
       lastWorkout: lastMsg ? lastMsg.coachWorkout : null,
       recentChat, userMessage, fullPool,
     });
+    // S82: follow-up turns INSIDE a debrief chat keep the debrief's
+    // context packet — the receipts and card topics the room was born
+    // with — so "go deeper on incline" three messages later still has
+    // the incline receipts under it. The main prompt still governs
+    // (rules pipeline lives in every chat, D-211); only the context
+    // grows.
+    if (currentCoachChat && currentCoachChat.kind === "debrief" && currentCoachChat.debriefPacket) {
+      turn += `\n\n== DEBRIEF CONTEXT (this chat analyzes these sessions — reference freely) ==\n${currentCoachChat.debriefPacket}`;
+    }
     // Dogfooding (Session 65): capture the tool trace for the copy-debug export.
     // A spy around runTool records every executor call — name, input, the exact
     // output the model got back, and how long it took — WITHOUT touching the
@@ -18602,6 +18493,106 @@ export default function MYGFitness() {
       console.warn("[coach] turn failed", e);
       return { kind: "error", _toolCalls: toolCalls };
     }
+  };
+
+  // ── THE DEBRIEF (S82 — D-204 realized) ─────────────────────────────
+  // One turn of the debrief room: same tool loop and parse ladder as
+  // respondAsCoach, under the DEBRIEF instruction sheet. Used for the
+  // opening (no user turn exists — Coach talks first) and the one
+  // post-card reaction turn. Follow-up chat in the room rides
+  // respondAsCoach with the packet appended (see above).
+  const respondAsDebrief = async (turnText, live = null) => {
+    const toolCalls = [];
+    try {
+      const toolState = { workoutHistory, customExercises, coachRules, coachObservations, progressPRs, anchors };
+      const { text } = await callCoach(DEBRIEF_SYSTEM_PROMPT, turnText, {
+        live,
+        tools: COACH_TOOL_DEFS,
+        runTool: (name, input) => {
+          const started = Date.now();
+          const output = executeCoachTool(name, input, toolState);
+          toolCalls.push({ name, input, output, ms: Date.now() - started });
+          return output;
+        },
+      });
+      const parsed = parseCoachReply(text, (obj) => validateCoachWorkout(obj, COACH_LIB_INDEX));
+      if (parsed.kind === "rule_proposal") {
+        return { ...parsed, compiled: compileRuleProposal(parsed.proposal, customExercises, coachRules), _toolCalls: toolCalls };
+      }
+      return { ...parsed, _toolCalls: toolCalls };
+    } catch (e) {
+      console.warn("[debrief] turn failed", e);
+      return { kind: "error", _toolCalls: toolCalls };
+    }
+  };
+
+  // Open a debrief chat over the given world (the post-commit stores —
+  // passed explicitly because setState hasn't landed when the finish
+  // flow calls this). Covers EVERYTHING since the last debrief (owner
+  // lock): full receipts for the newest few, one-liners for the rest,
+  // and the card selects ≤3 off the whole queue regardless of which
+  // session birthed each question. Sessions are only MARKED analyzed
+  // when the opening actually lands (markDebriefOpened) — a failed
+  // generation leaves the world untouched and the Home card re-offers.
+  const openDebriefChat = (world) => {
+    if (!isOnline) return; // the room needs the model; the doors hide offline
+    const history = world.history || [];
+    const covered = new Set(debriefedSessionIds || []);
+    const unanalyzed = history.filter((s) => s && !covered.has(s.id));
+    if (unanalyzed.length === 0) return;
+    const queue = buildQuestionQueue(
+      { anchors: world.anchors || [], observations: world.observations || [], rules: world.rules || [] },
+      history.length, Date.now(), world.denials || [], world.watchHolds || []);
+    const card = selectDebriefQuestions(queue);
+    const packet = buildDebriefTurn(
+      { userName, fitnessLevel, planGoal,
+        rules: world.rules || [], observations: world.observations || [], anchors: world.anchors || [] },
+      { sessions: unanalyzed, history, card, depth: debriefDepthPref, customs: customExercises });
+    const chatId = `c${Date.now()}`;
+    coachGenAbandon(); // same abandon rule as New Chat / switch
+    setCoachChats((prev) => [{
+      id: chatId, createdAt: Date.now(), kind: "debrief",
+      customName: debriefChatTitle(unanalyzed),
+      debriefPacket: packet,
+      debriefSessionIds: unanalyzed.map((s) => s.id),
+      messages: [],
+    }, ...prev]);
+    setCurrentCoachChatId(chatId);
+    setActiveTab("coach");
+    setPendingCoachSeed({
+      kind: "debrief", chatId, card,
+      turn: `${packet}\n\nDeliver your debrief opening now, per your instructions.`,
+    });
+  };
+
+  // The opening landed: everything the chat covers is now analyzed.
+  const markDebriefOpened = (chatId) => {
+    const chatObj = coachChats.find((c) => c.id === chatId);
+    const ids = (chatObj && chatObj.debriefSessionIds) || [];
+    if (ids.length === 0) return;
+    setDebriefedSessionIds((prev) => {
+      const merged = new Set([...(prev || []), ...ids]);
+      // Self-cleaning: keep only ids that still exist in history (plus
+      // the just-covered ids, whose commit may not have landed in state
+      // yet this tick) — deleted sessions fall out, the array stays
+      // bounded by history length.
+      const live = new Set(workoutHistory.map((s) => s && s.id));
+      ids.forEach((id) => live.add(id));
+      return [...merged].filter((id) => live.has(id));
+    });
+    setLastDebriefAt(Date.now());
+  };
+
+  // Home-page door: analyze from the CURRENT world (no fresh commit).
+  const analyzeFromHome = () => {
+    openDebriefChat({
+      history: workoutHistory,
+      anchors: anchors || [],
+      observations: coachObservations || [],
+      rules: coachRules || [],
+      denials: obsDenials || [],
+      watchHolds: obsWatchHolds || [],
+    });
   };
 
   // ── S79 RULES PIPELINE write path (D-199 / D-208) ───────────────────
@@ -18874,10 +18865,8 @@ export default function MYGFitness() {
     setCoachObservations(settled.observations);
     setCoachRules(settled.rules);
     if (session.fromCoach) setRotationCursor((c) => c + 1);
-    // A newer completed session makes any unanswered pin stale. The
-    // silent path doesn't generate new questions (the user is mid-flow
-    // starting another workout) but it does retire the old ones.
-    setPendingCoachQuestions(null);
+    // S82: nothing to retire — the pin is gone; the silent commit just
+    // grows the un-analyzed set the next debrief will cover.
     return true;
   };
 
@@ -18917,10 +18906,8 @@ export default function MYGFitness() {
     setAnchors(rebuilt.anchors);
     setCoachObservations(rebuilt.observations);
     setCoachRules(rebuilt.rules);
-    // D-176 prune: drop pending questions whose backing flag no longer
-    // exists in the rebuilt world; an emptied set retires the pin. Runs
-    // ONLY here — the rare moment that already rebuilds everything.
-    setPendingCoachQuestions((p) => pruneSurveyPending(p, rebuilt));
+    // (S82: the D-176 pin prune died with the pin — the queue is derived,
+    // so a rebuilt world simply produces a corrected queue on next read.)
     // Rotation semantics (owner lock, Session 70): the cursor advances
     // only on Coach-generated completions, so it equals the count of
     // fromCoach sessions — verified: the only writers in the app are the
@@ -18929,14 +18916,17 @@ export default function MYGFitness() {
     // a future manual "skip this day" feature would break this and must
     // revisit.)
     setRotationCursor(newHistory.filter((s) => s && s.fromCoach).length);
+    // S82: returned so commit-and-analyze can build the debrief packet
+    // from the world it just computed (setState hasn't landed yet).
+    return rebuilt;
   };
 
   const deleteWorkoutFromHistory = (sessionId) => {
     const newHistory = workoutHistory.filter((s) => s.id !== sessionId);
     setWorkoutHistory(newHistory);
     rebuildDerivedFromHistory(newHistory);
-    // A pin asking about a session that no longer exists is retired.
-    setPendingCoachQuestions((p) => (p && p.sessionId === sessionId ? null : p));
+    // S82: a deleted session self-cleans from the debrief bookkeeping —
+    // debriefedSessionIds is only ever compared against live history ids.
     setOpenHistoryId(null);
   };
 
@@ -19076,332 +19066,278 @@ export default function MYGFitness() {
   // §10.6 note (D-062): this commit is where the non-blocking background
   // phase fires — the D-171 stem voicing is its first live tenant;
   // next-session pre-build remains future.
-  const commitFinishedSession = () => {
-    if (finishedSession && finishedSession.exercises.length > 0) {
-      // Correction commit (Session 70): id collision = edit (the builder
-      // preserved the original id). Replace in place and re-fold every
-      // derived store from the corrected history. Ceremony — PR pin,
-      // survey questions, rotation advance — fires on a session's FIRST
-      // commit only (owner lock): Coach analyzes the content, not the
-      // act of editing. A phantom PR retracts via the re-fold; it is
-      // never re-celebrated.
-      if (workoutHistory.some((s) => s.id === finishedSession.id)) {
-        const newHistory = workoutHistory.map((s) => (s.id === finishedSession.id ? finishedSession : s));
-        setWorkoutHistory(newHistory);
-        rebuildDerivedFromHistory(newHistory);
-        setFinishedSession(null);
+  // S82 refactor: the commit computation now RETURNS the post-commit
+  // world so "Analyze my workout" can build the debrief packet from
+  // values setState hasn't landed yet. Behavior of a plain commit is
+  // byte-identical to S81; the edit branch rides the (now-returning)
+  // rebuild primitive.
+  const commitFinishedSessionCore = () => {
+    if (!(finishedSession && finishedSession.exercises.length > 0)) {
+      setFinishedSession(null);
+      return null;
+    }
+    // Correction commit (Session 70): id collision = edit (the builder
+    // preserved the original id). Replace in place and re-fold every
+    // derived store from the corrected history. Ceremony — PR payoff,
+    // rotation advance — fires on a session's FIRST commit only (owner
+    // lock): Coach analyzes the content, not the act of editing. A
+    // phantom PR retracts via the re-fold; it is never re-celebrated.
+    if (workoutHistory.some((s) => s.id === finishedSession.id)) {
+      const newHistory = workoutHistory.map((s) => (s.id === finishedSession.id ? finishedSession : s));
+      setWorkoutHistory(newHistory);
+      const rebuilt = rebuildDerivedFromHistory(newHistory);
+      setFinishedSession(null);
+      return {
+        history: newHistory,
+        anchors: rebuilt.anchors, observations: rebuilt.observations, rules: rebuilt.rules,
+        denials: obsDenials || [], watchHolds: obsWatchHolds || [],
+      };
+    }
+    const newHistory = [finishedSession, ...workoutHistory];
+    setWorkoutHistory(newHistory);
+    // Engines (S66/S68/S69) fold on Finish (§10.6 / D-062 — engine work
+    // on commit, not chat-open), then the survey settle (S73) stamps
+    // flag cycles and runs the D-177 clean-skip re-arm — fold-side,
+    // per stress finding S1.
+    const commitIndex = workoutHistory.length + 1;
+    const prevStores = { anchors: anchors || [], observations: coachObservations || [], rules: coachRules || [] };
+    const settled = surveySettleAfterSession(
+      prevStores,
+      {
+        anchors: applySessionToAnchors(prevStores.anchors, finishedSession, customExercises),
+        observations: applySessionToObservations(prevStores.observations, finishedSession, customExercises, obsDenials),
+        rules: applySessionToRuleAdherence(prevStores.rules, finishedSession),
+      },
+      commitIndex,
+      Date.parse(finishedSession.date) || Date.now()
+    );
+    setAnchors(settled.anchors);
+    setCoachObservations(settled.observations);
+    setCoachRules(settled.rules);
+    if (finishedSession.fromCoach) setRotationCursor((c) => c + 1);
+    // S81/S82: nothing pops after a workout (the survey is dead) — the
+    // finish screen's "Analyze my workout" is the door. Every pending
+    // question waits in the derived buildQuestionQueue until a debrief
+    // consumes it (D-225 → D-204 realized).
+    setFinishedSession(null);
+    return {
+      history: newHistory,
+      anchors: settled.anchors, observations: settled.observations, rules: settled.rules,
+      denials: obsDenials || [], watchHolds: obsWatchHolds || [],
+    };
+  };
+  const commitFinishedSession = () => { commitFinishedSessionCore(); };
+
+  // "Analyze my workout" on the finish screen (D-204's door): commit,
+  // then open the debrief over the exact world the commit computed.
+  const commitFinishedSessionAndAnalyze = () => {
+    const world = commitFinishedSessionCore();
+    if (world) openDebriefChat(world);
+  };
+
+  // ── THE DEBRIEF CARD WRITE PATH (S82 — D-229; supersedes the S73
+  // survey answer handlers, demolished with the carcass) ──
+  //
+  // ALL-OR-NOTHING (owner lock): taps on the card only light selections;
+  // NOTHING writes until the final answer submits the whole set. Leaving
+  // mid-card is as if the card was never opened — every question returns
+  // at the next debrief (seeing is not answering). On submit, answers
+  // execute in card order against ONE working copy of the stores, then
+  // state commits once:
+  //   · stale_anchor / rule_check / refresh — the shipped S73 executors,
+  //     unchanged: an answer EVENT files to coachSurveyEvents so these
+  //     user answers survive history refolds (the S3 replay contract);
+  //     rule deletion ("Drop it") stays imperative and user-owned, with
+  //     the dropped rule snapshotted onto the event.
+  //   · obs_ask (the D-205 three-path) — the S81 headless resolvers,
+  //     finally wired: Yes routes by pattern shape (skip → exclusion +
+  //     companion rule via the same rule_obsx_ path the old survey used;
+  //     add → confirmed "occasional", feeding the D-083 rotation pool;
+  //     swap → confirmed "standing" preference). Confirmed/denied are
+  //     replay-TERMINAL — no event needed. "Not sure — keep watching"
+  //     stamps a watch hold (+2 to the bar, tally stands, D-228).
+  //     "Other…" free text: no resolver fires; the hold stamps so the
+  //     engine waits for more evidence, and Coach's reaction turn reads
+  //     the user's words (rule-worthy answers become chat proposals).
+  // Then: one receipt line per answer drops into the transcript, the
+  // card collapses, and the caller (CoachTab) fires Coach's ONE reaction
+  // turn from the returned reactionTurn string.
+  const submitDebriefCard = (chatId, msgId, answers) => {
+    const chatObj = coachChats.find((c) => c.id === chatId);
+    const msg = chatObj && (chatObj.messages || []).find((m) => m && m.id === msgId);
+    if (!msg || msg.kind !== "debrief_card" || !msg.cardState || msg.cardState.status !== "open") return null;
+    const questions = msg.questions || [];
+    if (!Array.isArray(answers) || answers.length !== questions.length) return null;
+
+    // One working copy; every answer mutates it; state commits once.
+    let stores = {
+      anchors: anchors || [],
+      observations: coachObservations || [],
+      rules: coachRules || [],
+    };
+    let denials = obsDenials || [];
+    let holds = obsWatchHolds || [];
+    const newEvents = [];
+    const receipts = [];
+    const qaLines = [];
+    const commitIndex = workoutHistory.length;
+    const afterSessionId = (chatObj.debriefSessionIds && chatObj.debriefSessionIds[0]) || null;
+    const ts = Date.now();
+
+    const quote = (s) => `"${String(s || "").trim()}"`;
+
+    questions.forEach((q, qi) => {
+      const a = answers[qi] || {};
+      const isPreset = a.kind === "preset";
+      const chosen = isPreset ? (q.options || [])[a.index] : null;
+      const answerText = isPreset
+        ? (chosen ? chosen.label : "")
+        : String(a.text || "").trim();
+      if (!answerText) return; // defensive — the card gates empty answers
+      qaLines.push(`Q: ${q.stemCanned}\nA: ${answerText}`);
+
+      if (q.sourceType === "obs_ask") {
+        const o = stores.observations.find((x) => x && x.id === q.sourceRef.obsId);
+        if (!o || o.source !== "engine" || o.status !== "watching") {
+          // Answer-time validation (D-176 spirit): the record retired
+          // between card render and submit (fade / history edit). The
+          // paper answer still shows; the engine no-ops honestly.
+          receipts.push(`Noted · ${q.obsLabel || "pattern"}`);
+          return;
+        }
+        const name = (o.targets && o.targets[0] && o.targets[0].name) || "this movement";
+        if (isPreset && chosen.effect.kind === "obs_confirm") {
+          if (o.type === "skip_pattern") {
+            // Rule-shaped yes (D-205/D-216): exclusion + companion rule
+            // through the same rule_obsx_ door the old survey used.
+            const rid = `rule_obsx_${o.id}`;
+            if (!stores.rules.some((r) => r && r.id === rid)) {
+              const targets = (o.targets || []).map((t) => ({ ...t }));
+              stores.rules = [...stores.rules, {
+                id: rid,
+                text: `Don't program ${name}`,
+                createdAt: ts,
+                schemaVersion: RULE_SCHEMA_VERSION,
+                predicate: { kind: "exclude", triggerFamilies: null, targets, trackAdherence: false },
+                adherence: null,
+              }];
+            }
+            stores.observations = stores.observations.map((x) => (x === o ? confirmObservation(o, "exclusion", ts) : x));
+            receipts.push(`Dropped from your card · ${name} (rule saved)`);
+          } else if (o.type === "off_card_add") {
+            stores.observations = stores.observations.map((x) => (x === o ? confirmObservation(o, "occasional", ts) : x));
+            receipts.push(`Added to rotation · ${name}`);
+          } else {
+            // variant_swap — style-shaped standing preference (D-224).
+            stores.observations = stores.observations.map((x) => (x === o ? confirmObservation(o, "standing", ts) : x));
+            receipts.push(`Preference saved · ${name} → ${o.variantLabel || "variant"}`);
+          }
+        } else if (isPreset && chosen.effect.kind === "obs_deny") {
+          const out = denyObservation(o, denials, ts);
+          denials = out.denials;
+          stores.observations = out.observation === null
+            ? stores.observations.filter((x) => x !== o)
+            : stores.observations.map((x) => (x === o ? out.observation : x));
+          receipts.push(out.observation && out.observation.status === "denied"
+            ? `Dead · Coach won't raise ${name} again`
+            : `Cleared · ${name} tally wiped`);
+        } else {
+          // "Not sure — keep watching" AND "Other…" both stamp the watch
+          // hold: the tally stands, the bar rises (+2), no strike.
+          holds = applyObsWatchHold(holds, o, ts);
+          receipts.push(isPreset ? `Watching · ${name}` : `Noted · ${quote(answerText)}`);
+        }
         return;
       }
-      setWorkoutHistory((h) => [finishedSession, ...h]);
-      // Engines (S66/S68/S69) fold on Finish (§10.6 / D-062 — engine work
-      // on commit, not chat-open), then the survey settle (S73) stamps
-      // flag cycles and runs the D-177 clean-skip re-arm — fold-side,
-      // per stress finding S1.
-      const commitIndex = workoutHistory.length + 1;
-      const prevStores = { anchors: anchors || [], observations: coachObservations || [], rules: coachRules || [] };
-      const settled = surveySettleAfterSession(
-        prevStores,
-        {
-          anchors: applySessionToAnchors(prevStores.anchors, finishedSession, customExercises),
-          observations: applySessionToObservations(prevStores.observations, finishedSession, customExercises, obsDenials),
-          rules: applySessionToRuleAdherence(prevStores.rules, finishedSession),
-        },
-        commitIndex,
-        Date.parse(finishedSession.date) || Date.now()
-      );
-      setAnchors(settled.anchors);
-      setCoachObservations(settled.observations);
-      setCoachRules(settled.rules);
-      if (finishedSession.fromCoach) setRotationCursor((c) => c + 1);
-      // S81 (owner call): THE SURVEY IS DEAD. No pin is created, no
-      // stems are voiced, nothing pops after a workout. Every pending
-      // question — stale anchors, ask-eligible observations, rule
-      // checks, refreshes — queues SILENTLY in the derived
-      // buildQuestionQueue read until the debrief (the asking surface,
-      // next session) consumes it. The dev-only queue viewer in the
-      // Profile shows what's waiting; nothing else renders it.
-      setPendingCoachQuestions(null);
-    }
-    setFinishedSession(null);
-  };
 
-  // "Coach has N questions →" on the Finish screen: same commit, then
-  // jump straight to the Coach tab where the pin is waiting.
-  const commitFinishedSessionToCoach = () => {
-    commitFinishedSession();
-    setActiveTab("coach");
-  };
-
-  // ── Survey answer + dismissal handlers (Session 73, D-172/D-174/D-176) ──
-  //
-  // One tapped answer from the inline question card (D-168) now does THREE
-  // things (the write path is the point of the arc):
-  //   1. EXECUTE THE EFFECT — a preset option carries a typed effect the
-  //      engine executes against the record the question read from, with
-  //      answer-time validation (D-176 belt: a flag retired by behavior
-  //      or a history edit → the effect no-ops and only the paper trail
-  //      files). Answers are terminal (D-155 extended); anchor writes
-  //      stamp lastEditedBy: "user". "Other…" never executes an effect —
-  //      note filed, flag held, 2-commit cooldown (stress finding S2).
-  //   2. LOG THE EVENT — every answer appends to coachSurveyEvents, the
-  //      replayable record the unified refold interleaves with sessions.
-  //      Corrections (Back → re-tap, D-168) REPLACE the logged event and
-  //      REFOLD — inverse-free; the S70 rebuild primitive does the work.
-  //   3. FILE THE PAPER TRAIL — the answer is written into Coach's File
-  //      as a tier-2 observation with provenance (session label, the stem
-  //      as asked, verbatim answer), exactly the shipped S71 pipeline;
-  //      a re-answer REPLACES the filed observation via obsId.
-  // When the LAST question is answered, the receipt drops and the pin
-  // clears (unchanged from S71).
-  //
-  // User-owned store mutations ride OUTSIDE the replayable effects:
-  // rule deletion ("Drop it" is the USER exercising the D-164 revocation
-  // path — the engine only raised the question) and exclusion-rule
-  // creation from a skip answer (D-162 structured-but-untracked). They
-  // happen once, imperatively — user statements pass through rebuilds
-  // untouched — and stay correctable via a rule snapshot carried on the
-  // answer event. NOTE (§14): the §10.10 deletion-recognition flag has
-  // no consumer yet (the prescription pass is future work); deletion here
-  // matches the Profile affordance.
-  const surveyReconcileUserOwnedEffects = (q, oldKind, newKind, ev, rulesIn) => {
-    let rules = rulesIn || [];
-    const dropsRule = (k) => k === "rule_drop" || (k === "refresh_drop" && q.sourceRef.refKind === "rule");
-    const ruleId = q.sourceType === "rule_check" ? q.sourceRef.ruleId
-      : (q.sourceType === "refresh" && q.sourceRef.refKind === "rule") ? q.sourceRef.refId : null;
-    if (ruleId && dropsRule(newKind) && !dropsRule(oldKind)) {
-      const dropped = rules.find((r) => r && r.id === ruleId) || null;
-      if (dropped) ev.droppedRule = dropped; // snapshot: makes the drop correctable
-      rules = rules.filter((r) => r.id !== ruleId);
-    }
-    if (ruleId && dropsRule(oldKind) && !dropsRule(newKind)) {
-      const prevEv = (coachSurveyEvents || []).find((e) => e.kind === "answer" && e.qid === q.id);
-      const snap = ev.droppedRule || (prevEv && prevEv.droppedRule) || null;
-      if (snap && !rules.some((r) => r.id === snap.id)) rules = [...rules, snap];
-    }
-    if (newKind === "obs_exclude" && oldKind !== "obs_exclude") {
-      const obs = (coachObservations || []).find((o) => o && o.id === q.sourceRef.obsId);
-      const targets = ((obs && obs.targets) || []).map((t) => ({ ...t }));
-      const names = targets.map((t) => t.name).filter(Boolean);
-      const rid = `rule_obsx_${q.sourceRef.obsId}`;
-      if (!rules.some((r) => r.id === rid)) {
-        rules = [...rules, {
-          id: rid,
-          text: `Don't program ${names.join(" / ") || "this movement"}`,
-          createdAt: ev.ts,
-          schemaVersion: RULE_SCHEMA_VERSION,
-          predicate: { kind: "exclude", triggerFamilies: null, targets, trackAdherence: false },
-          adherence: null,
-        }];
-      }
-    }
-    if (oldKind === "obs_exclude" && newKind !== "obs_exclude") {
-      rules = rules.filter((r) => r.id !== `rule_obsx_${q.sourceRef.obsId}`);
-    }
-    return rules;
-  };
-
-  const answerCoachQuestion = (questionId, payload) => {
-    const pending = pendingCoachQuestions;
-    if (!pending) return;
-    const q = pending.questions.find((x) => x.id === questionId);
-    if (!q) return;
-    // Legacy pre-S73 pin (demo questions: string options, no sourceType,
-    // no effects) — nothing to execute; retire it quietly. Real questions
-    // arrive at the next commit.
-    if (!q.sourceType || !Array.isArray(q.options) || typeof q.options[0] === "string") {
-      setPendingCoachQuestions(null);
-      return;
-    }
-    const isPreset = !!(payload && payload.kind === "preset");
-    const chosen = isPreset ? q.options[payload.index] : null;
-    if (isPreset && !chosen) return;
-    const answerText = isPreset ? chosen.label : String((payload && payload.text) || "").trim();
-    if (!answerText) return;
-    const existing = pending.answered.find((a) => a.id === questionId);
-    if (existing && existing.answer === answerText) return; // re-confirmed unchanged — nothing to refile
-    const newKind = isPreset ? chosen.effect.kind : null;
-    const stemAsked = q.stemVoiced || q.stemCanned;
-    const commitIndex = workoutHistory.length;
-    const ev = {
-      id: `sv${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-      ts: Date.now(),
-      kind: "answer",
-      qid: questionId,
-      afterSessionId: pending.sessionId,
-      sourceType: q.sourceType,
-      sourceRef: q.sourceRef,
-      cycle: q.cycle,
-      option: isPreset ? payload.index : "other",
-    };
-
-    if (existing) {
-      // Correction (Back → re-tap): replace the logged event and REFOLD —
-      // no inverse effects, the corrected history is simply re-lived.
-      const oldEv = (coachSurveyEvents || []).find((e) => e.kind === "answer" && e.qid === questionId);
-      if (oldEv && oldEv.droppedRule) ev.droppedRule = oldEv.droppedRule;
-      const rulesReconciled = surveyReconcileUserOwnedEffects(q, existing.effectKind || null, newKind, ev, coachRules || []);
-      let nextEvents = (coachSurveyEvents || []).map((e) => (e.kind === "answer" && e.qid === questionId ? ev : e));
-      if (!nextEvents.some((e) => e.kind === "answer" && e.qid === questionId)) nextEvents = [...nextEvents, ev];
-      setCoachSurveyEvents(nextEvents);
-      const rebuilt = refoldWorldWithSurveyEvents(workoutHistory, nextEvents, coachObservations || [], rulesReconciled, customExercises, obsDenials);
-      setAnchors(rebuilt.anchors);
-      setCoachObservations(rebuilt.observations);
-      setCoachRules(rebuilt.rules);
-    } else {
-      const out = surveyExecuteAnswer(
-        { anchors: anchors || [], observations: coachObservations || [], rules: coachRules || [] }, ev, commitIndex);
-      const rulesNext = (isPreset && out.result === "applied")
-        ? surveyReconcileUserOwnedEffects(q, null, newKind, ev, out.stores.rules)
-        : out.stores.rules;
-      setAnchors(out.stores.anchors);
-      setCoachObservations(out.stores.observations);
-      setCoachRules(rulesNext);
-      setCoachSurveyEvents((prev) => [...(prev || []), ev]);
-    }
-
-    // ── Paper trail (the shipped S71 pipeline, kept): every answer files
-    // to Coach's File with provenance; a re-answer REPLACES via obsId. ──
-    const obsText = `${q.obsLabel || stemAsked} — ${answerText}`;
-    const provenance = {
-      sessions: [`${pending.sessionName} · ${formatShortDate(pending.sessionDate)}`],
-      signal: `Stated directly in post-workout questions — asked "${stemAsked}", answered "${answerText}"`,
-    };
-    let answered;
-    if (existing) {
-      answered = pending.answered.map((a) => (a.id === questionId ? { ...a, answer: answerText, effectKind: newKind } : a));
-      if (existing.obsId) {
-        setCoachObservations((o) => (o || []).map((ob) => (
-          ob.id === existing.obsId ? { ...ob, text: obsText, provenance } : ob
-        )));
-      } else {
-        setCoachObservations((o) => [{ id: `o${Date.now()}`, text: obsText, createdAt: Date.now(), tier: 2, provenance }, ...(o || [])]);
-      }
-    } else {
-      const obsId = `o${Date.now()}`;
-      answered = [...pending.answered, { id: questionId, question: stemAsked, answer: answerText, obsId, effectKind: newKind }];
-      setCoachObservations((o) => [{ id: obsId, text: obsText, createdAt: Date.now(), tier: 2, provenance }, ...(o || [])]);
-    }
-    setCoachFileLastUpdatedAt(Date.now());
-    if (answered.length >= pending.questions.length) {
-      appendCoachMessage({
-        role: "system", kind: "receipt", ts: Date.now(),
-        text: `Filed to Coach's File · ${pending.sessionName} · ${answered.length} ${answered.length === 1 ? "answer" : "answers"}`,
-      });
-      setPendingCoachQuestions(null);
-    } else {
-      setPendingCoachQuestions({ ...pending, answered });
-    }
-  };
-
-  // ── Explicit X dismissal (D-174): the card's quiet X still leaves the
-  // pin standing (D-169 — recoverable, never a trap), but it now ALSO
-  // records the soft "not now": a dismiss event for the still-unanswered
-  // SHOWING questions, cooldowns stamped in COMMITS for engine flags and
-  // 30 calendar days for refresh (finding S4: commits, never surveys-
-  // shown — surveys-shown deadlocks a dismiss-everything user). ──
-  const dismissCoachSurvey = () => {
-    const pending = pendingCoachQuestions;
-    if (!pending || !Array.isArray(pending.questions)) return;
-    const answeredIds = new Set((pending.answered || []).map((a) => a.id));
-    const showing = pending.questions.filter((x) => x.sourceType && !answeredIds.has(x.id));
-    if (showing.length === 0) return;
-    const ev = {
-      id: `sv${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-      ts: Date.now(),
-      kind: "dismiss",
-      afterSessionId: pending.sessionId,
-      refs: showing.map(({ sourceType, sourceRef }) => ({ sourceType, sourceRef })),
-    };
-    const next = surveyApplyDismiss(
-      { anchors: anchors || [], observations: coachObservations || [], rules: coachRules || [] },
-      ev, workoutHistory.length);
-    setAnchors(next.anchors);
-    setCoachObservations(next.observations);
-    setCoachRules(next.rules);
-    setCoachSurveyEvents((prev) => [...(prev || []), ev]);
-  };
-
-  // ── D-171 stem voicing: one background Coach call per survey set, fired
-  // at commit; it rides the taps the user is already making (payoff → pin
-  // → card). Voiced stems persist onto the pending set (voiced once,
-  // survives restarts). Canned stems are the floor — answering never
-  // blocks on network; a failed call retries on the next Coach-tab open
-  // while the pin is alive. ──
-  const surveyVoiceInFlight = useRef(false);
-  // Dev-only discard telemetry (S74, Q6 lock): reason tallies for the
-  // dogfood week's tuning strike — which validator checks fire, how
-  // often. Rides its own localStorage key (never the app snapshot, never
-  // the UI); capped, best-effort, silent on failure.
-  const surveyVoiceTelemetry = (entries) => {
-    try {
-      const KEY = "myg_voice_discards";
-      const prev = JSON.parse(localStorage.getItem(KEY) || "[]");
-      const next = prev.concat(entries).slice(-200);
-      localStorage.setItem(KEY, JSON.stringify(next));
-    } catch (e) { /* telemetry never matters more than the app */ }
-  };
-  const voiceSurveyStems = async (pin, sessionArg) => {
-    if (!pin || surveyVoiceInFlight.current) return;
-    const unvoiced = (pin.questions || []).filter((x) => x.stemCanned && !x.stemVoiced);
-    if (unvoiced.length === 0) return;
-    surveyVoiceInFlight.current = true;
-    try {
-      // Context feed (S74 v2): at commit the just-finished session rides
-      // in directly; on retry it's looked up from history by the pin's
-      // sessionId. Missing session (edge: deleted before retry) → empty
-      // context, which simply means a rephrase-only voicing.
-      const session = sessionArg || workoutHistory.find((h) => h.id === pin.sessionId) || null;
-      const context = buildSurveyVoiceContext(pin, session);
-      const allowedDigits = surveyExtractDigitTokens(JSON.stringify(context));
-      const payload = {
-        session: pin.sessionName,
-        date: pin.sessionDate,
-        questions: unvoiced.map((x) => ({ id: x.id, type: x.sourceType, stem: x.stemCanned, facts: x.stemFacts || {} })),
-        context,
+      // stale_anchor / rule_check / refresh — the shipped executors, with
+      // the answer EVENT logged for refold survival (the S3 contract).
+      const ev = {
+        id: `sv${ts}_${qi}_${Math.random().toString(36).slice(2, 6)}`,
+        ts,
+        kind: "answer",
+        qid: q.id,
+        afterSessionId,
+        sourceType: q.sourceType,
+        sourceRef: q.sourceRef,
+        cycle: q.cycle,
+        option: isPreset ? a.index : "other",
       };
-      const { text } = await callCoach(SURVEY_VOICE_SYSTEM, JSON.stringify(payload));
-      // Envelope gate + per-stem validation + duplicate sweep, all in the
-      // extracted pure function (stress-hardened S74); an untrustworthy
-      // envelope throws into the canned-floor catch below.
-      const { accepted, discards } = surveyApplyVoicedResponse(text, unvoiced, allowedDigits);
-      if (discards.length) surveyVoiceTelemetry(discards.map((d) => ({ ts: Date.now(), qid: d.qid, reason: d.reason })));
-      if (Object.keys(accepted).length > 0) {
-        setPendingCoachQuestions((p) => (p && p.id === pin.id
-          ? {
-              ...p,
-              questions: p.questions.map((x) => (accepted[x.id]
-                ? { ...x, stemVoiced: accepted[x.id] }
-                : x)),
-            }
-          : p));
+      const out = surveyExecuteAnswer(stores, ev, commitIndex);
+      stores = out.stores;
+      const effectKind = isPreset ? chosen.effect.kind : null;
+      // User-owned rule deletion (imperative, snapshotted onto the event
+      // so a future history correction can restore it — S73 semantics).
+      const dropsRule = effectKind === "rule_drop"
+        || (effectKind === "refresh_drop" && q.sourceRef.refKind === "rule");
+      if (dropsRule && out.result === "applied") {
+        const ruleId = q.sourceType === "rule_check" ? q.sourceRef.ruleId : q.sourceRef.refId;
+        const dropped = stores.rules.find((r) => r && r.id === ruleId) || null;
+        if (dropped) {
+          ev.droppedRule = dropped;
+          stores.rules = stores.rules.filter((r) => r.id !== ruleId);
+        }
       }
-    } catch (e) {
-      // Canned floor holds; the retry effect below re-fires while the pin
-      // is alive. Never surfaced to the user — a survey with canned stems
-      // is a fully working survey.
-      surveyVoiceTelemetry([{ ts: Date.now(), qid: null, reason: "call_or_parse_failed" }]);
-    } finally {
-      surveyVoiceInFlight.current = false;
-    }
-  };
-  // Retry-while-pin-alive (D-171): next Coach-tab open or reconnect.
-  useEffect(() => {
-    if (activeTab !== "coach" || !isOnline) return;
-    const p = pendingCoachQuestions;
-    if (p && Array.isArray(p.questions) && p.questions.some((x) => x.stemCanned && !x.stemVoiced)) {
-      voiceSurveyStems(p);
-    }
-  }, [activeTab, isOnline, pendingCoachQuestions ? pendingCoachQuestions.id : null]);
+      newEvents.push(ev);
 
-  // ── Finish-screen question PREVIEW (D-170): "Coach has N questions →"
-  // must know N before the commit, so the screen previews the same build
-  // the commit will run — a simulated fold over copies, then the pure
-  // builder. Nothing is written anywhere (S1: the builder only reads;
-  // the appliers are pure). An edit re-commit previews 0 — ceremony
-  // fires on a session's FIRST commit only (S70 lock). ──
-  // S81: the finish-screen "Coach has N questions" ceremony died with
-  // the survey. The queue exists (buildQuestionQueue) but is silent —
-  // the debrief will own the finish-flow door next session.
+      if (q.sourceType === "stale_anchor") {
+        const aName = q.obsLabel ? q.obsLabel.replace(/ anchor check$/, "") : "benchmark";
+        if (!isPreset) receipts.push(`Noted · ${quote(answerText)}`);
+        else if (a.index === 0) {
+          const na = surveyFindAnchor(stores.anchors, q.sourceRef);
+          receipts.push(`Benchmark rebuilt · ${aName}${na ? ` at ${na.bodyweightMode === "reps_only" ? `${na.reps} reps` : `${na.weightLb} lb`}` : ""}`);
+        } else receipts.push(`Benchmark held · ${aName}`);
+      } else if (q.sourceType === "rule_check") {
+        const rText = (q.obsLabel || "").replace(/^rule check — /, "");
+        if (!isPreset) receipts.push(`Noted · ${quote(answerText)}`);
+        else receipts.push(a.index === 0 ? `Rule kept · ${quote(rText)}` : `Rule dropped · ${quote(rText)}`);
+      } else {
+        const rLabel = (q.obsLabel || "").replace(/^refresh — /, "");
+        if (!isPreset) receipts.push(`Noted · ${quote(answerText)}`);
+        else receipts.push(a.index === 0 ? `Still true · ${quote(rLabel)}` : `Retired · ${quote(rLabel)}`);
+      }
+    });
+
+    // Commit once.
+    setAnchors(stores.anchors);
+    setCoachObservations(stores.observations);
+    setCoachRules(stores.rules);
+    setObsDenials(denials);
+    setObsWatchHolds(holds);
+    if (newEvents.length) setCoachSurveyEvents((prev) => [...(prev || []), ...newEvents]);
+    setCoachFileLastUpdatedAt(Date.now());
+
+    // Collapse the card; drop the receipt lines beneath it.
+    updateCoachMessageById(chatId, msgId, {
+      cardState: { status: "answered", count: answers.length, answeredAt: ts },
+      answers: questions.map((q, qi) => {
+        const a = answers[qi] || {};
+        return {
+          qid: q.id,
+          stem: q.stemCanned,
+          answer: a.kind === "preset" ? (((q.options || [])[a.index] || {}).label || "") : String(a.text || "").trim(),
+        };
+      }),
+    });
+    receipts.forEach((line, ri) => {
+      appendCoachMessage({
+        role: "system", kind: "receipt", ts: ts + ri,
+        id: `m${ts}${ri}${Math.floor(Math.random() * 1e6)}`,
+        text: line,
+      }, chatId);
+    });
+
+    // Coach's ONE reaction turn (owner lock): the caller streams this.
+    return `${chatObj.debriefPacket || ""}
+
+== THE USER JUST ANSWERED THE QUESTION CARD ==
+${qaLines.join("\n\n")}
+
+== ENGINE RECEIPTS (already shown to the user — do not repeat them) ==
+${receipts.join("\n")}
+
+Deliver your reaction to these answers now, per THE REACTION TURN section of your instructions.`;
+  };
 
   const discardFinishedSession = () => {
     setFinishedSession(null);
@@ -19445,7 +19381,10 @@ export default function MYGFitness() {
       []
     ));
     setObsDenials([]);
-    setPendingCoachQuestions(null);
+    setObsWatchHolds([]);
+    setDebriefedSessionIds([]);
+    setLastDebriefAt(null);
+    setDebriefDepthPref("standard");
     setCoachSurveyEvents([]);
     setProgressPRs(MOCK_PROGRESS_PRS);
     setBodyStats(MOCK_BODY_STATS);
@@ -19478,6 +19417,12 @@ export default function MYGFitness() {
           // (authored tips + changelog generation) is a later task.
           // Empty array hides the section entirely.
           notes={HOME_NOTES_V1}
+          // THE DEBRIEF's standing door (S82, D-230): deadpan count of
+          // committed-but-never-debriefed sessions; the card exists only
+          // while the count is nonzero and the model is reachable, and
+          // disappears the moment the user is caught up — never clutter.
+          unanalyzedCount={isOnline ? workoutHistory.filter((s) => s && !(debriefedSessionIds || []).includes(s.id)).length : 0}
+          onAnalyze={analyzeFromHome}
         />
       );
       case "workout": return (
@@ -19501,7 +19446,8 @@ export default function MYGFitness() {
           onCancel={cancelActiveWorkout}
           onFinish={finishActiveWorkout}
           onCommitFinished={commitFinishedSession}
-          onCommitFinishedToCoach={commitFinishedSessionToCoach}
+          onCommitFinishedAnalyze={commitFinishedSessionAndAnalyze}
+          analyzeEnabled={isOnline}
           onDiscardFinished={discardFinishedSession}
           onUpdateFinished={updateFinishedSession}
           onRepeatWorkout={requestRepeatWorkout}
@@ -19540,12 +19486,12 @@ export default function MYGFitness() {
           planDaysPerWeek={planDaysPerWeek}
           planGoal={planGoal}
           selectedEquipment={selectedEquipment}
-          pendingQuestions={pendingCoachQuestions}
-          onAnswerQuestion={answerCoachQuestion}
+          onRespondAsDebrief={respondAsDebrief}
+          onSubmitDebriefCard={submitDebriefCard}
+          onDebriefOpened={markDebriefOpened}
           onSaveRule={saveRuleFromCard}
           onCancelRuleCard={cancelRuleCard}
           onSupersedeRuleCards={supersedeOpenRuleCards}
-          onDismissSurvey={dismissCoachSurvey}
         />
       );
       case "exercises": return (
@@ -19617,7 +19563,6 @@ export default function MYGFitness() {
             onOpenRules={() => setAppSubScreen("rules")}
             onOpenProgress={() => setAppSubScreen("progress")}
             onOpenObservations={() => setAppSubScreen("observations")}
-            onOpenDevQueue={() => setAppSubScreen("devqueue")}
             // Body Stats editor — Session 41: BodyStatsSubscreen
             // shipped, route is real. The ProfileTab header passes a
             // fieldKey arg corresponding to the cell tapped (NAME / HEIGHT
@@ -19661,6 +19606,8 @@ export default function MYGFitness() {
           onBack={() => setAppSubScreen(null)}
           unitsPref={unitsPref}
           onChangeUnits={setUnitsPref}
+          debriefDepth={debriefDepthPref}
+          onChangeDebriefDepth={setDebriefDepthPref}
           restTimerMode={restTimerModePref}
           onChangeRestTimerMode={setRestTimerModePref}
           restCountdownTarget={restCountdownTargetPref}
@@ -19732,17 +19679,6 @@ export default function MYGFitness() {
         />
       );
     }
-    if (appSubScreen === "devqueue") {
-      return (
-        <DevQueueSubscreen
-          onBack={() => setAppSubScreen(null)}
-          queue={buildQuestionQueue(
-            { anchors: anchors || [], observations: coachObservations || [], rules: coachRules || [] },
-            workoutHistory.length, Date.now(), obsDenials)}
-          denials={obsDenials}
-        />
-      );
-    }
     if (appSubScreen === "observations") {
       return (
         <ObservationsSubscreen
@@ -19794,14 +19730,9 @@ export default function MYGFitness() {
     // keyboard and the tab bar. Matches Claude / iMessage / every major
     // chat app. Only triggers on the Coach tab.
     const hideTabBar = activeTab === "coach" && coachInputFocused;
-    // S76 badge signal — same truth the pin reads (questions remain
-    // unanswered). Shape-guarded for legacy pre-S73 pins.
-    const coachQuestionsWaiting = !!(
-      pendingCoachQuestions &&
-      Array.isArray(pendingCoachQuestions.questions) &&
-      Array.isArray(pendingCoachQuestions.answered) &&
-      pendingCoachQuestions.questions.length > pendingCoachQuestions.answered.length
-    );
+    // S82: the S76 pin-driven Coach-tab dot died with the survey. The
+    // home-page catch-up card is the ONLY skipper affordance (owner
+    // lock — "Coach needs a word" escalation cut for v1, D-230).
     // Same reasoning for the SessionBar (Session 47): while composing a
     // Coach message it isn't serving its purpose (jump-back-to-workout)
     // and it's the worst space thief — it stacks directly above the
@@ -19824,7 +19755,7 @@ export default function MYGFitness() {
           {renderTab()}
         </div>
         {showSessionBar && <SessionBar workout={activeWorkout} restTimerMode={restTimerModePref} restCountdownTarget={restCountdownTargetPref} onTap={expandWorkoutFromBar} />}
-        {!hideTabBar && <TabBar active={activeTab} onTab={setActiveTab} coachDot={coachQuestionsWaiting} />}
+        {!hideTabBar && <TabBar active={activeTab} onTab={setActiveTab} coachDot={false} />}
 
         {/* ── Rest-over toast (S80 owner bug #3) — gold, fixed, shows on
             any tab. Slides in under the safe area, auto-dismisses after
