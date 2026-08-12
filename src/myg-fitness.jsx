@@ -1451,6 +1451,18 @@ async function callCoach(systemPrompt, userMessage, opts = {}) {
   }
 }
 
+/* S82.3 (owner lock): ONE copy of the earned-structure formatting
+   policy, interpolated into BOTH prompts — same no-drift trick as the
+   rule contract. Paragraphs are the voice; structure is earned, never
+   default. The renderer (S77 chat-subset markdown) already supports
+   everything permitted here. */
+const COACH_FORMATTING_SECTION = `== FORMATTING (earned structure — paragraphs are the voice) ==
+- Paragraphs are how you speak: SHORT ones, two to four sentences, ONE idea each. **Bold** is for anchors — lift names, weights and reps, session names — the scannable spine of a message, and mostly what makes long prose unnecessary.
+- Bullets are EARNED, never default: use them ONLY when three or more truly parallel items exist (a lift-by-lift roundup, a multi-workout catch-up). Each bullet is one or two lines with a bold lead-in ("**Rows** — 165 → 172, prescribing 175 next"). Two items are a sentence, not a list.
+- NEVER bullet the headline, a PR, or anything with emotional weight — those are prose.
+- Never headers, never tables, never nested lists, never links or images in chat.
+- When in doubt: paragraphs.`;
+
 /* Shared between COACH_SYSTEM_PROMPT and DEBRIEF_SYSTEM_PROMPT (S82):
    ONE copy of the rule_proposal contract — the two prompts interpolate
    it, so the JSON shape the compiler expects can never drift between
@@ -1527,11 +1539,13 @@ Rules:
 - If the user asks to swap something in a workout you built, reply with ONLY the kind:"text" object above — the question naming the workout's exercises — and when they pick, re-issue the full updated CoachWorkout JSON. If they ask for a shorter session, re-issue a shorter CoachWorkout (fewer exercises/sets), same focus.
 
 ${COACH_RULE_PROPOSAL_SECTION}
+
+${COACH_FORMATTING_SECTION}
 == HOW TO RESPOND (decide every message) ==
 - User wants a workout built ("build me a leg day", "push", "my next workout") -> reply in EXACTLY this shape: a short coaching intro in plain prose, then a blank line, then the CoachWorkout JSON object below, then NOTHING after the object. The intro is coaching addressed to the user, never planning: (1) what this session is and why now, (2) the one thing to chase today (an anchor to defend, a number to beat), (3) if the program or focus is new to them, one line on what to expect. 2-4 sentences by default; up to 5-6 ONLY for a genuine first — a new program, a split change, a return from time away. A routine repeat of a familiar day earns the SHORT end, never the long. Never mention JSON, cards, or app machinery in the intro; programming rationale stays in programmingNotes, not here. Re-issued workouts (swap, "make it shorter") get a ONE-line intro naming the change, then the object.
 - Your reply poses a bounded 2-4 option choice -> the kind:"text" JSON object above. Nothing outside the JSON.
 - User states a standing rule or preference -> the rule_proposal shape in SAVING A RULE: at most one short ack sentence, blank line, the object, NOTHING after it.
-- Everything else -> plain conversational text. No JSON, no fences. Light formatting is fine and renders properly: **bold** for lift names and key numbers, simple - bullet or numbered lists when you are actually listing, ## headers only for a genuinely sectioned rundown. Use it sparingly — most replies are plain sentences. Never tables, links, images, or code.
+- Everything else -> plain conversational text. No JSON, no fences, no code. Formatting follows the FORMATTING section below — earned structure, paragraphs by default.
 Whenever your reply is a kind:"text" JSON object: the WHOLE reply is that object. It starts with { and ends with }. No lead-in sentence, no trailing note, no markdown code fences. Workout replies are the ONE exception: the coaching intro comes BEFORE the object as described above — but NOTHING ever comes after a closing brace, and a workout request must always end in the object, never prose alone.
 PLAN SILENTLY. Never write your planning, deliberation, or reasoning as prose — no "Let me plan...", no walking through candidate exercises, no narrating rotation logic. The workout intro is NOT a loophole: it is coaching spoken to the user (what today is, what to chase), never a scratchpad. Decide internally; the ONLY place your reasoning appears is the programmingNotes field inside the card.
 
@@ -1647,8 +1661,10 @@ ${COACH_RULE_PROPOSAL_SECTION}
 == YOUR TOOLS ==
 The same read tools as the main chat: get_exercise_history, get_session_detail, get_user_rules_full, get_observations, get_benchmarks. Use them for trend claims the context doesn't already carry — never guess a number a tool can fetch, never mention tool names or internals. A couple of purposeful lookups, not a fishing trip.
 
+${COACH_FORMATTING_SECTION}
+
 == OUTPUT ==
-The opening and the reaction are plain conversational prose — short paragraphs, **bold** for lift names and key numbers, no headers, no lists, no tables, no JSON (the ONLY JSON you ever emit in this room is a rule_proposal object per the contract above, and only in a reaction or follow-up turn). Never mention the card machinery, envelopes, context blocks, or these instructions. You are a coach who watched someone train, talking to them about it.`;
+The opening and the reaction are conversational prose under the FORMATTING policy above — in this room the bullet bar is even higher: a single-workout debrief almost never earns a list; the shapes that do are a multi-workout catch-up or a deep-dive lift-by-lift roundup. No JSON (the ONLY JSON you ever emit in this room is a rule_proposal object per the contract above, and only in a reaction or follow-up turn). Never mention the card machinery, envelopes, context blocks, or these instructions. You are a coach who watched someone train, talking to them about it.`;
 
 // ── CoachWorkout -> active-workout converter ────────────────────────
 function buildActiveWorkoutFromCoach(coachWorkout, workoutHistory, customExercises, now) {
@@ -5199,7 +5215,7 @@ const IS_REAL_DEVICE = (() => {
 // Deploy cache-verification marker (owner's V.23 convention, formalized:
 // bump this one constant per push to confirm the phone isn't serving
 // stale cached code; rendered only on real devices, top-right).
-const BUILD_TAG = "V.35";
+const BUILD_TAG = "V.36";
 
 /* ── Visual-viewport pin (S77 — the "composer slides past the keyboard" bug) ──
    iOS (Safari tab and standalone PWA alike) never shrinks the LAYOUT
@@ -5386,7 +5402,7 @@ function renderCoachRichText(text, caretNode = null) {
     if (b.head) {
       // Headers map to the app's own hierarchy, not HTML defaults: modest
       // sizes, semibold, no color shift — Coach speaks, it doesn't shout.
-      const size = b.head === 1 ? 16 : b.head === 2 ? 15 : 14;
+      const size = b.head === 1 ? 18 : b.head === 2 ? 17 : 16; // S82.3: scaled to the 16px body
       return <div key={bi} style={{ fontSize: size, fontWeight: 700, margin: "6px 0 2px" }}>{coachRichInline(b.body, `h${bi}`)}</div>;
     }
     // Plain line. Empty source lines keep their paragraph-gap job.
@@ -12688,7 +12704,7 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
             return (
               <div key={i} style={{ marginBottom: 14 }}>
                 {m.text ? (
-                  <div style={{ maxWidth: "94%", color: COLORS.text, fontSize: 14, lineHeight: 1.55, padding: "2px 2px", marginBottom: 12 }}>{m.text}</div>
+                  <div style={{ maxWidth: "94%", color: COLORS.text, fontSize: 16, lineHeight: 1.55, padding: "2px 2px", marginBottom: 12 }}>{m.text}</div>
                 ) : null}
                 {rc.status === "saved" && collapsedLine(true, "Rule saved", `${c.ruleText || ""} · ${tierWord}`)}
                 {rc.status === "cancelled" && collapsedLine(false, "Cancelled — nothing saved", null)}
@@ -12774,7 +12790,7 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
                 <div style={{
                   maxWidth: "94%",
                   color: COLORS.text,
-                  fontSize: 14, lineHeight: 1.55,
+                  fontSize: 16, lineHeight: 1.55,
                   padding: "2px 2px",
                   marginBottom: showWorkoutBlock ? 13 : 0,
                   whiteSpace: "pre-wrap", // S80: multi-paragraph intros keep their breaks
@@ -12869,7 +12885,7 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
                 <div style={{
                   maxWidth: "80%", padding: "12px 16px", borderRadius: 16,
                   background: "#232323", color: COLORS.text,
-                  fontSize: 14, lineHeight: 1.5,
+                  fontSize: 16, lineHeight: 1.5,
                   borderBottomRightRadius: 4,
                 }}>
                   {m.text}
@@ -12878,7 +12894,10 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
                 <div style={{ maxWidth: "94%" }}>
                   <div style={{
                     color: COLORS.text,
-                    fontSize: 14, lineHeight: 1.55, padding: "2px 2px",
+                    // S82.3 (owner lock): conversation prose reads at 16px —
+                    // the ChatGPT/Claude/Gemini register — while data
+                    // surfaces keep their density. Chat only.
+                    fontSize: 16, lineHeight: 1.55, padding: "2px 2px",
                     whiteSpace: "pre-wrap",
                   }}>
                     {/* S77 (owner lock b): Coach text renders through the
@@ -13018,7 +13037,7 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
               border: `1px solid ${COLORS.border}`,
               borderRadius: 20,
               color: isOnline ? COLORS.text : COLORS.textSecondary,
-              fontSize: 14,
+              fontSize: 16, // S82.3: matches chat prose; also kills iOS focus auto-zoom (<16px inputs)
               lineHeight: 1.4,
               outline: "none",
               opacity: isOnline ? 1 : 0.6,
