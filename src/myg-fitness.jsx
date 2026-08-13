@@ -5215,7 +5215,7 @@ const IS_REAL_DEVICE = (() => {
 // Deploy cache-verification marker (owner's V.23 convention, formalized:
 // bump this one constant per push to confirm the phone isn't serving
 // stale cached code; rendered only on real devices, top-right).
-const BUILD_TAG = "V.36";
+const BUILD_TAG = "V.38";
 
 /* ── Visual-viewport pin (S77 — the "composer slides past the keyboard" bug) ──
    iOS (Safari tab and standalone PWA alike) never shrinks the LAYOUT
@@ -7276,16 +7276,27 @@ function WorkoutTab({
 
         {/* CTA section — messaging only when no workout. Buttons always
             visible per Bible §14 working-style decision (so user can
-            tap Start Empty after minimizing → conflict modal). */}
+            tap Start Empty after minimizing → conflict modal).
+            S83 door ruling (D-241): the decorative icon circle, the
+            negative "No active workout" headline, and the explainer
+            subline are dead. One line of the app's ceremony voice —
+            Georgia italic, the payoff-title register — holds the room
+            with variant A's original breathing space kept deliberately.
+            THIS SLOT IS THE DOOR'S PREPARED-WORK SLOT: when the
+            splits/programs build wires Mode 0 carry-forward, the ready
+            card (Coach's next workout / saved template) renders HERE in
+            place of the line, riding the existing nextSession pipe. The
+            buttons below don't move in either state. */}
         <div style={{ display: "flex", flexDirection: "column", alignItems: "center", paddingTop: 30, paddingBottom: 12 }}>
           {!workout && (
-            <>
-              <div style={{ width: 64, height: 64, borderRadius: 32, background: COLORS.card, border: `1px solid ${COLORS.border}`, display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 18 }}>
-                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke={COLORS.gold} strokeWidth="1.8"><path d="M3 12h4l3-9 4 18 3-9h4" /></svg>
-              </div>
-              <p style={{ color: COLORS.text, fontSize: 17, fontWeight: 500, margin: "0 0 4px" }}>No active workout</p>
-              <p style={{ color: COLORS.textSecondary, fontSize: 13, margin: "0 0 22px", textAlign: "center" }}>Start an empty session or ask Coach to build one</p>
-            </>
+            <p style={{
+              fontFamily: "Georgia, 'Times New Roman', serif",
+              fontStyle: "italic", fontWeight: 400,
+              color: COLORS.text, fontSize: 20,
+              margin: "26px 0 40px", textAlign: "center",
+            }}>
+              Ready when you are.
+            </p>
           )}
           <GoldButton onClick={onStartEmpty} style={{ width: "auto", padding: "14px 36px", fontSize: 15 }}>Start Empty Workout</GoldButton>
           <button
@@ -7307,6 +7318,19 @@ function WorkoutTab({
 
         {/* History list — full-detail cards per spec */}
         <p style={{ color: COLORS.textSecondary, fontSize: 12, margin: "32px 0 10px", textTransform: "uppercase", letterSpacing: 1, fontWeight: 500 }}>History</p>
+        {/* S83 Q2-B (cold start): with zero sessions the eyebrow used to
+            dangle over nothing — this tab never got the empty state Home
+            has. Same idiom as Home's cold-start line: Georgia italic,
+            #666. The label stays so the tab teaches its shape on day one. */}
+        {history.length === 0 && (
+          <p style={{
+            fontFamily: "Georgia, 'Times New Roman', serif",
+            fontStyle: "italic", color: "#666", fontSize: 14,
+            lineHeight: 1.6, margin: 0,
+          }}>
+            Your finished sessions will land here.
+          </p>
+        )}
         {history.map((w) => {
           const volume = totalVolumeFromExercises(w.exercises);
           return (
@@ -7450,6 +7474,11 @@ function ActiveLogger({
   // D-019: which exercise's alternatives sheet is open. The uid of the
   // exercise whose row was swiped, or null when no sheet is open.
   const [alternativesFor, setAlternativesFor] = useState(null);
+  // S83 tap-through: which exercise's full record (ExerciseDetailSheet)
+  // is open over the logger. uid, or null. Opened by a clean tap on the
+  // exercise name; closed by backdrop/drag — the workout is untouched
+  // and timers keep running underneath.
+  const [detailFor, setDetailFor] = useState(null);
   // When the user opens AddExerciseSheet via the empty-state "Browse
   // Exercises" CTA, we're in swap mode — picking an exercise replaces the
   // target, doesn't append. uid of the swap target, or null for normal add.
@@ -8512,11 +8541,17 @@ function ActiveLogger({
 
             {/* SHARED — duration text. Active form: just time. Bar form:
                 time · N exercises. The suffix is rendered as a separate
-                inline span that fades in. */}
+                inline span that fades in.
+                S83 header ruling (G — "four things"): in the ACTIVE form the
+                session clock is ambient, so it reads quiet gray; gold is
+                reserved for rest (the thing you act on). The bar end-state
+                stays gold to match the standalone SessionBar exactly, so the
+                color lerps gray → gold across dockedness. */}
             <div style={{
               position: "absolute",
               left: durLeft, top: durTop,
-              color: COLORS.gold, fontSize: durFontSize, fontWeight: 500,
+              color: `rgb(${Math.round(lerp(136, 255, d))}, ${Math.round(lerp(136, 215, d))}, ${Math.round(lerp(136, 0, d))})`,
+              fontSize: durFontSize, fontWeight: 500,
               fontVariantNumeric: "tabular-nums",
               whiteSpace: "nowrap",
               pointerEvents: "none",
@@ -8532,41 +8567,22 @@ function ActiveLogger({
               </span>
             </div>
 
-            {/* ACTIVE-ONLY — gear icon, fades out as sheet docks.
-                Position matches where it sat in the original active layout
-                (after the duration text, vertically aligned with it). The
-                left offset shifts right ~18px once elapsed crosses an hour
-                so the H:MM:SS string (~52px wide at 14px tabular-nums)
-                doesn't overlap the gear — the M:SS form (~37px) fits at 78
-                cleanly. The bar-end state is unaffected (gear opacity 0). */}
-            <button
-              onClick={() => setSettingsMenuOpen((o) => !o)}
-              style={{
-                position: "absolute",
-                left: elapsed >= 3600 ? 96 : 78, top: 30,
-                background: "none", border: "none", padding: "2px 4px",
-                cursor: "pointer", color: COLORS.textSecondary,
-                display: "flex", alignItems: "center",
-                opacity: activeChromeOpacity,
-                pointerEvents: d > 0.4 ? "none" : "auto",
-                transition: dragMinRef.current.dragging ? "none"
-                  : "opacity 0.25s ease, left 0.25s ease",
-              }}
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <circle cx="12" cy="12" r="3" />
-                <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z" />
-              </svg>
-            </button>
+            {/* S83 header ruling (G — "four things"): the gear is GONE from
+                the header. Its two jobs relocated: rest-timer settings open
+                by tapping the rest timer itself (header digits below, or the
+                inline timer at the set); Cancel Workout moved to the quiet
+                bottom of the exercise list. The header keeps only what's
+                glanced at mid-set: name, session clock, rest, Finish —
+                each owning its own region, nothing adjacent to anything. */}
 
-            {/* ACTIVE-ONLY — rest timer pill (S80 owner bug #1). The
-                inline row timer scrolls away with its set; this pill
-                pins the SAME timer in the header so it's visible from
-                anywhere in the card. Sits on the duration row after the
-                gear (left shifts with the H:MM:SS width like the gear
-                does). Active-form only — the docked bar already has its
-                own rest pill, so this fades with the rest of the active
-                chrome. */}
+            {/* ACTIVE-ONLY — rest digits (S80 owner bug #1 continuity: the
+                inline row timer scrolls away with its set; these digits pin
+                the SAME timer in the header). S83: the bordered gold pill is
+                replaced by bare gold digits RIGHT-ALIGNED at the content
+                margin — position (right edge) + color (gold = rest, gray =
+                session) carry the distinction, no chrome. Tappable: opens
+                the rest-timer settings menu (the gear's old job). Fades with
+                the active chrome; the docked bar keeps its own pill. */}
             {restTimer && (() => {
               const target = typeof restCountdownTarget === "number" && restCountdownTarget > 0 ? restCountdownTarget : 90;
               let restDisplay;
@@ -8577,25 +8593,47 @@ function ActiveLogger({
                 restDisplay = formatDuration(restElapsed);
               }
               return (
+                <button
+                  onClick={() => setSettingsMenuOpen((o) => !o)}
+                  style={{
+                    position: "absolute",
+                    right: 18, top: 30,
+                    background: "none", border: "none", padding: 0,
+                    cursor: "pointer",
+                    color: COLORS.gold, fontSize: 14, fontWeight: 600,
+                    fontVariantNumeric: "tabular-nums",
+                    opacity: activeChromeOpacity,
+                    pointerEvents: d > 0.4 ? "none" : "auto",
+                    transition: dragMinRef.current.dragging ? "none"
+                      : "opacity 0.25s ease",
+                  }}
+                >
+                  {restDisplay}
+                </button>
+              );
+            })()}
+
+            {/* ACTIVE-ONLY — the rest drain line (S83, the app's rest
+                signature): during a COUNTDOWN rest, a gold hairline along
+                the header's bottom edge drains as the target runs out —
+                glanceable from the bench without reading digits. Countdown
+                only (count-up has nothing to drain). Fades with the active
+                chrome so the morph's docked gold borderTop never doubles. */}
+            {restTimer && restTimerMode === "countdown" && (() => {
+              const target = typeof restCountdownTarget === "number" && restCountdownTarget > 0 ? restCountdownTarget : 90;
+              const frac = Math.max(0, Math.min(1, (target - restElapsed) / target));
+              return (
                 <div style={{
-                  position: "absolute",
-                  left: elapsed >= 3600 ? 124 : 106, top: 25,
-                  display: "flex", alignItems: "center", gap: 4,
-                  padding: "2px 8px", borderRadius: 10,
-                  background: "#1A1A0A", border: `1px solid ${COLORS.gold}`,
-                  color: COLORS.gold, fontSize: 11, fontWeight: 600,
-                  fontVariantNumeric: "tabular-nums",
+                  position: "absolute", left: 0, right: 0, bottom: 0, height: 1.5,
+                  background: "#2A2A2A",
                   opacity: activeChromeOpacity,
                   pointerEvents: "none",
-                  transition: dragMinRef.current.dragging ? "none"
-                    : "opacity 0.25s ease, left 0.25s ease",
                 }}>
-                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                    <circle cx="12" cy="13" r="8" />
-                    <line x1="12" y1="9" x2="12" y2="13" />
-                    <line x1="12" y1="13" x2="15" y2="15" />
-                  </svg>
-                  {restDisplay}
+                  <div style={{
+                    position: "absolute", left: 0, top: 0, bottom: 0,
+                    width: `${frac * 100}%`, background: COLORS.gold,
+                    transition: "width 1s linear",
+                  }} />
                 </div>
               );
             })()}
@@ -8638,15 +8676,17 @@ function ActiveLogger({
         );
       })()}
 
-      {/* Settings menu (gear icon) — two-level: main + countdown duration submenu.
-          Main view: timer mode picker + Cancel Workout. Countdown submenu:
-          preset durations + Custom. Selecting anything that changes timer
-          state closes the menu; the user can always re-open it. */}
+      {/* Rest-timer settings menu — two-level: main (mode picker) +
+          countdown duration submenu. S83: the gear is gone; this menu now
+          opens from the rest timer itself (header digits or the inline
+          timer at the set), so it anchors to the RIGHT where the header
+          digits sit. Cancel Workout no longer lives here — it moved to
+          the quiet bottom of the exercise list (same confirm modal). */}
       {settingsMenuOpen && (
         <>
           <div onClick={() => { setSettingsMenuOpen(false); setSettingsMenuView("main"); }} style={{ position: "absolute", inset: 0, zIndex: 15 }} />
           <div style={{
-            position: "absolute", top: 70, left: 20, zIndex: 16,
+            position: "absolute", top: 56, right: 18, zIndex: 16,
             background: COLORS.card, border: `1px solid ${COLORS.border}`,
             borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.6)",
             minWidth: 170, padding: 6,
@@ -8710,23 +8750,6 @@ function ActiveLogger({
                 >
                   <span>Off</span>
                   {restTimerMode === "off" && <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={COLORS.gold} strokeWidth="2.5"><polyline points="20 6 9 17 4 12" /></svg>}
-                </button>
-                <div style={{ height: 1, background: COLORS.border, margin: "6px 4px" }} />
-                <button
-                  onClick={() => { setSettingsMenuOpen(false); setSettingsMenuView("main"); setConfirmCancel(true); }}
-                  style={{
-                    width: "100%", padding: "10px 10px", borderRadius: 6,
-                    background: "transparent", border: "none", cursor: "pointer",
-                    textAlign: "left", color: "#FF6B6B", fontSize: 13, fontWeight: 500,
-                    display: "flex", alignItems: "center", gap: 8,
-                    fontFamily: "inherit",
-                  }}
-                >
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <polyline points="3 6 5 6 21 6" />
-                    <path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6" />
-                  </svg>
-                  Cancel Workout
                 </button>
               </>
             )}
@@ -8902,6 +8925,8 @@ function ActiveLogger({
             onToggleCollapsed={() => toggleExerciseCollapsed(ex.uid)}
             onOpenSetTypePopover={(setIdx) => setTypePopover({ uid: ex.uid, setIdx })}
             onOpenVariantMenu={() => setVariantMenuFor(ex.uid)}
+            onOpenRestSettings={() => setSettingsMenuOpen(true)}
+            onOpenDetail={() => setDetailFor(ex.uid)}
             onFocusField={(setIdx, field) => {
               // Tapping a field just activates it — the placeholder (if any)
               // stays visible in gray so the user can see the suggested
@@ -8923,6 +8948,22 @@ function ActiveLogger({
           }}
         >
           + Add Exercise
+        </button>
+
+        {/* S83 (header G relocation): Cancel Workout leaves the header
+            menu and lands here — dimmed red-gray, a full breath below
+            + Add Exercise, unreachable by accident, findable in one
+            scroll. Same confirm modal as before. */}
+        <button
+          onClick={() => setConfirmCancel(true)}
+          style={{
+            width: "100%", marginTop: 26, padding: "6px 0",
+            background: "transparent", border: "none",
+            color: "#8A5555", fontSize: 12, fontWeight: 500,
+            cursor: "pointer", textAlign: "center",
+          }}
+        >
+          Cancel Workout
         </button>
       </div>
 
@@ -9206,6 +9247,31 @@ function ActiveLogger({
           />
         );
       })()}
+
+      {/* S83 tap-through: the exercise's full record — the SAME
+          ExerciseDetailSheet the Exercises tab uses (About / History /
+          Records, chart, instructions) — raised over the logger by a
+          clean tap on the exercise name. One sheet everywhere: whatever
+          the Exercises-tab pass tunes later, the logger inherits.
+          Workout state and timers run untouched underneath; backdrop or
+          drag-down returns to the set in one gesture. */}
+      {detailFor && (() => {
+        const activeEntry = exercises.find((e) => e.uid === detailFor);
+        if (!activeEntry) return null;
+        const libEntry = findExerciseById(activeEntry.exerciseId, customExercises);
+        if (!libEntry) return null;
+        return (
+          <ExerciseDetailSheet
+            exercise={libEntry}
+            userEquipment={userEquipment}
+            workoutHistory={workoutHistory}
+            customExercises={customExercises}
+            inWorkout
+            initialVariant={activeEntry.variant}
+            onClose={() => setDetailFor(null)}
+          />
+        );
+      })()}
     </div>
   );
 }
@@ -9223,6 +9289,7 @@ function ExerciseCard({
   onRemove, onOpenAlternatives, onToggleCollapsed,
   onOpenSetTypePopover, onOpenVariantMenu,
   onFocusField, registerSetRef,
+  onOpenRestSettings, onOpenDetail,
 }) {
   // Header pointer handler: a single point of entry that disambiguates
   // between three gestures from rest:
@@ -9272,6 +9339,13 @@ function ExerciseCard({
     headerGestureRef.current.startX = e.clientX;
     headerGestureRef.current.startY = e.clientY;
     headerGestureRef.current.mode = "pending";
+    // S83 (tap-through ruling): remember whether this touch began on the
+    // exercise NAME. A clean tap there — released before the long-press
+    // fires, no slop-exceeding motion — opens the ExerciseDetailSheet.
+    // Recorded here (not via a separate onClick) so the name stays part
+    // of the unified gesture surface: long-press reorder and swipe-left
+    // that START on the name keep working exactly as before.
+    headerGestureRef.current.onName = !!(e.target && e.target.closest && e.target.closest("[data-exname]"));
     // Arm the long-press timer — fires only if no SLOP-exceeding motion
     // and pointer hasn't released by then.
     headerGestureRef.current.holdTimer = setTimeout(() => {
@@ -9333,7 +9407,13 @@ function ExerciseCard({
       setDrag(open ? -REVEAL_WIDTH : 0);
     } else if (g.mode === "reorder") {
       onReorderEnd();
+    } else if (g.mode === "pending" && g.onName) {
+      // S83 tap-through: released while still "pending" means no motion
+      // and the 300ms hold never fired — a clean tap. If it began on the
+      // name, open the exercise's full record. Previously a no-op.
+      if (onOpenDetail) onOpenDetail();
     }
+    g.onName = false;
     g.mode = "idle";
   };
   const closeSwipe = () => { setRevealed(false); setDrag(0); };
@@ -9557,7 +9637,7 @@ function ExerciseCard({
           style={{ marginBottom: isCollapsed ? 0 : 10, cursor: "grab" }}
         >
           <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 8 }}>
-            <div style={{
+            <div data-exname="1" style={{
               color: COLORS.text, fontSize: 17, fontWeight: 600,
               lineHeight: 1.2, flex: 1, minWidth: 0,
               whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
@@ -9740,19 +9820,40 @@ function ExerciseCard({
                           rows and clutters the column. If the user logged
                           added weight on the prev set, fall back to the
                           weighted format so the signal isn't lost. */}
-                      <span style={{
-                        flex: 1, color: COLORS.textSecondary,
-                        fontSize: 13, textAlign: "center",
-                        fontVariantNumeric: "tabular-nums",
-                      }}>
-                        {(() => {
-                          if (!prevSet) return "—";
-                          const isBw = isBodyweightVariant(exercise.variant);
-                          const hasWeight = prevSet.weight !== "" && prevSet.weight != null && prevSet.weight !== 0;
-                          if (isBw && !hasWeight) return `${prevSet.reps}`;
-                          return `${prevSet.weight}×${prevSet.reps}`;
-                        })()}
-                      </span>
+                      {/* S83 ruling P-B (the staircase fix): the × is the
+                          column's fixed spine — weights RIGHT-align into
+                          it, reps LEFT-align out of it, so digits stack
+                          down the column instead of wobbling with string
+                          width. Bodyweight reps-only rows (a whole-
+                          exercise format) center as before — no mixed
+                          alignment inside one exercise. Empty prev keeps
+                          the centered em-dash. */}
+                      {(() => {
+                        const isBw = isBodyweightVariant(exercise.variant);
+                        const hasWeight = prevSet && prevSet.weight !== "" && prevSet.weight != null && prevSet.weight !== 0;
+                        if (!prevSet || (isBw && !hasWeight)) {
+                          return (
+                            <span style={{
+                              flex: 1, color: COLORS.textSecondary,
+                              fontSize: 13, textAlign: "center",
+                              fontVariantNumeric: "tabular-nums",
+                            }}>
+                              {prevSet ? `${prevSet.reps}` : "—"}
+                            </span>
+                          );
+                        }
+                        return (
+                          <span style={{
+                            flex: 1, display: "flex", justifyContent: "center",
+                            color: COLORS.textSecondary, fontSize: 13,
+                            fontVariantNumeric: "tabular-nums",
+                          }}>
+                            <span style={{ width: 34, textAlign: "right" }}>{prevSet.weight}</span>
+                            <span style={{ width: 12, textAlign: "center", color: COLORS.inactive }}>×</span>
+                            <span style={{ width: 22, textAlign: "left" }}>{prevSet.reps}</span>
+                          </span>
+                        );
+                      })()}
 
                       {/* Weight tap-target */}
                       <div style={{ flex: 1, display: "flex", justifyContent: "center" }}>
@@ -9983,7 +10084,7 @@ function ExerciseCard({
                       <div style={{
                         display: "flex", justifyContent: "flex-end", alignItems: "center",
                         padding: "1px 6px 1px",
-                        color: COLORS.gold, fontSize: 9,
+                        color: COLORS.gold, fontSize: 10,
                         fontWeight: 500, letterSpacing: 0.3,
                         fontVariantNumeric: "tabular-nums",
                       }}>
@@ -10000,6 +10101,7 @@ function ExerciseCard({
                         mode={restTimerMode}
                         countdownTarget={restCountdownTarget}
                         onDismiss={onClearRestTimer}
+                        onOpenSettings={onOpenRestSettings}
                       />
                     )}
 
@@ -10133,7 +10235,7 @@ function SwipeableRestDivider({ seconds, onDelete }) {
    was most recently checked). Counts based on a startTs prop so the
    elapsed value survives re-renders without resetting. Swipeable left
    to dismiss. */
-function InlineRestTimer({ startTs, mode, countdownTarget, onDismiss }) {
+function InlineRestTimer({ startTs, mode, countdownTarget, onDismiss, onOpenSettings }) {
   // countdownTarget comes in as seconds (App-level pref). Default 90 if
   // somehow undefined, but the prop should always be supplied by the parent.
   const COUNTDOWN_TARGET = typeof countdownTarget === "number" && countdownTarget > 0 ? countdownTarget : 90;
@@ -10170,6 +10272,11 @@ function InlineRestTimer({ startTs, mode, countdownTarget, onDismiss }) {
       setDrag(0);
       onDismiss && onDismiss();
     } else {
+      // S83 (gear relocation): a clean tap — no meaningful horizontal
+      // travel — opens the rest-timer settings menu. You adjust the
+      // thing by touching the thing. Swipes past the slop still snap
+      // back / delete exactly as before.
+      if (Math.abs(drag) < 4 && onOpenSettings) onOpenSettings();
       setDrag(0);
     }
   };
@@ -10238,6 +10345,28 @@ function InlineRestTimer({ startTs, mode, countdownTarget, onDismiss }) {
         </svg>
         Rest · {display}
       </div>
+      {/* S83 (Q3-B ruling): the countdown drain line — a hairline track
+          with a gold fill that drains right-to-left as the target runs
+          out. Glanceable from the bench without reading digits. Countdown
+          only; count-up has nothing to drain, so the surface stays
+          exactly as before in that mode. Same idiom as the header's
+          bottom-edge drain — one rest signature, two places. */}
+      {mode === "countdown" && (() => {
+        const frac = Math.max(0, Math.min(1, (COUNTDOWN_TARGET - sec) / COUNTDOWN_TARGET));
+        return (
+          <div style={{
+            position: "relative", height: 1, background: "#2A2A2A",
+            margin: "0 24px 4px",
+            transform: `translateX(${drag}px)`,
+          }}>
+            <div style={{
+              position: "absolute", left: 0, top: 0, bottom: 0,
+              width: `${frac * 100}%`, background: COLORS.gold,
+              transition: "width 1s linear",
+            }} />
+          </div>
+        );
+      })()}
     </div>
   );
 }
@@ -14335,7 +14464,17 @@ function AlternativesSheet({
   );
 }
 
-function ExerciseDetailSheet({ exercise, userEquipment, workoutHistory = [], customExercises = [], onClose, onEditCustom, onDeleteCustom }) {
+function ExerciseDetailSheet({
+  exercise, userEquipment, workoutHistory = [], customExercises = [], onClose, onEditCustom, onDeleteCustom,
+  // S83 tap-through (opened from the active logger): inWorkout swaps the
+  // "+ Add" CTA for a quiet IN WORKOUT tag (adding what's already in the
+  // session is the one wrong action), and initialVariant pins the sheet
+  // to the variant being logged so History and the chart match the work
+  // in front of the user. Switching variants inside the sheet stays
+  // browse-only — it never mutates the workout; the logger's own chip
+  // owns that.
+  inWorkout = false, initialVariant = null,
+}) {
   const [activeTab, setActiveTab] = useState("about");
   const [variantMenuOpen, setVariantMenuOpen] = useState(false);
   // Overflow (3-dot) menu for custom-exercise Edit / Delete. Only rendered
@@ -14345,7 +14484,7 @@ function ExerciseDetailSheet({ exercise, userEquipment, workoutHistory = [], cus
 
   // Smart-default variant: most recently logged, else first available by
   // equipment, else first in the list. User can switch via the chip.
-  const [activeVariant, setActiveVariant] = useState(() => pickDefaultVariant(exercise, userEquipment, workoutHistory, customExercises));
+  const [activeVariant, setActiveVariant] = useState(() => initialVariant || pickDefaultVariant(exercise, userEquipment, workoutHistory, customExercises));
 
   const hasMultipleVariants = exercise.variants.length > 1;
   const activeVariantKey = variantKey(activeVariant);
@@ -14418,20 +14557,38 @@ function ExerciseDetailSheet({ exercise, userEquipment, workoutHistory = [], cus
             </button>
           )}
 
-          {/* Add-to-Workout CTA — top-right */}
-          <button style={{
-            position: "absolute", right: 16, top: 2,
-            padding: "6px 11px", background: "transparent",
-            border: `1px solid ${COLORS.gold}`, color: COLORS.gold,
-            borderRadius: 14, fontSize: 11, fontWeight: 600, cursor: "pointer",
-            display: "flex", alignItems: "center", gap: 4,
-          }}>
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.8">
-              <line x1="12" y1="5" x2="12" y2="19" />
-              <line x1="5" y1="12" x2="19" y2="12" />
-            </svg>
-            Add
-          </button>
+          {/* Add-to-Workout CTA — top-right. S83: when the sheet is opened
+              FROM the active logger the exercise is already in the session,
+              so the CTA becomes a quiet IN WORKOUT tag — gold-tint fill,
+              #4a3d00 border, the COACH ASKS card's grammar. */}
+          {inWorkout ? (
+            <div style={{
+              position: "absolute", right: 16, top: 4,
+              padding: "5px 10px", background: COLORS.goldHighlight,
+              border: "1px solid #4a3d00", color: COLORS.gold,
+              borderRadius: 13, fontSize: 10, fontWeight: 600, letterSpacing: 0.8,
+              display: "flex", alignItems: "center", gap: 4,
+            }}>
+              <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
+                <polyline points="20 6 9 17 4 12" />
+              </svg>
+              IN WORKOUT
+            </div>
+          ) : (
+            <button style={{
+              position: "absolute", right: 16, top: 2,
+              padding: "6px 11px", background: "transparent",
+              border: `1px solid ${COLORS.gold}`, color: COLORS.gold,
+              borderRadius: 14, fontSize: 11, fontWeight: 600, cursor: "pointer",
+              display: "flex", alignItems: "center", gap: 4,
+            }}>
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.8">
+                <line x1="12" y1="5" x2="12" y2="19" />
+                <line x1="5" y1="12" x2="19" y2="12" />
+              </svg>
+              Add
+            </button>
+          )}
 
           {/* Overflow menu for custom exercises — Edit / Delete. Anchored
               to the left now that the 3-dot lives in the top-left. */}
