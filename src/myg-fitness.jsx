@@ -922,6 +922,1556 @@ const EXERCISE_LIBRARY = [
 ];
 
 /* ════════════════════════════════════════════════════════════════════
+   EXERCISE INSTRUCTIONS — S84 content pass (D-249/D-250).
+   Register: complete numbered steps, no word ceiling, filler ban.
+   Shape: { base: [steps], overrides: { variantLabel: [steps] } } — an
+   override is a FULL replacement, resolved by the selected variant's
+   label; every unlisted variant renders base. Bar-family variants
+   (Barbell/EZ) share bases written with "the bar"; Smith always
+   overrides (unhook + fixed path). null = §8 ruling: cardio machines
+   with nothing to teach render NO Instructions section — do not
+   resurrect a generic fallback here; the generic four-liner is dead
+   (guarded by PART 16).
+*/
+const EXERCISE_INSTRUCTIONS = {
+  squat: {
+    base: [
+      "Set the bar across your upper back — on your traps, not your neck — and grip just outside your shoulders.",
+      "Stand the bar out of the rack and take one step back with each foot, feet shoulder width, toes slightly out.",
+      "Take a big breath and brace, then sit down and back between your heels, chest staying up.",
+      "Go as deep as you can keep your heels down and your back flat — for most people that's thighs at least parallel.",
+      "Drive up through your whole foot, knees tracking over your toes, and breathe out through the top half.",
+    ],
+    overrides: {
+      "Dumbbells": [
+        "Stand holding a dumbbell in each hand at your sides, feet shoulder width, toes slightly out.",
+        "Take a big breath and brace, then sit down and back between your heels, chest staying up.",
+        "Go as deep as you can keep your heels down and your back flat.",
+        "Drive up through your whole foot, knees tracking over your toes.",
+      ],
+      "Smith Machine": [
+        "Set the bar across your upper back — on your traps, not your neck — and rotate it to unhook.",
+        "Set your feet slightly ahead of your hips, shoulder width, toes slightly out — the fixed path allows it.",
+        "Take a big breath and brace, then sit straight down, chest staying up.",
+        "Go as deep as you can keep your heels down and your back flat.",
+        "Drive up through your whole foot, then rotate the bar to re-hook it at the end of the set.",
+      ],
+    },
+  },
+  front_squat: {
+    base: [
+      "Set the bar across the front of your shoulders, fingertips under it just outside shoulder width, elbows high.",
+      "Stand the bar out of the rack and step back, feet shoulder width, toes slightly out.",
+      "Take a big breath and brace, then sit straight down between your heels, elbows staying high the whole way.",
+      "Go as deep as you can keep your back upright and heels down.",
+      "Drive up through your whole foot — if your elbows drop, the bar rolls forward.",
+    ],
+    overrides: {
+      "Smith Machine": [
+        "Set the bar across the front of your shoulders, fingertips under it, elbows high, and rotate to unhook.",
+        "Set your feet slightly ahead of your hips, shoulder width.",
+        "Take a big breath and brace, then sit straight down, elbows staying high.",
+        "Go as deep as you can keep your back upright and heels down.",
+        "Drive up through your whole foot, then rotate to re-hook at the end of the set.",
+      ],
+    },
+  },
+  goblet_squat: {
+    base: [
+      "Hold one dumbbell vertically against your chest, palms cupped under its top head, elbows underneath it.",
+      "Set your feet shoulder width, toes slightly out.",
+      "Sit straight down between your heels, chest tall — the dumbbell stays touching your chest.",
+      "Go as deep as you can keep your heels down; your elbows brush inside your knees at the bottom.",
+      "Drive up through your whole foot.",
+    ],
+    overrides: {
+      "Kettlebells": [
+        "Hold the kettlebell against your chest by the sides of its handle, elbows underneath it.",
+        "Set your feet shoulder width, toes slightly out.",
+        "Sit straight down between your heels, chest tall — the bell stays touching your chest.",
+        "Go as deep as you can keep your heels down; your elbows brush inside your knees at the bottom.",
+        "Drive up through your whole foot.",
+      ],
+    },
+  },
+  deadlift: {
+    base: [
+      "Stand with the bar over the middle of your feet, feet hip width, shins an inch from the bar.",
+      "Hinge down and grip just outside your knees, arms straight.",
+      "Flatten your back, pull the slack out of the bar, and take a big breath.",
+      "Push the floor away and stand up — the bar drags up your shins and thighs.",
+      "Lock out tall at the top by squeezing your glutes — no leaning back.",
+      "Set it down by pushing your hips back first, bending your knees once the bar passes them.",
+    ],
+    overrides: {
+      "Barbell (Sumo)": [
+        "Take a wide stance, toes turned out, so your shins are vertical when you hinge down to the bar.",
+        "Grip the bar inside your knees, arms straight between your legs.",
+        "Flatten your back, pull the slack out of the bar, and take a big breath.",
+        "Push the floor apart with your feet and stand up, knees tracking over your toes.",
+        "Lock out tall by squeezing your glutes, then set it down hips-back first.",
+      ],
+      "Hex Bar": [
+        "Stand in the middle of the bar, feet hip width.",
+        "Hinge down and grip the handles at your sides, arms straight.",
+        "Flatten your back, pull the slack out, and take a big breath.",
+        "Push the floor away and stand tall, squeezing your glutes at the top.",
+        "Set it down by pushing your hips back, back staying flat.",
+      ],
+      "Dumbbells": [
+        "Stand tall holding a dumbbell in each hand in front of your thighs, feet hip width.",
+        "Push your hips back and bend your knees, lowering the dumbbells down the front of your legs.",
+        "Lower until they reach mid-shin, back flat the whole way.",
+        "Push the floor away and stand tall, squeezing your glutes at the top.",
+      ],
+    },
+  },
+  romanian_deadlift: {
+    base: [
+      "Stand with the bar against your thighs, feet hip width, a soft bend in your knees.",
+      "Push your hips straight back so the bar slides down your thighs, back flat the whole way.",
+      "Lower until you feel a deep stretch in your hamstrings — depth is wherever that happens, not the floor.",
+      "Stand tall by driving your hips forward, keeping the bar close to your legs.",
+    ],
+    overrides: {
+      "Dumbbells": [
+        "Stand tall holding a dumbbell in each hand against the front of your thighs, feet hip width, soft knees.",
+        "Push your hips straight back so the dumbbells slide down your thighs, back flat the whole way.",
+        "Lower until you feel a deep stretch in your hamstrings — depth is wherever that happens, not the floor.",
+        "Stand tall by driving your hips forward, keeping the dumbbells close to your legs.",
+      ],
+    },
+  },
+  good_morning: {
+    base: [
+      "Set the bar across your upper back — on your traps, not your neck — feet hip width.",
+      "Put a soft bend in your knees, then take a big breath and brace.",
+      "Push your hips back and fold your torso forward, back flat, until your hamstrings pull tight — near parallel for most.",
+      "Drive your hips forward to stand tall, the bar staying tight to your back.",
+    ],
+    overrides: {
+      "Resistance Bands": [
+        "Stand on the middle of the band, feet hip width, and loop the other end across the back of your shoulders.",
+        "Put a soft bend in your knees and brace.",
+        "Push your hips back and fold forward, back flat, until your hamstrings pull tight.",
+        "Drive your hips forward to stand tall against the band's pull.",
+      ],
+    },
+  },
+  hip_thrust: {
+    base: [
+      "Sit on the floor with your upper back against a flat bench and roll the bar over your hips — a pad on the bar saves your hip bones.",
+      "Plant your feet hip width, close enough that your shins are vertical at the top.",
+      "Drive through your heels and lift your hips until your body is level from shoulders to knees, chin tucked.",
+      "Squeeze your glutes hard at the top, then lower with control until the plates touch down.",
+    ],
+    overrides: {
+      "Dumbbells": [
+        "Sit on the floor with your upper back against a flat bench, holding a dumbbell across your hips.",
+        "Plant your feet hip width, shins vertical at the top.",
+        "Drive through your heels and lift your hips until your body is level from shoulders to knees, chin tucked.",
+        "Squeeze your glutes at the top, then lower your hips with control.",
+      ],
+      "Hip Thrust Machine": [
+        "Set the back pad under your shoulder blades and the belt snug across your hips, feet on the platform hip width.",
+        "Check that your shins will be vertical at the top, then release the weight.",
+        "Drive through your heels to full hip lockout, chin tucked.",
+        "Squeeze at the top, then lower with control until the weight nearly stacks.",
+      ],
+    },
+  },
+  leg_press: {
+    base: [
+      "Sit back in the seat with your feet on the platform, hip width, around mid-height.",
+      "Release the safety handles and lower the sled until your knees near your chest — stop before your lower back rolls off the pad.",
+      "Press through your whole foot until your legs are nearly straight — don't slam into knee lockout.",
+      "Re-engage the safeties before climbing out.",
+    ],
+    overrides: {
+      "Seated Leg Press": [
+        "Adjust the seat so your knees start near 90 degrees, feet hip width on the platform.",
+        "Release the weight and press through your whole foot until your legs are nearly straight — no hard knee lockout.",
+        "Return under control until your knees are back near 90, lower back staying against the pad.",
+      ],
+    },
+  },
+  hack_squat: {
+    base: [
+      "Set your shoulders under the pads, back flat against the pad, feet mid-platform at hip width.",
+      "Release the handles, take a breath, and lower until your thighs reach at least parallel, heels staying down.",
+      "Drive up through your whole foot without slamming your knees straight at the top.",
+      "Re-hook the handles before stepping out.",
+    ],
+  },
+  bulgarian_split_squat: {
+    base: [
+      "Set the bar across your upper back, then place the top of your rear foot on a bench behind you.",
+      "Hop your front foot forward until your front shin stays near vertical at the bottom.",
+      "Lower straight down until your rear knee nearly touches the floor, torso tall.",
+      "Drive up through your whole front foot.",
+      "Finish the set, then switch legs.",
+    ],
+    overrides: {
+      "Dumbbells": [
+        "Hold a dumbbell in each hand at your sides, then place the top of your rear foot on a bench behind you.",
+        "Hop your front foot forward until your front shin stays near vertical at the bottom.",
+        "Lower straight down until your rear knee nearly touches the floor, torso tall.",
+        "Drive up through your whole front foot.",
+        "Finish the set, then switch legs.",
+      ],
+      "Smith Machine": [
+        "Set the bar across your upper back and rotate to unhook, with the top of your rear foot on a bench behind you.",
+        "Set your front foot far enough forward that your shin stays near vertical at the bottom.",
+        "Lower straight down until your rear knee nearly touches the floor, torso tall.",
+        "Drive up through your whole front foot; rotate to re-hook before switching legs.",
+      ],
+    },
+  },
+  lunge: {
+    base: [
+      "Set the bar across your upper back and stand tall, feet hip width.",
+      "Step forward far enough that your front shin stays near vertical as you lower.",
+      "Lower until your rear knee nearly touches the floor, torso upright.",
+      "Push off your front foot to step back to standing, then alternate legs.",
+    ],
+    overrides: {
+      "Dumbbells": [
+        "Hold a dumbbell in each hand at your sides and stand tall, feet hip width.",
+        "Step forward far enough that your front shin stays near vertical as you lower.",
+        "Lower until your rear knee nearly touches the floor, torso upright.",
+        "Push off your front foot to step back to standing, then alternate legs.",
+      ],
+      "Bodyweight": [
+        "Stand tall with your hands at your hips or sides, feet hip width.",
+        "Step forward far enough that your front shin stays near vertical as you lower.",
+        "Lower until your rear knee nearly touches the floor, torso upright.",
+        "Push off your front foot to step back to standing, then alternate legs.",
+      ],
+    },
+  },
+  step_up: {
+    base: [
+      "Stand facing the box holding a dumbbell in each hand at your sides.",
+      "Place your whole front foot on the box, shin vertical.",
+      "Drive through that foot to stand tall on the box — don't push off the trailing leg.",
+      "Step down with control, same leg leading, and switch sides after the set.",
+    ],
+  },
+  glute_bridge: {
+    base: [
+      "Lie on your back with your knees bent, feet flat at hip width, and roll the bar over your hips — pad it.",
+      "Drive through your heels and lift your hips until your body is straight from shoulders to knees.",
+      "Squeeze your glutes at the top without arching your lower back.",
+      "Lower with control until your hips touch down.",
+    ],
+    overrides: {
+      "Dumbbells": [
+        "Lie on your back with your knees bent, feet flat at hip width, holding a dumbbell across your hips.",
+        "Drive through your heels and lift your hips until your body is straight from shoulders to knees.",
+        "Squeeze your glutes at the top without arching your lower back.",
+        "Lower with control until your hips touch down.",
+      ],
+      "Bodyweight": [
+        "Lie on your back with your knees bent, feet flat at hip width, arms at your sides.",
+        "Drive through your heels and lift your hips until your body is straight from shoulders to knees.",
+        "Squeeze your glutes at the top without arching your lower back.",
+        "Lower with control until your hips touch down.",
+      ],
+    },
+  },
+  glute_kickback: {
+    base: [
+      "Strap the ankle cuff to one leg and face the low pulley, holding the frame for balance.",
+      "With a slight forward lean, sweep that leg straight back and up, squeezing your glute.",
+      "Stop where your glute finishes the movement — don't arch your lower back to reach higher.",
+      "Return with control; finish the set, then switch legs.",
+    ],
+    overrides: {
+      "Glute Kickback Machine": [
+        "Set your chest on the pad, hands on the grips, and one foot on the pedal.",
+        "Press that foot back and up until your hip is fully extended, glute squeezing.",
+        "Stop at full extension — no lower-back arch to force extra range.",
+        "Return with control; finish the set, then switch legs.",
+      ],
+      "Bodyweight": [
+        "Start on all fours, hands under your shoulders, knees under your hips.",
+        "Keeping the knee bent, drive one heel up toward the ceiling, squeezing your glute.",
+        "Stop before your lower back arches.",
+        "Lower with control; finish the set, then switch legs.",
+      ],
+    },
+  },
+  leg_curl: {
+    base: [
+      "Sit with the back pad snug, thighs under the top pad, and the roller behind your ankles, legs nearly straight.",
+      "Curl your heels down and under you as far as they'll go, pausing briefly.",
+      "Let the roller rise with control until your legs are nearly straight again.",
+    ],
+    overrides: {
+      "Lying Leg Curl": [
+        "Lie face down with the roller behind your ankles and your knees just off the edge of the pad.",
+        "Curl your heels toward your glutes without your hips lifting off the pad.",
+        "Lower with control until your legs are nearly straight.",
+      ],
+    },
+  },
+  leg_extension: {
+    base: [
+      "Sit with your back against the pad and the roller on the front of your ankles, knees lined up with the machine's pivot.",
+      "Straighten your legs all the way, pausing briefly at the top.",
+      "Lower with control until your knees pass 90 degrees.",
+    ],
+  },
+  standing_calf_raise: {
+    base: [
+      "Set the bar across your upper back and stand with the balls of your feet on a step or plate, heels hanging off.",
+      "Lower your heels until you feel a deep stretch in your calves.",
+      "Press up onto your toes as high as you can, pausing at the top.",
+      "Work at a controlled pace — no bouncing out of the bottom.",
+    ],
+    overrides: {
+      "Dumbbells": [
+        "Hold a dumbbell in each hand at your sides, balls of your feet on a step, heels hanging off.",
+        "Lower your heels until you feel a deep stretch in your calves.",
+        "Press up onto your toes as high as you can, pausing at the top.",
+        "Work at a controlled pace — no bouncing out of the bottom.",
+      ],
+      "Smith Machine": [
+        "Set the bar across your upper back, rotate to unhook, with the balls of your feet on a plate or block.",
+        "Lower your heels until you feel a deep stretch in your calves.",
+        "Press up onto your toes as high as you can, pausing at the top.",
+        "Work at a controlled pace, then rotate to re-hook.",
+      ],
+      "Standing Calf Raise Machine": [
+        "Set your shoulders under the pads with the balls of your feet on the platform, heels hanging off.",
+        "Lower your heels until you feel a deep stretch in your calves.",
+        "Press up onto your toes as high as you can, pausing at the top.",
+        "Work at a controlled pace — no bouncing out of the bottom.",
+      ],
+      "Bodyweight": [
+        "Stand with the balls of your feet on a step, heels hanging off, one hand on something for balance.",
+        "Lower your heels until you feel a deep stretch in your calves.",
+        "Press up onto your toes as high as you can, pausing at the top.",
+        "Work at a controlled pace — no bouncing out of the bottom.",
+      ],
+    },
+  },
+  seated_calf_raise: {
+    base: [
+      "Sit with the pads snug on your lower thighs and the balls of your feet on the platform, heels hanging off.",
+      "Release the safety and lower your heels until your calves stretch deep.",
+      "Press up onto your toes as high as you can, pausing at the top.",
+      "Work at a controlled pace — no bouncing — and re-set the safety before standing.",
+    ],
+    overrides: {
+      "Plate on Knees": [
+        "Sit on a bench with the balls of your feet on a step and a plate resting flat on your lower thighs, steadied with your hands.",
+        "Lower your heels until your calves stretch deep.",
+        "Press up onto your toes as high as you can, pausing at the top.",
+        "Work at a controlled pace — no bouncing out of the bottom.",
+      ],
+      "Rotary Calf Machine": [
+        "Sit back in the seat with the balls of your feet low on the pedal, heels free, legs nearly straight.",
+        "Let the pedal press your toes back until your calves stretch deep.",
+        "Press through the balls of your feet as far as your ankles extend, pausing at the top.",
+        "Work at a controlled pace — no bouncing.",
+      ],
+      "Calf Press on 45° Leg Press": [
+        "Sit in the leg press with the balls of your feet on the bottom edge of the platform, legs nearly straight — safeties within reach.",
+        "Let the sled press your toes back until your calves stretch deep.",
+        "Press through the balls of your feet, pausing at the top.",
+        "Work at a controlled pace — no bouncing — and re-engage the safeties before climbing out.",
+      ],
+      "Calf Press on Seated Leg Press": [
+        "Set the seat so your legs are nearly straight with the balls of your feet on the platform's bottom edge.",
+        "Let the platform press your toes back until your calves stretch deep.",
+        "Press through the balls of your feet, pausing at the top.",
+        "Work at a controlled pace — no bouncing.",
+      ],
+    },
+  },
+  hip_abductor: {
+    base: [
+      "Sit with your back against the pad and the machine's pads against the outside of your knees.",
+      "Press your knees apart as far as they'll go, pausing briefly.",
+      "Return with control until the pads nearly meet — no letting the stack drop.",
+    ],
+  },
+  hip_adductor: {
+    base: [
+      "Sit with your back against the pad and the machine's pads against the inside of your knees, legs starting apart.",
+      "Squeeze your knees together, pausing when they meet.",
+      "Return with control to the stretched start.",
+    ],
+  },
+  box_jump: {
+    base: [
+      "Stand about an arm's length from the box, feet hip width.",
+      "Swing your arms back as you dip into a quarter squat.",
+      "Drive up and land softly on the box on your whole foot, knees bent.",
+      "Stand tall on top, then step down — don't jump down.",
+    ],
+  },
+  rack_pull: {
+    base: [
+      "Set the safeties so the bar starts just below your knees.",
+      "Stand with the bar over the middle of your feet and grip just outside your knees, arms straight.",
+      "Flatten your back, pull the slack out of the bar, and take a big breath.",
+      "Stand tall by driving your hips through, dragging the bar up your thighs.",
+      "Set it back on the pins with control — no dropping from the top.",
+    ],
+  },
+  bent_over_row: {
+    base: [
+      "Stand with the bar over the middle of your feet, feet hip width.",
+      "Hinge at your hips until your torso is near 45 degrees, back flat, and grip just outside your knees.",
+      "Pull the bar to your lower ribs, elbows driving straight back — not flaring out.",
+      "Lower until your arms are long, holding the hinge — no standing up between reps.",
+    ],
+    overrides: {
+      "Dumbbells": [
+        "Hold a dumbbell in each hand and hinge at your hips until your torso is near 45 degrees, back flat.",
+        "Let the dumbbells hang under your shoulders, palms facing each other.",
+        "Pull them to your lower ribs, elbows driving straight back — not flaring out.",
+        "Lower until your arms are long, holding the hinge.",
+      ],
+      "Smith Machine": [
+        "Set the bar just below knee height and rotate it to unhook.",
+        "Hinge at your hips until your torso is near 45 degrees, back flat, gripping just outside your knees.",
+        "Pull the bar to your lower ribs along its fixed path, elbows driving straight back.",
+        "Lower until your arms are long, holding the hinge; rotate to re-hook at the end.",
+      ],
+    },
+  },
+  single_arm_row: {
+    base: [
+      "Put your left knee and left hand on a flat bench, right foot on the floor, back flat.",
+      "Hold the dumbbell in your right hand, arm hanging straight under your shoulder.",
+      "Pull it to your hip, elbow driving back past your ribs — not out to the side.",
+      "Lower until your arm is long; finish the set, then switch sides.",
+    ],
+    overrides: {
+      "Cable (Low Pulley)": [
+        "Stand facing the low pulley in a split stance, handle in one hand, hips in a slight hinge.",
+        "Pull the handle to your hip, elbow driving tight past your ribs.",
+        "Let your arm go long under control; finish the set, then switch sides.",
+      ],
+    },
+  },
+  incline_row: {
+    base: [
+      "Set the bench to about 30–45 degrees and lie chest-down on it, feet planted.",
+      "Grip the bar beneath you just outside shoulder width, arms hanging.",
+      "Pull the bar up until it nearly touches the bench, elbows driving back, chest staying on the pad.",
+      "Lower until your arms are fully long.",
+    ],
+    overrides: {
+      "Dumbbells": [
+        "Set the bench to about 30–45 degrees and lie chest-down on it, a dumbbell in each hand hanging under your shoulders.",
+        "Pull them to your lower ribs, elbows driving back, chest staying on the pad.",
+        "Lower until your arms are fully long.",
+      ],
+    },
+  },
+  seated_cable_row: {
+    base: [
+      "Sit with your feet on the platform, knees soft, and grip the handle with your arms long.",
+      "Sit tall with your chest up.",
+      "Pull the handle to your stomach, elbows driving tight past your ribs, shoulders staying down.",
+      "Let the handle travel forward under control until your arms are long — don't let the stack yank you into a slump.",
+    ],
+  },
+  iso_lateral_row: {
+    base: [
+      "Set the seat so the handles sit at lower-chest height with your chest against the pad.",
+      "Grip the handles with your arms long, shoulders down.",
+      "Pull the handles back, elbows driving past your ribs, chest staying on the pad.",
+      "Return under control until your arms are long.",
+    ],
+  },
+  tbar_row: {
+    base: [
+      "Set your chest against the pad, feet planted, and grip the handles beneath you.",
+      "Pull the handles toward your chest, elbows driving back, chest staying on the pad.",
+      "Lower until your arms are fully long without the plates touching down.",
+    ],
+  },
+  upright_row: {
+    base: [
+      "Stand tall holding the bar at your thighs, hands about shoulder width — a wider grip is easier on the shoulders.",
+      "Pull the bar straight up your body, elbows leading out and up.",
+      "Stop when your elbows reach shoulder height — no higher.",
+      "Lower with control along the same path.",
+    ],
+    overrides: {
+      "Dumbbells": [
+        "Stand tall with a dumbbell in each hand at your thighs, palms facing you.",
+        "Pull them straight up your body, elbows leading out and up.",
+        "Stop when your elbows reach shoulder height — no higher.",
+        "Lower with control along the same path.",
+      ],
+      "Resistance Bands": [
+        "Stand on the middle of the band holding an end in each hand at your thighs.",
+        "Pull your hands up your body, elbows leading out and up.",
+        "Stop when your elbows reach shoulder height — no higher.",
+        "Lower with control against the band.",
+      ],
+    },
+  },
+  lat_pulldown: {
+    base: [
+      "Sit with your thighs snug under the pads and grip the bar just outside shoulder width.",
+      "Sit tall with a slight lean back, chest up.",
+      "Pull your elbows down and back until the bar reaches your collarbone — the bar follows your elbows.",
+      "Let it rise under control until your arms are long, shoulders staying down away from your ears.",
+    ],
+    overrides: {
+      "Lat Pulldown Machine": [
+        "Set the seat, slide your thighs under the pads, and grip the machine's handles overhead.",
+        "Sit tall with your chest up.",
+        "Pull your elbows down and back until your hands reach collarbone height.",
+        "Return under control until your arms are long, shoulders staying down.",
+      ],
+      "Single-Arm Cable": [
+        "Kneel or sit under the high pulley holding one handle, that arm long overhead.",
+        "Pull your elbow down to your ribs, torso staying tall.",
+        "Let the arm rise long under control; finish the set, then switch sides.",
+      ],
+    },
+  },
+  pull_up: {
+    base: [
+      "Hang from the bar with your grip just outside shoulder width, palms facing away.",
+      "Pull your shoulder blades down first — the pull starts from your back, not your arms.",
+      "Drive your elbows down toward your ribs until your chin clears the bar.",
+      "Lower under control until your arms are completely straight.",
+    ],
+    overrides: {
+      "Assisted Pull-Up Machine": [
+        "Set the counterweight heavy enough for smooth, full reps, then kneel or stand on the pad.",
+        "Grip just outside shoulder width, palms facing away.",
+        "Pull your shoulder blades down, then drive your elbows toward your ribs until your chin clears the bar.",
+        "Lower under control until your arms are completely straight — the pad rises with you.",
+      ],
+      "Resistance Bands": [
+        "Loop the band over the bar and hook it under one knee or foot.",
+        "Grip just outside shoulder width, palms facing away, and hang with your arms straight.",
+        "Pull your shoulder blades down, then drive your elbows toward your ribs until your chin clears the bar.",
+        "Lower to completely straight arms, controlling the band's spring at the bottom.",
+      ],
+    },
+  },
+  chin_up: {
+    base: [
+      "Hang from the bar with your palms facing you, hands about shoulder width.",
+      "Pull your shoulder blades down, then drive your elbows down to your ribs until your chin clears the bar.",
+      "Lower under control until your arms are completely straight.",
+    ],
+    overrides: {
+      "Assisted Pull-Up Machine": [
+        "Set the counterweight for smooth, full reps, then kneel or stand on the pad.",
+        "Grip at about shoulder width, palms facing you.",
+        "Pull your shoulder blades down, then drive your elbows to your ribs until your chin clears the bar.",
+        "Lower under control until your arms are completely straight.",
+      ],
+      "Resistance Bands": [
+        "Loop the band over the bar and hook it under one knee or foot.",
+        "Grip at about shoulder width, palms facing you, arms straight.",
+        "Pull your shoulder blades down, then drive your elbows to your ribs until your chin clears the bar.",
+        "Lower to straight arms, controlling the band's spring at the bottom.",
+      ],
+    },
+  },
+  inverted_row: {
+    base: [
+      "Set a bar at about hip height and hang beneath it, heels on the floor, body one straight line.",
+      "Grip just outside your shoulders with your arms long.",
+      "Pull your chest to the bar, hips staying up in the line.",
+      "Lower until your arms are long without your hips sagging.",
+    ],
+  },
+  straight_arm_pulldown: {
+    base: [
+      "Face the high pulley, grip the bar, and step back until your arms are long and slightly ahead of you, elbows soft.",
+      "With a slight hinge, sweep the bar down to your thighs, arms staying nearly straight the whole way.",
+      "Let it rise under control back overhead without your shoulders shrugging up.",
+    ],
+  },
+  face_pull: {
+    base: [
+      "Set the rope at about face height and grip the ends with your palms facing in, thumbs toward you.",
+      "Step back into a split stance until your arms are long.",
+      "Pull the rope toward your face, splitting the ends past your ears, elbows staying high.",
+      "Squeeze your rear shoulders, then return under control until your arms are long.",
+    ],
+  },
+  shrug: {
+    base: [
+      "Stand tall holding the bar at your thighs, arms long.",
+      "Shrug your shoulders straight up toward your ears — no rolling them.",
+      "Pause at the top, then lower with control until your shoulders drop fully.",
+    ],
+    overrides: {
+      "Dumbbells": [
+        "Stand tall with a dumbbell in each hand at your sides, arms long.",
+        "Shrug your shoulders straight up toward your ears — no rolling them.",
+        "Pause at the top, then lower with control until your shoulders drop fully.",
+      ],
+    },
+  },
+  back_extension: {
+    base: [
+      "Set the pad at your hip crease and hook your heels under the rollers.",
+      "Cross your arms over your chest and fold forward at the hips, back staying flat.",
+      "Raise your torso until your body is one straight line — no arching past straight.",
+      "Lower with control back into the fold.",
+    ],
+    overrides: {
+      "Back Extension Machine": [
+        "Sit with the pad against your upper back and your feet planted, hips lined up with the pivot.",
+        "Press back against the pad until your torso is upright.",
+        "Return with control to the folded start.",
+      ],
+    },
+  },
+  bench_press: {
+    base: [
+      "Lie on the bench with your eyes under the bar and your feet flat on the floor.",
+      "Grip the bar just outside shoulder width, wrists stacked over your forearms.",
+      "Pull your shoulder blades back and down into the bench, then unrack the bar over your chest.",
+      "Lower under control until the bar touches your lower chest, elbows at about 45 degrees — not flared out.",
+      "Press up and slightly back until your arms are fully extended, driving your feet into the floor.",
+    ],
+    overrides: {
+      "Dumbbells": [
+        "Sit on the bench with a dumbbell upright on each thigh, then lie back and use your knees to kick them up to your shoulders.",
+        "Plant your feet flat and pull your shoulder blades back and down into the bench.",
+        "Press the dumbbells up over your chest until your arms are fully extended, stopping just short of touching them together.",
+        "Lower under control until you feel a stretch across your chest, elbows at about 45 degrees.",
+        "Press back up along the same slight arc; when the set ends, bring your knees up and rock forward to sit up with the dumbbells.",
+      ],
+      "Smith Machine": [
+        "Set the bench so the bar's fixed path meets your lower chest, and lie with your eyes under the bar.",
+        "Grip just outside shoulder width and rotate the bar to unhook it.",
+        "Pull your shoulder blades back and down into the bench.",
+        "Lower under control to your lower chest, elbows at about 45 degrees.",
+        "Press to full extension, then rotate to re-hook at the end of the set.",
+      ],
+    },
+  },
+  incline_press: {
+    base: [
+      "Set the bench to about 30–45 degrees and lie back with your eyes under the bar.",
+      "Grip just outside shoulder width and pull your shoulder blades back and down.",
+      "Unrack and lower under control to your upper chest, elbows at about 45 degrees — not flared.",
+      "Press up until your arms are fully extended, feet driving into the floor.",
+    ],
+    overrides: {
+      "Dumbbells": [
+        "Set the bench to about 30–45 degrees and sit with a dumbbell upright on each thigh.",
+        "Lie back, kicking the dumbbells up to your shoulders, and set your shoulder blades back and down.",
+        "Press them up over your upper chest to full extension, stopping just short of touching.",
+        "Lower under control until you feel a stretch across your upper chest.",
+      ],
+      "Smith Machine": [
+        "Set an incline bench under the bar so its fixed path meets your upper chest, eyes under the bar.",
+        "Grip just outside shoulder width and rotate to unhook.",
+        "Lower under control to your upper chest, elbows at about 45 degrees.",
+        "Press to full extension, then rotate to re-hook at the end.",
+      ],
+    },
+  },
+  decline_press: {
+    base: [
+      "Set the bench to a slight decline and hook your legs under the rollers, eyes under the bar.",
+      "Grip just outside shoulder width and set your shoulder blades back and down.",
+      "Unrack and lower under control to your lower chest, elbows at about 45 degrees.",
+      "Press up until your arms are fully extended.",
+    ],
+    overrides: {
+      "Dumbbells": [
+        "Set the bench to a slight decline and hook your legs under the rollers — a dumbbell in each hand at your shoulders, ideally handed to you.",
+        "Set your shoulder blades back and down into the bench.",
+        "Press the dumbbells up over your lower chest to full extension, stopping just short of touching.",
+        "Lower under control until you feel a stretch across your chest.",
+      ],
+    },
+  },
+  wide_grip_bench: {
+    base: [
+      "Lie on the bench with your eyes under the bar and your feet flat on the floor.",
+      "Grip several inches wider than your normal bench grip, wrists stacked.",
+      "Pull your shoulder blades back and down, then unrack the bar over your chest.",
+      "Lower under control to your lower chest — the wide grip shortens the path, so expect less depth.",
+      "Press up until your arms are fully extended.",
+    ],
+    overrides: {
+      "Smith Machine": [
+        "Set the bench so the bar's fixed path meets your lower chest, eyes under the bar.",
+        "Grip several inches wider than your normal bench grip and rotate to unhook.",
+        "Pull your shoulder blades back and down into the bench.",
+        "Lower under control to your lower chest, then press to full extension; rotate to re-hook at the end.",
+      ],
+    },
+  },
+  machine_chest_press: {
+    base: [
+      "Set the seat so the handles line up with your mid-chest.",
+      "Grip the handles and set your shoulder blades back against the pad.",
+      "Press until your arms are fully extended without your shoulders rolling forward off the pad.",
+      "Return under control until you feel a stretch across your chest.",
+    ],
+  },
+  machine_incline_press: {
+    base: [
+      "Set the seat so the handles start at upper-chest height.",
+      "Grip the handles, shoulder blades set back against the pad.",
+      "Press up and away until your arms are fully extended, shoulders staying on the pad.",
+      "Return under control until your upper chest stretches.",
+    ],
+  },
+  machine_decline_press: {
+    base: [
+      "Set the seat so the handles start at lower-chest height.",
+      "Grip the handles, shoulder blades set back against the pad.",
+      "Press down and away until your arms are fully extended, shoulders staying on the pad.",
+      "Return under control until your chest stretches.",
+    ],
+  },
+  chest_fly: {
+    base: [
+      "Lie on a flat bench holding dumbbells above your chest, palms facing each other, a slight bend in your elbows.",
+      "Open your arms in a wide arc until you feel a deep stretch across your chest, keeping that same elbow bend.",
+      "Sweep them back together along the same arc, stopping just short of touching at the top.",
+    ],
+    overrides: {
+      "Pec Deck": [
+        "Set the seat so the handles sit at chest height, forearms or hands against the pads.",
+        "Sweep the pads together in front of your chest, squeezing as they meet.",
+        "Open with control until your chest stretches — don't let the stack pull your arms behind your torso.",
+      ],
+    },
+  },
+  incline_chest_fly: {
+    base: [
+      "Set the bench to about 30–45 degrees and hold dumbbells above your upper chest, palms facing each other, elbows slightly bent.",
+      "Open your arms in a wide arc until you feel a deep stretch across your upper chest, elbow bend unchanged.",
+      "Sweep them back together along the same arc, stopping just short of touching.",
+    ],
+  },
+  cable_crossover: {
+    base: [
+      "Set both pulleys high and grip a handle in each hand, stepping forward into a split stance.",
+      "Start with your arms wide and a slight bend in your elbows, chest stretched.",
+      "Sweep both handles down and together in front of you, squeezing your chest as your hands meet.",
+      "Return with control until your chest stretches again.",
+    ],
+  },
+  push_up: {
+    base: [
+      "Set your hands under your shoulders and step your feet back until your body is one straight line from head to heels.",
+      "Squeeze your glutes so your hips neither sag nor pike up.",
+      "Lower until your chest nearly touches the floor, elbows at about 45 degrees.",
+      "Press the floor away until your arms are fully long, hips holding the line.",
+    ],
+    overrides: {
+      "Diamond": [
+        "Set your hands together under your chest, thumbs and index fingers forming a diamond.",
+        "Step your feet back to one straight line, glutes tight.",
+        "Lower until your chest nearly touches your hands, elbows tracking back along your ribs.",
+        "Press to fully long arms, hips holding the line.",
+      ],
+    },
+  },
+  dip: {
+    base: [
+      "Grip the bars and press up to straight arms, shoulders down away from your ears.",
+      "Lean slightly forward and lower until your upper arms reach parallel — deeper only if your shoulders allow it.",
+      "Press back up to straight arms without your shoulders shrugging.",
+    ],
+    overrides: {
+      "Assisted Dip Machine": [
+        "Set the counterweight for smooth, full reps and kneel on the pad, gripping the bars at straight arms.",
+        "Lean slightly forward and lower until your upper arms reach parallel — deeper only if your shoulders allow it.",
+        "Press back to straight arms, shoulders staying down.",
+      ],
+    },
+  },
+  svend_press: {
+    base: [
+      "Stand tall pressing two small plates flat together between your palms at your chest.",
+      "Press the plates straight out until your arms are long, squeezing them together the whole time — the squeeze is the exercise.",
+      "Pull them back to your chest with control.",
+    ],
+  },
+  floor_press: {
+    base: [
+      "Lie on the floor with the bar racked low or handed off above your chest, knees bent, feet flat.",
+      "Grip just outside shoulder width and set your shoulder blades into the floor.",
+      "Lower until your upper arms rest briefly on the floor, forearms vertical.",
+      "Pause a beat, then press to full extension.",
+    ],
+    overrides: {
+      "Dumbbells": [
+        "Lie on the floor with a dumbbell in each hand at your shoulders, knees bent, feet flat.",
+        "Set your shoulder blades into the floor and press the dumbbells over your chest.",
+        "Lower until your upper arms rest briefly on the floor, forearms vertical.",
+        "Pause a beat, then press to full extension.",
+      ],
+    },
+  },
+  pullover: {
+    base: [
+      "Lie along a flat bench, feet planted, holding one dumbbell with both palms cupped under its top head above your chest.",
+      "With a slight bend in your elbows, lower it in an arc behind your head until you feel a stretch through your chest and lats.",
+      "Sweep it back over your chest along the same arc.",
+    ],
+    overrides: {
+      "Cable (High Pulley)": [
+        "Set a bench a step in front of the high pulley and lie back on it, gripping the attachment behind your head with long arms.",
+        "Sweep it over your chest in an arc, elbows slightly bent.",
+        "Return with control until your chest and lats stretch.",
+      ],
+    },
+  },
+  overhead_press: {
+    base: [
+      "Stand tall with the bar at your collarbone, hands just outside your shoulders, elbows slightly in front of the bar.",
+      "Brace your whole body — glutes tight, ribs down.",
+      "Press the bar straight up, moving your head back as it passes your face, then pushing your head through once it clears.",
+      "Lock out overhead with the bar over the middle of your feet.",
+      "Lower with control back to your collarbone.",
+    ],
+    overrides: {
+      "Dumbbells": [
+        "Stand or sit tall with a dumbbell at each shoulder, palms facing forward.",
+        "Brace — glutes tight, ribs down.",
+        "Press both dumbbells straight up until your arms lock out overhead.",
+        "Lower with control back to your shoulders.",
+      ],
+      "Smith Machine": [
+        "Set a seat or stand so the bar's fixed path clears your face, bar starting at collarbone height.",
+        "Grip just outside your shoulders and rotate the bar to unhook.",
+        "Press straight up to lockout, ribs staying down.",
+        "Lower with control to your collarbone; rotate to re-hook at the end.",
+      ],
+    },
+  },
+  arnold_press: {
+    base: [
+      "Sit or stand holding dumbbells at your shoulders, palms facing you.",
+      "Press up while rotating your palms to face forward, finishing locked out overhead.",
+      "Lower while rotating back until your palms face you at your shoulders.",
+    ],
+  },
+  machine_shoulder_press: {
+    base: [
+      "Set the seat so the handles start at about ear height.",
+      "Grip the handles with your back against the pad.",
+      "Press until your arms are fully extended overhead, back staying on the pad.",
+      "Lower with control back to ear height.",
+    ],
+  },
+  lateral_raise: {
+    base: [
+      "Stand tall with a dumbbell at each side and a slight bend in your elbows.",
+      "Raise your arms out to your sides until they reach shoulder height — lead with your elbows, not your hands.",
+      "Pause briefly at the top without shrugging your shoulders toward your ears.",
+      "Lower under control along the same path.",
+    ],
+    overrides: {
+      "Cable (Low Pulley)": [
+        "Stand side-on to the low pulley with the handle in your far hand, cable running across your body.",
+        "Raise that arm out and up to shoulder height, elbow slightly bent and leading.",
+        "Pause briefly without shrugging, then lower under control; finish the set, then switch sides.",
+      ],
+      "Lateral Raise Machine": [
+        "Sit with the pads against the outside of your upper arms, hands on the grips.",
+        "Raise your arms out to shoulder height, leading with your elbows.",
+        "Lower under control until the weight nearly stacks.",
+      ],
+      "Resistance Bands": [
+        "Stand on the middle of the band holding an end in each hand at your sides.",
+        "Raise your arms out to shoulder height, elbows slightly bent and leading.",
+        "Pause briefly without shrugging, then lower under control against the band.",
+      ],
+    },
+  },
+  front_raise: {
+    base: [
+      "Stand tall with a dumbbell in each hand resting on the front of your thighs.",
+      "Raise one or both arms straight in front of you to shoulder height, elbows slightly bent — no swinging from the hips.",
+      "Lower with control along the same path.",
+    ],
+    overrides: {
+      "Barbell": [
+        "Stand tall holding the bar at your thighs, hands shoulder width.",
+        "Raise the bar straight in front of you to shoulder height, elbows slightly bent — no swinging from the hips.",
+        "Lower with control along the same path.",
+      ],
+      "Cable (Low Pulley)": [
+        "Stand with the low pulley behind you, handle in one or both hands at your thighs.",
+        "Raise your arms straight in front of you to shoulder height, elbows slightly bent.",
+        "Lower with control against the cable's pull.",
+      ],
+    },
+  },
+  rear_delt_fly: {
+    base: [
+      "Hinge at your hips until your torso nears parallel, dumbbells hanging under your shoulders, palms facing each other.",
+      "With a slight bend in your elbows, sweep your arms out to your sides to shoulder height, leading with your elbows.",
+      "Squeeze your rear shoulders, then lower with control — no bouncing at the bottom.",
+    ],
+    overrides: {
+      "Cable Crossover": [
+        "Set both pulleys at shoulder height and grip the left handle with your right hand, the right with your left, arms crossed in front of you.",
+        "Sweep both arms out and back until they line up with your shoulders, elbows slightly bent.",
+        "Return with control until your arms cross again.",
+      ],
+      "Pec Deck (Reverse)": [
+        "Sit facing the pad with the seat set so the handles sit at shoulder height.",
+        "Sweep the handles out and back until your arms line up with your shoulders.",
+        "Return with control until your hands nearly meet in front.",
+      ],
+    },
+  },
+  landmine_press: {
+    base: [
+      "Wedge one end of the bar into a corner or landmine sleeve and hold the other end at your shoulder, staggered stance.",
+      "Brace, then press the bar up and away until your arm is fully long.",
+      "Lower with control back to your shoulder; finish the set, then switch arms.",
+    ],
+  },
+  handstand_push_up: {
+    base: [
+      "Kick up into a handstand against a wall, hands just outside shoulder width, arms locked.",
+      "Brace your whole body — ribs down, glutes tight, heels resting on the wall.",
+      "Lower under control until the top of your head lightly touches the floor.",
+      "Press back to locked arms without your back arching away from the wall.",
+    ],
+  },
+  bicep_curl: {
+    base: [
+      "Stand tall holding the bar at your thighs, hands about shoulder width, palms up.",
+      "Curl the bar to your shoulders, elbows pinned at your sides — no swinging from the hips.",
+      "Lower with control until your arms are fully long.",
+    ],
+    overrides: {
+      "Dumbbells": [
+        "Stand tall with a dumbbell in each hand at your sides, palms forward.",
+        "Curl them to your shoulders, elbows pinned at your sides — no swinging from the hips.",
+        "Lower with control until your arms are fully long.",
+      ],
+      "Cable (Low Pulley)": [
+        "Stand facing the low pulley holding the bar or handles at your thighs, palms up.",
+        "Curl to your shoulders, elbows pinned at your sides.",
+        "Lower with control until your arms are fully long, keeping tension on the cable.",
+      ],
+      "Bicep Curl Machine": [
+        "Set the seat so the backs of your upper arms rest flat on the pad, hands on the grips.",
+        "Curl until your forearms are just past vertical.",
+        "Lower with control until your arms are nearly straight — stop just short of locking out on the pad.",
+      ],
+    },
+  },
+  hammer_curl: {
+    base: [
+      "Stand tall with a dumbbell in each hand at your sides, palms facing each other.",
+      "Curl them to your shoulders keeping your palms facing in, elbows pinned at your sides.",
+      "Lower with control until your arms are fully long.",
+    ],
+  },
+  preacher_curl: {
+    base: [
+      "Sit with the backs of your upper arms flat on the preacher pad, gripping the bar at about shoulder width.",
+      "Curl the bar up until your forearms are just past vertical.",
+      "Lower with control until your arms are nearly straight — stop just short of locking out on the pad.",
+    ],
+    overrides: {
+      "Dumbbells": [
+        "Sit with the back of one upper arm flat on the preacher pad, dumbbell in that hand.",
+        "Curl it up until your forearm is just past vertical.",
+        "Lower with control to nearly straight — stopping just short of lockout; finish the set, then switch arms.",
+      ],
+    },
+  },
+  concentration_curl: {
+    base: [
+      "Sit on a bench, lean forward, and brace the back of your upper arm against your inner thigh, dumbbell hanging.",
+      "Curl the dumbbell to your shoulder without your upper arm leaving your thigh.",
+      "Lower with control to a fully long arm; finish the set, then switch sides.",
+    ],
+  },
+  incline_curl: {
+    base: [
+      "Set the bench to about 45–60 degrees and sit back with a dumbbell in each hand hanging straight down.",
+      "Curl both to your shoulders, elbows staying under your shoulders — not drifting forward; that hang is the point of the incline.",
+      "Lower with control to a full hang.",
+    ],
+  },
+  tricep_pushdown: {
+    base: [
+      "Face the high pulley, grip the attachment, and pin your elbows to your sides.",
+      "Stand close to the stack, chest up, with a slight forward lean.",
+      "Press your hands down until your arms are completely straight — only your forearms move.",
+      "Let the weight rise under control until your forearms pass parallel, elbows staying pinned.",
+    ],
+    overrides: {
+      "Tricep Extension Machine": [
+        "Set the seat so your upper arms rest on the pad, hands on the grips.",
+        "Press until your arms are completely straight — only your forearms move.",
+        "Return under control until your forearms pass parallel.",
+      ],
+      "Resistance Bands": [
+        "Anchor the band overhead and grip it with your elbows pinned to your sides.",
+        "Press your hands down until your arms are completely straight — only your forearms move.",
+        "Return under control until your forearms pass parallel, elbows staying pinned.",
+      ],
+    },
+  },
+  overhead_tricep_extension: {
+    base: [
+      "Sit or stand holding one dumbbell overhead with both palms cupped under its top head, arms long.",
+      "Bend only your elbows to lower it behind your head, upper arms staying vertical.",
+      "Stop when your triceps stretch deep, then press back to long arms.",
+    ],
+    overrides: {
+      "EZ Curl Bar": [
+        "Sit or stand holding the bar overhead with a narrow grip, arms long.",
+        "Bend only your elbows to lower it behind your head, upper arms staying vertical.",
+        "Stop when your triceps stretch deep, then press back to long arms.",
+      ],
+      "Barbell": [
+        "Sit or stand holding the bar overhead with a narrow grip, arms long.",
+        "Bend only your elbows to lower it behind your head, upper arms staying vertical.",
+        "Stop when your triceps stretch deep, then press back to long arms.",
+      ],
+      "Cable (High Pulley)": [
+        "Face away from the high pulley holding the rope behind your head, elbows up, in a staggered stance.",
+        "Press forward and up until your arms are long, upper arms staying still.",
+        "Return under control until your triceps stretch deep.",
+      ],
+      "Tricep Extension Machine": [
+        "Set the seat so your upper arms rest on the pad, hands gripping behind your head.",
+        "Press until your arms are completely straight, upper arms staying on the pad.",
+        "Return under control until your triceps stretch.",
+      ],
+    },
+  },
+  skull_crusher: {
+    base: [
+      "Lie on a flat bench holding the bar over your chest with a narrow grip, arms long.",
+      "Bend only your elbows to lower the bar toward your forehead or just behind it, upper arms staying still.",
+      "Press back to long arms without flaring your elbows out.",
+    ],
+    overrides: {
+      "Dumbbells": [
+        "Lie on a flat bench with a dumbbell in each hand over your chest, palms facing each other, arms long.",
+        "Bend only your elbows to lower them beside your head, upper arms staying still.",
+        "Press back to long arms without flaring your elbows out.",
+      ],
+    },
+  },
+  close_grip_bench: {
+    base: [
+      "Lie with your eyes under the bar and grip at about shoulder width — not thumbs-touching narrow.",
+      "Pull your shoulder blades back and down, then unrack the bar over your chest.",
+      "Lower to your lower chest with your elbows tucked close to your ribs.",
+      "Press to full extension, feet driving into the floor.",
+    ],
+    overrides: {
+      "Smith Machine": [
+        "Set the bench so the bar's fixed path meets your lower chest, and grip at about shoulder width.",
+        "Rotate the bar to unhook, shoulder blades set back and down.",
+        "Lower to your lower chest with your elbows tucked close to your ribs.",
+        "Press to full extension; rotate to re-hook at the end.",
+      ],
+    },
+  },
+  tricep_kickback: {
+    base: [
+      "Hinge at your hips with a flat back and pin your upper arm along your ribs, dumbbell hanging at a 90-degree elbow.",
+      "Straighten your arm fully behind you, upper arm never dropping.",
+      "Return with control to 90 degrees; finish the set, then switch arms.",
+    ],
+    overrides: {
+      "Cable (Low Pulley)": [
+        "Face the low pulley in a hinge, handle in one hand, upper arm pinned along your ribs at a 90-degree elbow.",
+        "Straighten your arm fully behind you, upper arm never dropping.",
+        "Return with control to 90 degrees; finish the set, then switch arms.",
+      ],
+      "Resistance Bands": [
+        "Anchor the band low in front of you, hinge with a flat back, and pin your upper arm along your ribs at a 90-degree elbow.",
+        "Straighten your arm fully behind you against the band, upper arm never dropping.",
+        "Return with control to 90 degrees; finish the set, then switch arms.",
+      ],
+    },
+  },
+  wrist_curl: {
+    base: [
+      "Sit with your forearms on your thighs, palms up, wrists just past your knees, holding the bar.",
+      "Let the bar roll down to your fingertips, then curl it up as far as your wrists flex.",
+      "Work at a controlled pace through the full range.",
+    ],
+    overrides: {
+      "Dumbbells": [
+        "Sit with your forearms on your thighs, palms up, wrists just past your knees, a dumbbell in each hand.",
+        "Let them roll down to your fingertips, then curl up as far as your wrists flex.",
+        "Work at a controlled pace through the full range.",
+      ],
+    },
+  },
+  bench_dip: {
+    base: [
+      "Sit on the edge of a flat bench, hands gripping the edge beside your hips, and walk your feet out until your hips are off the bench.",
+      "Lower your hips straight down by bending your elbows until your upper arms near parallel.",
+      "Press back to long arms, hips staying close to the bench — straighter legs make it harder.",
+    ],
+  },
+  plank: {
+    base: [
+      "Set your forearms on the floor with your elbows under your shoulders.",
+      "Step your feet back until your body is one straight line from head to heels.",
+      "Squeeze your glutes and brace so your hips neither sag nor pike up.",
+      "Breathe steadily and hold; stop when you can no longer keep the straight line.",
+    ],
+  },
+  side_plank: {
+    base: [
+      "Lie on your side with your forearm on the floor, elbow under your shoulder, feet stacked.",
+      "Lift your hips until your body is one straight line from head to feet.",
+      "Breathe steadily and hold; stop when your hips start to drop, then switch sides.",
+    ],
+  },
+  reverse_plank: {
+    base: [
+      "Sit with your legs long and your hands on the floor behind you, fingers pointing toward your feet.",
+      "Press your hips up until your body is one straight line from shoulders to heels, chest open.",
+      "Breathe steadily and hold; stop when your hips start to sag.",
+    ],
+  },
+  dead_bug: {
+    base: [
+      "Lie on your back with your arms straight up and your knees bent 90 degrees over your hips.",
+      "Press your lower back gently into the floor and keep it there — that contact is the exercise.",
+      "Lower your right arm overhead and your left leg toward the floor together, stopping before your back arches.",
+      "Return and switch sides at a slow, steady pace.",
+    ],
+  },
+  pallof_press: {
+    base: [
+      "Kneel tall side-on to the low pulley so the handle meets your chest, held there in both hands.",
+      "Press the handle straight out in front of you, resisting the pull that tries to twist you toward the machine.",
+      "Hold a beat with long arms, then return to your chest; finish the set, then kneel facing the other way.",
+    ],
+    overrides: {
+      "Resistance Bands": [
+        "Anchor the band at chest height and stand side-on, holding it at your chest in both hands, feet shoulder width.",
+        "Press it straight out in front of you, resisting the twist toward the anchor.",
+        "Hold a beat with long arms, then return; finish the set, then face the other way.",
+      ],
+    },
+  },
+  ab_wheel_rollout: {
+    base: [
+      "Kneel with the wheel on the floor under your shoulders, arms long.",
+      "Brace and tuck your hips slightly, then roll the wheel forward as far as you can keep your lower back from arching.",
+      "Pull the wheel back under your shoulders with your abs — not by sitting your hips back.",
+    ],
+  },
+  cable_twist: {
+    base: [
+      "Stand side-on to the high pulley, gripping the handle with both hands above your near shoulder, arms long.",
+      "Pull the handle down and across your body to your far hip, rotating your torso — the turn comes from your trunk, not your arms.",
+      "Return with control along the same diagonal; finish the set, then face the other way.",
+    ],
+    overrides: {
+      "Torso Rotation Machine": [
+        "Set the seat and pads per the machine's markings, chest square to the pad.",
+        "Rotate your torso away with control against the resistance.",
+        "Return with control; finish the set, then switch directions.",
+      ],
+    },
+  },
+  mountain_climber: {
+    base: [
+      "Start at the top of a push-up, hands under your shoulders, body one straight line.",
+      "Drive one knee toward your chest, then switch legs in a running rhythm.",
+      "Keep your hips level with your shoulders — no piking up as you speed up.",
+    ],
+  },
+  crunch: {
+    base: [
+      "Lie on your back with your knees bent, feet flat, hands resting lightly behind your head.",
+      "Curl your shoulder blades off the floor, ribs moving toward your hips — don't pull on your neck.",
+      "Lower with control until your shoulder blades touch down.",
+    ],
+    overrides: {
+      "Ab Crunch Machine": [
+        "Set the seat and grip the handles with the pad against your chest or your feet hooked, per the machine.",
+        "Curl your ribs toward your hips against the resistance.",
+        "Return with control until your torso is tall.",
+      ],
+    },
+  },
+  cable_crunch: {
+    base: [
+      "Kneel below the high pulley holding the rope at the sides of your head.",
+      "Curl your ribs toward your hips, elbows sweeping toward your knees — your hips stay still.",
+      "Return with control until your torso is tall.",
+    ],
+  },
+  bicycle_crunch: {
+    base: [
+      "Lie on your back, hands resting lightly behind your head, legs lifted with knees bent.",
+      "Bring one knee in as you rotate your opposite elbow toward it, extending the other leg long.",
+      "Switch sides in a steady rhythm — the rotation comes from your torso, not from pulling your elbows.",
+    ],
+  },
+  oblique_crunch: {
+    base: [
+      "Lie on your back with your knees bent and dropped together to one side, shoulders staying flat.",
+      "Curl your shoulder blades off the floor, ribs toward your hips.",
+      "Lower with control; finish the set, then drop your knees to the other side.",
+    ],
+  },
+  decline_crunch: {
+    base: [
+      "Set the bench to a decline and hook your legs under the rollers, hands resting lightly behind your head.",
+      "Curl your ribs toward your hips until your shoulder blades leave the pad — don't pull on your neck.",
+      "Lower with control until your shoulder blades touch the pad.",
+    ],
+  },
+  sit_up: {
+    base: [
+      "Lie on your back with your knees bent, feet flat — anchor them under something if you need to.",
+      "Curl all the way up until your chest nears your thighs.",
+      "Lower with control back to the floor.",
+    ],
+  },
+  hanging_leg_raise: {
+    base: [
+      "Hang from the bar with your arms long and your shoulders down away from your ears.",
+      "Raise your legs — straight, or knees bent to make it easier — until your thighs pass parallel.",
+      "Lower with control — no swinging into the next rep.",
+    ],
+  },
+  leg_raise: {
+    base: [
+      "Lie on your back with your legs long, hands under your hips or flat at your sides.",
+      "Press your lower back into the floor, then raise your legs to vertical.",
+      "Lower with control, stopping before your lower back peels off the floor.",
+    ],
+  },
+  russian_twist: {
+    base: [
+      "Sit with your knees bent, heels lightly on the floor — or lifted to make it harder — torso leaned back to about 45 degrees.",
+      "Rotate your torso to one side, then the other, at a controlled pace — the turn comes from your trunk.",
+      "Keep your back long throughout, not rounded.",
+    ],
+    overrides: {
+      "Medicine Ball": [
+        "Sit with your knees bent, heels light or lifted, torso leaned back to about 45 degrees, ball held at your chest.",
+        "Rotate your torso side to side at a controlled pace, the ball moving with your trunk — not just your arms.",
+        "Keep your back long throughout, not rounded.",
+      ],
+      "Weight Plates": [
+        "Sit with your knees bent, heels light or lifted, torso leaned back to about 45 degrees, plate held at your chest.",
+        "Rotate your torso side to side at a controlled pace, the plate moving with your trunk — not just your arms.",
+        "Keep your back long throughout, not rounded.",
+      ],
+    },
+  },
+  side_bend: {
+    base: [
+      "Stand tall with a dumbbell in one hand at your side, other hand at your hip.",
+      "Bend sideways toward the dumbbell, then pull yourself back upright and slightly past — hips staying still.",
+      "Finish the set, then switch hands.",
+    ],
+    overrides: {
+      "Cable (Low Pulley)": [
+        "Stand side-on to the low pulley, handle in the near hand at your side.",
+        "Bend toward the machine, then pull yourself upright and slightly past — hips staying still.",
+        "Finish the set, then face the other way.",
+      ],
+      "Resistance Bands": [
+        "Stand on the band's middle with one end in one hand at your side.",
+        "Bend toward that hand, then pull yourself upright and slightly past against the band — hips staying still.",
+        "Finish the set, then switch hands.",
+      ],
+    },
+  },
+  superman: {
+    base: [
+      "Lie face down with your arms extended overhead.",
+      "Raise your arms, chest, and legs off the floor together, squeezing your glutes and upper back.",
+      "Hold a beat at the top, then lower with control.",
+    ],
+  },
+  v_up: {
+    base: [
+      "Lie flat with your arms overhead and legs long.",
+      "Fold in half — arms and legs rising together — reaching your hands toward your feet.",
+      "Lower both with control back to flat.",
+    ],
+  },
+  treadmill: null, // §8 — no section renders
+  stationary_bike: null, // §8 — no section renders
+  rowing_machine: {
+    base: [
+      "Strap your feet in and grip the handle with your arms long, shins vertical, torso leaned slightly forward.",
+      "Drive with your legs first, then swing your torso back, then pull the handle to your lower ribs.",
+      "Return in reverse order: arms long, torso forward, then knees bend as you slide up.",
+      "Keep that order every stroke — legs, body, arms out; arms, body, legs back.",
+    ],
+  },
+  elliptical: null, // §8 — no section renders
+  stair_climber: null, // §8 — no section renders
+  jump_rope: {
+    base: [
+      "Hold the handles at your hips with the rope resting behind your heels, elbows close to your ribs.",
+      "Turn the rope from your wrists — not your arms — and hop just high enough to clear it.",
+      "Land softly on the balls of your feet, knees soft, and settle into a steady rhythm.",
+    ],
+  },
+  battle_ropes: {
+    base: [
+      "Hold a rope end in each hand and sink into a quarter squat, chest up.",
+      "Whip the ropes in alternating or matching waves from your arms and shoulders, hips staying low.",
+      "Keep breathing; the set ends when the waves no longer travel the rope.",
+    ],
+  },
+  power_clean: {
+    base: [
+      "Stand with the bar over the middle of your feet, hip-width stance, gripping just outside your knees, shoulders over the bar.",
+      "Push the floor away with a flat back, keeping the bar close as it passes your knees.",
+      "When the bar reaches mid-thigh, extend your hips hard and fast, shrugging as the bar brushes up your thighs.",
+      "Pull yourself under, whipping your elbows around to catch the bar across your front shoulders in a quarter squat.",
+      "Stand tall to finish, then lower to the floor with control.",
+    ],
+  },
+  hang_clean: {
+    base: [
+      "Stand tall with the bar at your thighs, gripping just outside your legs.",
+      "Push your hips back to lower the bar to just above your knees, back flat — this hang is the start.",
+      "Extend your hips hard and fast, shrugging as the bar brushes up your thighs.",
+      "Pull yourself under and catch it across your front shoulders in a quarter squat, elbows whipping through.",
+      "Stand tall, then reset the hang for the next rep.",
+    ],
+    overrides: {
+      "Dumbbells": [
+        "Stand tall with a dumbbell in each hand at your sides.",
+        "Push your hips back to lower them to just above your knees, back flat.",
+        "Extend your hips hard and fast, shrugging the dumbbells up close to your body.",
+        "Pull under and catch them at your shoulders in a quarter squat.",
+        "Stand tall, then reset the hang.",
+      ],
+    },
+  },
+  clean_and_press: {
+    base: [
+      "Pull the bar from the floor and catch it at your front shoulders — the clean (full steps under Power Clean).",
+      "Stand tall and reset: brace, ribs down.",
+      "Press the bar straight up past your face until your arms lock out overhead.",
+      "Lower to your shoulders, then to the floor with control, and repeat.",
+    ],
+    overrides: {
+      "Dumbbells": [
+        "Pull the dumbbells from the floor and catch them at your shoulders — the clean (see Hang Clean's dumbbell steps).",
+        "Stand tall and reset: brace, ribs down.",
+        "Press both straight up until your arms lock out overhead.",
+        "Lower to your shoulders, then to the floor with control, and repeat.",
+      ],
+    },
+  },
+  clean_and_jerk: {
+    base: [
+      "Clean the bar to your front shoulders (full steps under Power Clean).",
+      "Stand tall and reset your breath, elbows dropping slightly from the clean catch.",
+      "Dip straight down a few inches, then drive the bar hard off your shoulders.",
+      "Punch yourself under into a split — one foot forward, one back — catching the bar locked out overhead.",
+      "Bring your feet back in line while holding the bar overhead, then lower with control.",
+    ],
+  },
+  snatch: {
+    base: [
+      "Stand over the bar with a very wide grip — wide enough that the bar sits at your hip crease when you stand tall.",
+      "Set your back flat, shoulders over the bar, and push the floor away, the bar staying close.",
+      "As the bar passes mid-thigh, extend your hips hard and fast, shrugging tall.",
+      "Pull yourself under as the bar travels up, turning your wrists over.",
+      "Catch it locked out overhead in an overhead squat, chest tall.",
+      "Stand to full height with the bar still overhead, then lower with control.",
+    ],
+  },
+  power_snatch: {
+    base: [
+      "Stand over the bar with the same very wide snatch grip.",
+      "Push the floor away with a flat back, the bar staying close past your knees.",
+      "At mid-thigh, extend your hips hard and fast, shrugging tall.",
+      "Pull under just enough to catch the bar locked out overhead in a quarter squat — not a full squat.",
+      "Stand tall, then lower with control.",
+    ],
+  },
+  hang_snatch: {
+    base: [
+      "Stand tall with the bar at your hip crease, very wide snatch grip.",
+      "Push your hips back to lower the bar to just above your knees, back flat — this hang is the start.",
+      "Extend your hips hard and fast, shrugging tall.",
+      "Pull under and catch the bar locked out overhead, chest tall.",
+      "Stand to full height, then reset the hang.",
+    ],
+  },
+  deadlift_high_pull: {
+    base: [
+      "Stand with the bar over the middle of your feet and grip just outside your legs.",
+      "Deadlift to standing, then lower the bar to just above your knees, back flat.",
+      "Extend your hips fast and pull the bar up your body until your elbows reach shoulder height, elbows leading.",
+      "Lower the bar back to your thighs with control and repeat from the hang.",
+    ],
+    overrides: {
+      "Dumbbells": [
+        "Stand tall with a dumbbell in each hand at your thighs.",
+        "Push your hips back to lower them just above your knees, back flat.",
+        "Extend your hips fast and pull them up your body until your elbows reach shoulder height.",
+        "Lower with control and repeat from the hang.",
+      ],
+      "Kettlebells": [
+        "Stand tall with a kettlebell in each hand at your thighs.",
+        "Push your hips back to lower them just above your knees, back flat.",
+        "Extend your hips fast and pull them up your body until your elbows reach shoulder height.",
+        "Lower with control and repeat from the hang.",
+      ],
+    },
+  },
+  muscle_up: {
+    base: [
+      "Hang from the bar with a slightly wider-than-shoulder grip — a false grip, wrists over the bar, if you have it.",
+      "Pull explosively, driving the bar toward your hips rather than your chin.",
+      "As your chest reaches the bar, lean forward and punch your elbows behind you into the dip position.",
+      "Press to straight arms above the bar.",
+      "Lower back through the dip and the pull with as much control as you have.",
+    ],
+    overrides: {
+      "Gymnastics Rings": [
+        "Hang from the rings in a false grip, arms long.",
+        "Pull explosively, keeping the rings close to your body.",
+        "As your chest passes the rings, lean forward and punch your elbows back into the dip.",
+        "Press to straight arms, turning the rings slightly out at the top.",
+        "Lower back through with as much control as you have.",
+      ],
+    },
+  },
+  kettlebell_swing: {
+    base: [
+      "Stand with the kettlebell about a foot in front of you, feet just outside shoulder width.",
+      "Hinge at your hips, grip the handle with both hands, and tilt the bell back toward you.",
+      "Hike the bell back between your legs, then drive your hips forward hard to stand tall — the swing is a hinge, not a squat.",
+      "Let the bell float to chest height with your arms relaxed — your hips power it, not your shoulders.",
+      "As it falls, hinge again and let it pass close under your hips, then repeat without pausing.",
+    ],
+  },
+  turkish_get_up: {
+    base: [
+      "Lie on your back holding the dumbbell locked out over one shoulder, that-side knee bent, other arm and leg angled out.",
+      "Roll up onto your free elbow, then your hand — eyes on the dumbbell the whole time.",
+      "Press your hips up, then sweep your straight leg back under you into a kneeling lunge.",
+      "Straighten your torso tall, then stand up out of the lunge, the arm staying locked throughout.",
+      "Reverse every step in order back to lying down.",
+      "Finish the set, then switch sides.",
+    ],
+    overrides: {
+      "Kettlebells": [
+        "Lie on your back with the kettlebell locked out over one shoulder, its body resting against the back of your forearm, that-side knee bent.",
+        "Roll up onto your free elbow, then your hand — eyes on the bell the whole time.",
+        "Press your hips up, then sweep your straight leg back under you into a kneeling lunge.",
+        "Straighten your torso tall, then stand up out of the lunge, the arm staying locked throughout.",
+        "Reverse every step in order back to lying down.",
+        "Finish the set, then switch sides.",
+      ],
+    },
+  },
+  thruster: {
+    base: [
+      "Hold the bar at your front shoulders in the front-squat position, feet shoulder width.",
+      "Squat to at least parallel, chest tall, elbows up.",
+      "Drive up hard and use that momentum to press the bar straight overhead in one motion.",
+      "Lower it back to your shoulders as you sink into the next squat.",
+    ],
+    overrides: {
+      "Dumbbells": [
+        "Hold a dumbbell at each shoulder, feet shoulder width.",
+        "Squat to at least parallel, chest tall.",
+        "Drive up hard and press both overhead in one motion.",
+        "Lower to your shoulders as you sink into the next squat.",
+      ],
+      "Kettlebells": [
+        "Hold a kettlebell at each shoulder in the rack position, feet shoulder width.",
+        "Squat to at least parallel, chest tall.",
+        "Drive up hard and press both overhead in one motion.",
+        "Lower to the rack as you sink into the next squat.",
+      ],
+    },
+  },
+  farmer_carry: {
+    base: [
+      "Deadlift a heavy dumbbell in each hand — flat back — and stand tall.",
+      "Walk with short, quick steps, shoulders back and down, torso tall.",
+      "Set them down with a flat back; stop the set when you can no longer stay tall.",
+    ],
+    overrides: {
+      "Kettlebells": [
+        "Deadlift a heavy kettlebell in each hand — flat back — and stand tall.",
+        "Walk with short, quick steps, shoulders back and down, torso tall.",
+        "Set them down with a flat back; stop the set when you can no longer stay tall.",
+      ],
+      "Weight Plates": [
+        "Pinch-grip a plate in each hand at your sides — flat back — and stand tall.",
+        "Walk with short, quick steps, shoulders back and down, torso tall.",
+        "Set them down with a flat back; the pinch grip usually gives out first — that's the point of this version.",
+      ],
+    },
+  },
+  sled_push: {
+    base: [
+      "Load the sled and grip the handles with your arms long or bent but stiff.",
+      "Lean into it until your body is a straight line from head to heels.",
+      "Drive with short, powerful steps, pushing the floor away behind you.",
+    ],
+  },
+  sled_pull: {
+    base: [
+      "Face the sled holding the strap or rope handles with your arms long.",
+      "Sit slightly back with a flat back and walk backward with quick steps.",
+      "Keep tension on the straps the whole way — no jerking.",
+    ],
+  },
+  bear_crawl: {
+    base: [
+      "Start on all fours with your knees an inch off the floor, back flat.",
+      "Move your opposite hand and foot together, knees staying low the whole way.",
+      "Keep your hips level — no swaying side to side.",
+    ],
+  },
+  burpee: {
+    base: [
+      "From standing, put your hands on the floor and jump or step your feet back to the top of a push-up.",
+      "Do a push-up, chest to the floor.",
+      "Jump or step your feet back under you.",
+      "Jump straight up with your arms overhead, landing soft and straight into the next rep.",
+    ],
+  },
+  ball_slam: {
+    base: [
+      "Stand tall holding the medicine ball, feet shoulder width.",
+      "Reach it fully overhead, rising onto your toes.",
+      "Slam it into the floor in front of your feet with your whole body, hinging as you throw.",
+      "Pick it up off the bounce with a flat back and go again.",
+    ],
+  },
+};
+
+
+/* ════════════════════════════════════════════════════════════════════
    COACH AI — Mode-1 generation engine (ported from coach-harness.jsx,
    Sessions 55–56). Split rotation, focus inference, equipment-filtered
    pools, the fail-loud validator, the real-state prompt builder, the
@@ -2259,7 +3809,32 @@ function coachToolObservations(input, state) {
 }
 
 function coachToolBenchmarks(input, state) {
-  const rows = [...(state.progressPRs || [])].sort((a, b) => (b.achievedAt || 0) - (a.achievedAt || 0));
+  // S85 (D-257): the progressPRs store had no in-app writer — a
+  // letterbox. The UI now derives everything from anchors; this tool
+  // does the same for PR events (audit-trail "beat" entries = the
+  // session exceeded the anchor), MERGED with any legacy store rows
+  // (pre-anchor imports) so old snapshots keep their trophies. The
+  // store survives only as this legacy substrate; it renders nowhere.
+  const legacy = [...(state.progressPRs || [])].map((p) => ({
+    exerciseName: p.exerciseName, value: p.value, isPR: !!p.isPR,
+    achievedAt: p.achievedAt || 0,
+  }));
+  const beats = [];
+  for (const a of (state.anchors || [])) {
+    for (const h of (a && a.history) || []) {
+      if (h.result !== "beat") continue;
+      beats.push({
+        exerciseName: a.variant ? `${a.exerciseName} (${a.variant})` : a.exerciseName,
+        value: h.weight > 0 ? `${h.weight} × ${h.reps}` : `${h.reps} reps`,
+        isPR: true,
+        kind: "working level beaten — moved up",
+        achievedAt: h.date ? (Date.parse(h.date + "T12:00:00") || 0) : 0,
+      });
+    }
+  }
+  const rows = [...beats, ...legacy]
+    .sort((a, b) => (b.achievedAt || 0) - (a.achievedAt || 0))
+    .slice(0, 20);
   // Working levels ≠ PRs (D-070: anchors track current working capacity,
   // PRs are lifetime trophies). Both surface here so Coach reasons from
   // today's real level, not an old best.
@@ -2277,7 +3852,7 @@ function coachToolBenchmarks(input, state) {
     benchmarks: rows.map((p) => ({
       exercise: p.exerciseName,
       best: p.value,
-      kind: p.isPR ? "all-time PR" : "first-logged baseline",
+      kind: p.kind || (p.isPR ? "all-time PR" : "first-logged baseline"),
       achieved_on: p.achievedAt ? coachMsToDate(p.achievedAt) : null,
     })),
     current_working_levels: levels.length ? levels : null,
@@ -2750,7 +4325,10 @@ function getAlternatives(exercise, userEquipment, customExercises = []) {
 }
 
 /* For the list row display: last max of the user's most-recently-logged
-   variant of this exercise. Returns { value, date, variantLabel } or null.
+   variant of this exercise. Returns { weight, reps, hasWeight, date,
+   variantLabel } or null — structured, not preformatted, because the row
+   renders it on the × spine (S84 Q1-B / D-243) and needs the parts.
+   hasWeight=false → bodyweight reps-only display (reps cell, no spine).
    Falls back to null for exercises with no logged history at all. */
 function getRowLastMax(exerciseId, exercise, workoutHistory = [], customs = []) {
   // Walk the whole history once, tracking the latest session for every
@@ -2784,7 +4362,9 @@ function getRowLastMax(exerciseId, exercise, workoutHistory = [], customs = []) 
   }
 
   return {
-    value: formatSetSummary(topSet, " × "),
+    weight: topSet.weight,
+    reps: topSet.reps,
+    hasWeight: hasMeaningfulWeight(topSet),
     date: latestDate,
     variantLabel,
   };
@@ -3212,6 +4792,59 @@ function humanizeAnchorStatus(record) {
   if (c === 0) return "user hit anchor cleanly last session";
   if (c === 1) return "user was just below anchor last session";
   return "user has been just below anchor for two sessions";
+}
+
+/* ── S85: USER-facing anchor status (the Records-tab BENCHMARK strip) ──
+   D-129's sibling: derived at read time, raw engine vocabulary
+   (provisional/confirmed/stale) never rendered. The word set steals
+   only from lingo the app already owns — CONFIRMED (observations use
+   it), NEW (the first-logged tag) — plus IN REVIEW, which explains
+   itself cold and puts the state on the NUMBER, never the user
+   (never-guilt register: no SLIPPING, no UNDER-as-identity).
+
+   S85 owner ruling (tried on the landing, killed on sight): these
+   words render in ONE place only — the detail sheet's BENCHMARK
+   strip. Status language is BANNED from the Coach's File landing;
+   everywhere else, status comes out of Coach's mouth (debrief). */
+function anchorStatusWord(record) {
+  if (!record) return "";
+  if (record.status === "provisional") return "New";
+  if (record.status === "stale") return "In review";
+  return "Confirmed";
+}
+
+/* The one derived sentence under the strip — the tutorial delivered at
+   the moment of the question. Plain language, real fields, no stored
+   prose (derive-don't-store, D-087 spirit). */
+function anchorStatusWhy(record) {
+  if (!record) return "";
+  if (record.status === "provisional") {
+    // Sessions since the current value was set: entries newer than the
+    // establishing transition in the newest-first audit trail.
+    const hist = record.history || [];
+    let idx = hist.findIndex((h) => h.transition === "created"
+      || h.transition === "reanchored_up" || h.transition === "reanchored_down"
+      || h.transition === "stale_auto_resolved");
+    if (idx < 0) idx = hist.length ? hist.length - 1 : 0;
+    if (idx === 0) return "Just set — still proving out.";
+    return `Set ${idx} session${idx === 1 ? "" : "s"} ago, still proving out.`;
+  }
+  if (record.status === "stale") {
+    const n = record.consecutiveMisses || ANCHOR_STALE_MISSES;
+    return `Under for ${n} straight sessions — Coach will bring it up.`;
+  }
+  // confirmed
+  const c = record.consecutiveMisses || 0;
+  if (c === 1) return "Just under last session — still holding.";
+  if (c >= 2) return "Under for two sessions — still holding.";
+  // Leading clean streak (hit/beat) from the newest-first trail.
+  let streak = 0;
+  for (const h of (record.history || [])) {
+    if (h.result === "hit" || h.result === "beat") streak++;
+    else break;
+  }
+  if (streak >= 2) return `You've hit this in your last ${streak} sessions.`;
+  return "You've been hitting this.";
 }
 
 /* Human-readable current level for tool returns: real logged values
@@ -4005,11 +5638,41 @@ function obsStatusLabel(o) {
   }
   if (o.status === "asked") return "asked — waiting on your answer";
   if (o.status === "confirmed") {
-    const d = o.confirmedAt ? new Date(o.confirmedAt).toISOString().slice(0, 10) : null;
-    return d ? `confirmed — you told me ${d}` : "confirmed — you told me";
+    // S85 (Observations-B, owner ruling): confirmed ≠ merely settled —
+    // it's the ONLY status that rides generation (D-216), so the label
+    // says what the observation DOES, not what state it's in. Without
+    // this, users see Coach noticing things while workouts change for
+    // no stated reason. The old confirmed string with its raw ISO
+    // date is dead (machine date on the ceremony surface; corny
+    // clause — owner). The date moves to the sub-screen's detailed
+    // label, humanized.
+    return "in use — Coach builds with this";
   }
   if (o.status === "denied") return "dropped — you said I had it wrong";
   return "";
+}
+
+/* Humanized short date for observation labels — "Aug 2". The file's
+   date family is AUG 15 / 12D / 2d ago; numeric (8/2) and ordinal
+   (Aug 2nd) forms are vocabularies the app has never used (S85). */
+function formatMonthDay(epochMs) {
+  if (!epochMs) return "";
+  const d = new Date(epochMs);
+  return `${d.toLocaleDateString("en-US", { month: "short" })} ${d.getDate()}`;
+}
+
+/* Sub-screen variant of the status label (S85): same strings as
+   obsStatusLabel except confirmed carries the humanized date — the
+   detail the landing deliberately withholds. */
+function obsStatusLabelDetailed(o) {
+  if (!o || o.source !== "engine") return "";
+  if (o.status === "confirmed") {
+    const d = o.confirmedAt ? formatMonthDay(o.confirmedAt) : null;
+    return d
+      ? `in use since ${d} — Coach builds workouts with this`
+      : "in use — Coach builds workouts with this";
+  }
+  return obsStatusLabel(o);
 }
 // Profile ordering: confirmed → asked → watching → denied (S81).
 const OBS_STATUS_RANK = { confirmed: 0, asked: 1, watching: 2, denied: 3 };
@@ -5215,7 +6878,7 @@ const IS_REAL_DEVICE = (() => {
 // Deploy cache-verification marker (owner's V.23 convention, formalized:
 // bump this one constant per push to confirm the phone isn't serving
 // stale cached code; rendered only on real devices, top-right).
-const BUILD_TAG = "V.38";
+const BUILD_TAG = "V.43";
 
 /* ── Visual-viewport pin (S77 — the "composer slides past the keyboard" bug) ──
    iOS (Safari tab and standalone PWA alike) never shrinks the LAYOUT
@@ -7220,10 +8883,12 @@ function totalVolumeFromExercises(exercises) {
 function WorkoutTab({
   userEquipment, workout, minimized, history, openHistoryId, setOpenHistoryId,
   finishedSession, customExercises = [],
+  anchors = [], // S85 (D-257): rides through to the detail sheet's BENCHMARK strip
   restTimerMode, restCountdownTarget, onChangeRestTimerMode, onChangeRestCountdownTarget,
   onStartEmpty, onAskCoach, onUpdateWorkout, onMinimize, onCancel, onFinish,
   onCommitFinished, onCommitFinishedAnalyze, analyzeEnabled, onDiscardFinished, onUpdateFinished,
   onRepeatWorkout, onEditWorkout, onDeleteWorkout, onTabChange,
+  restAlertActive = false, // S87 (D-268): rides through to ActiveLogger's header pulse
 }) {
   // Hooks live ABOVE the early return (§15 hygiene fix, this session —
   // the prior early-return-above-useRef ordering was verified benign but
@@ -7419,6 +9084,8 @@ function WorkoutTab({
           onFinish={onFinish}
           onTabChange={onTabChange}
           containerRef={containerRef}
+          anchors={anchors}
+          restAlertActive={restAlertActive}
         />
       )}
     </div>
@@ -7433,9 +9100,11 @@ function WorkoutTab({
 */
 function ActiveLogger({
   workout, onUpdateWorkout, userEquipment, customExercises = [], workoutHistory = [], onMinimize, onCancel, onFinish,
+  anchors = [], // S85 (D-257): rides through to the detail sheet's BENCHMARK strip
   onTabChange,
   restTimerMode, restCountdownTarget, onChangeRestTimerMode, onChangeRestCountdownTarget,
   containerRef,
+  restAlertActive = false, // S87 (D-268): App-level rest-over window — pulses the header timer slot
 }) {
   // Pull session state out of the workout prop. We mutate via onUpdateWorkout
   // (which writes through to App-level state, so it survives tab switches).
@@ -7529,9 +9198,55 @@ function ActiveLogger({
     setCaretPos(-1); // reset to "all selected" whenever focus changes
   }, [activeField]);
 
+  // S87 owner bug #1 (a class, three instances): the keypad renders at
+  // zIndex 40 and every sheet the logger raises sits BELOW it (detail
+  // sheet 21, Add picker 31, Alternatives 32) — so a sheet opened while
+  // a field was active mounted UNDER a live keypad. Root fix, not a
+  // z-shuffle: raising ANY sheet over the logger leaves the editing
+  // context, so it closes the keypad. One effect covers all three
+  // doors; new doors added later inherit by joining the deps.
+  useEffect(() => {
+    if (detailFor || alternativesFor || pickerOpen) setActiveField(null);
+  }, [detailFor, alternativesFor, pickerOpen]);
+
   // Refs for auto-scrolling the active set into view when keypad opens
   const scrollRef = useRef(null);
   const setRowRefs = useRef({}); // key: `${uid}_${setIdx}` → DOM node
+
+  // ── S87 (D-267): ONE visible rest timer ──
+  // The header used to pin the rest digits whenever a timer ran (S80
+  // continuity), colliding with Finish and doubling the inline timer.
+  // New rule: the timer lives at its set; the header takes over ONLY
+  // when the inline timer scrolls off screen. An IntersectionObserver on
+  // the inline timer's node (root = the logger scroller) drives the
+  // cross-fade. No node mounted (no active rest) → "visible" by
+  // definition, so the header shows the session clock. jsdom has no
+  // IntersectionObserver — the guard leaves the harness in the
+  // session-clock state, which GATE B renders.
+  const [inlineRestVisible, setInlineRestVisible] = useState(true);
+  const inlineRestObsRef = useRef(null);
+  const handleInlineRestNode = (node) => {
+    if (inlineRestObsRef.current) {
+      inlineRestObsRef.current.disconnect();
+      inlineRestObsRef.current = null;
+    }
+    if (node && typeof IntersectionObserver !== "undefined" && scrollRef.current) {
+      const obs = new IntersectionObserver(
+        (entries) => setInlineRestVisible(entries[0].isIntersecting),
+        // rootMargin trims the boundary slightly so the flip happens just
+        // before the timer is fully gone; the 0.3s cross-fade absorbs any
+        // jitter at the line.
+        { root: scrollRef.current, rootMargin: "-8px 0px", threshold: 0 }
+      );
+      obs.observe(node);
+      inlineRestObsRef.current = obs;
+    } else if (!node) {
+      setInlineRestVisible(true);
+    }
+  };
+  useEffect(() => () => {
+    if (inlineRestObsRef.current) inlineRestObsRef.current.disconnect();
+  }, []);
 
   // Keep exercisesRef synced when state comes back from the parent
   // (e.g. after onUpdateWorkout commits and React re-renders).
@@ -8033,17 +9748,38 @@ function ActiveLogger({
   const removeSet = (uid, setIdx) => {
     setExercises((prev) => prev.map((ex) => {
       if (ex.uid !== uid) return ex;
-      // When removing a set, the previous set's `restAfterSec` (if any)
-      // was recorded by the now-deleted set being checked off. That label
-      // is now stale, so clear it.
+      // S87 rider (#6's neighbor): the previous set's `restAfterSec` is
+      // cleared ONLY when the deleted set was done — an unchecked planned
+      // set never recorded anything, so deleting it must not wipe a real
+      // rest label above it. (A done set's check is what stamped the
+      // label onto the set before it.)
+      const removedSet = ex.sets[setIdx];
       const sets = ex.sets
-        .map((s, i) => (i === setIdx - 1 ? { ...s, restAfterSec: undefined } : s))
+        .map((s, i) => (removedSet && removedSet.done && i === setIdx - 1 ? { ...s, restAfterSec: undefined } : s))
         .filter((_, i) => i !== setIdx);
       return { ...ex, sets };
     }));
-    if (restTimer && restTimer.exerciseUid === uid) clearRestTimer();
-    if (activeField && activeField.exerciseUid === uid && activeField.setIdx === setIdx) {
-      setActiveField(null);
+    // S87 owner bug #6: the rest timer is SET-anchored, not exercise-
+    // anchored. Deleting a sibling set must not kill it — clear only when
+    // the deleted set IS the anchor; deleting a set ABOVE the anchor
+    // shifts the anchor index down so the timer stays glued to the same
+    // physical set. (The old form cleared on exerciseUid alone: finish
+    // set 3, delete unused set 4 → timer died. On-glass repro, owner.)
+    if (restTimer && restTimer.exerciseUid === uid) {
+      if (restTimer.setIdx === setIdx) {
+        clearRestTimer();
+      } else if (setIdx < restTimer.setIdx) {
+        onUpdateWorkout({ restTimer: { ...restTimer, setIdx: restTimer.setIdx - 1 } });
+      }
+    }
+    // Same bug class, same fix: activeField is set-anchored too. Exact
+    // match closes the keypad; a delete above the field shifts its index.
+    if (activeField && activeField.exerciseUid === uid) {
+      if (activeField.setIdx === setIdx) {
+        setActiveField(null);
+      } else if (setIdx < activeField.setIdx) {
+        setActiveField({ ...activeField, setIdx: activeField.setIdx - 1 });
+      }
     }
   };
 
@@ -8437,6 +10173,18 @@ function ActiveLogger({
         const activeChromeOpacity = Math.max(0, 1 - d * 2);     // out by d=0.5
         const barChromeOpacity   = Math.max(0, (d - 0.5) * 2);  // in from d=0.5
 
+        // S87 (D-267): the header shows ONE timer. While the inline rest
+        // timer is on screen, the header holds the session clock (dot +
+        // gray digits). When it scrolls away, the rest countdown cross-
+        // fades into the SAME slot (clock icon + gold digits) — the icon
+        // names the number: dot = workout length, clock = rest. Active
+        // form only; the docked bar keeps its own pill.
+        const restInHeader = !!restTimer && !inlineRestVisible;
+        // Session layer opacity: hidden while the rest layer owns the
+        // slot in active form; the bar form always shows it (the bar's
+        // time · N line). 0.3s ease both ways — the ruled smoothness.
+        const sessionSlotOpacity = restInHeader ? barChromeOpacity : 1;
+
         // Shared dot — in active: 6×6 square at the left of the duration row.
         // In bar (matches SessionBar exactly): 8×8 round, left=18, top=22 (vertically
         // centered in 52px), with subtle glow.
@@ -8487,16 +10235,19 @@ function ActiveLogger({
             }}
           >
 
-            {/* SHARED — pulsing gold dot */}
+            {/* SHARED — pulsing gold dot. S87 (D-267): fades out with the
+                session digits when the rest layer takes the slot — the
+                dot means "workout length", and only one meaning shows. */}
             <div style={{
               position: "absolute",
               left: dotLeft, top: dotTop,
               width: dotSize, height: dotSize, borderRadius: dotRadius,
               background: COLORS.gold,
               boxShadow: dotGlow,
+              opacity: sessionSlotOpacity,
               pointerEvents: "none",
               transition: dragMinRef.current.dragging ? "none"
-                : "left 0.25s ease, top 0.25s ease, width 0.25s ease, height 0.25s ease, border-radius 0.25s ease, box-shadow 0.25s ease",
+                : "left 0.25s ease, top 0.25s ease, width 0.25s ease, height 0.25s ease, border-radius 0.25s ease, box-shadow 0.25s ease, opacity 0.3s ease",
             }} />
 
             {/* SHARED — workout name. Interpolates position + font size.
@@ -8554,9 +10305,10 @@ function ActiveLogger({
               fontSize: durFontSize, fontWeight: 500,
               fontVariantNumeric: "tabular-nums",
               whiteSpace: "nowrap",
+              opacity: sessionSlotOpacity,
               pointerEvents: "none",
               transition: dragMinRef.current.dragging ? "none"
-                : "left 0.25s ease, top 0.25s ease, font-size 0.25s ease",
+                : "left 0.25s ease, top 0.25s ease, font-size 0.25s ease, opacity 0.3s ease",
             }}>
               {formatDuration(elapsed)}
               <span style={{
@@ -8567,22 +10319,17 @@ function ActiveLogger({
               </span>
             </div>
 
-            {/* S83 header ruling (G — "four things"): the gear is GONE from
-                the header. Its two jobs relocated: rest-timer settings open
-                by tapping the rest timer itself (header digits below, or the
-                inline timer at the set); Cancel Workout moved to the quiet
-                bottom of the exercise list. The header keeps only what's
-                glanced at mid-set: name, session clock, rest, Finish —
-                each owning its own region, nothing adjacent to anything. */}
-
-            {/* ACTIVE-ONLY — rest digits (S80 owner bug #1 continuity: the
-                inline row timer scrolls away with its set; these digits pin
-                the SAME timer in the header). S83: the bordered gold pill is
-                replaced by bare gold digits RIGHT-ALIGNED at the content
-                margin — position (right edge) + color (gold = rest, gray =
-                session) carry the distinction, no chrome. Tappable: opens
-                the rest-timer settings menu (the gear's old job). Fades with
-                the active chrome; the docked bar keeps its own pill. */}
+            {/* S87 (D-267): the rest layer — clock icon + gold digits,
+                cross-fading into the session clock's slot when the inline
+                timer is off screen. Tappable: opens the rest settings menu
+                (the S83 "touch the thing" door rides along; the old
+                right-side digits died with the Finish collision). Mounted
+                whenever a timer runs so the 0.3s fade has a node to
+                animate; pointer events only while it owns the slot.
+                D-268: pulses during the rest-over window — the chrome IS
+                the alert now (the S80 toast is dead). Icon gap runs
+                tighter than the dot's (4 vs ~4+dot-inset) so the two
+                layers sit at the same optical rhythm — owner note, R2. */}
             {restTimer && (() => {
               const target = typeof restCountdownTarget === "number" && restCountdownTarget > 0 ? restCountdownTarget : 90;
               let restDisplay;
@@ -8592,33 +10339,61 @@ function ActiveLogger({
               } else {
                 restDisplay = formatDuration(restElapsed);
               }
+              const restLayerOpacity = restInHeader ? activeChromeOpacity : 0;
               return (
                 <button
                   onClick={() => setSettingsMenuOpen((o) => !o)}
                   style={{
                     position: "absolute",
-                    right: 18, top: 30,
+                    left: 20, top: 29,
+                    display: "flex", alignItems: "center", gap: 4,
                     background: "none", border: "none", padding: 0,
                     cursor: "pointer",
                     color: COLORS.gold, fontSize: 14, fontWeight: 600,
                     fontVariantNumeric: "tabular-nums",
-                    opacity: activeChromeOpacity,
-                    pointerEvents: d > 0.4 ? "none" : "auto",
+                    opacity: restLayerOpacity,
+                    pointerEvents: restInHeader && d <= 0.4 ? "auto" : "none",
+                    animation: restAlertActive ? "mygTimePulse 1.05s ease-in-out 3" : "none",
                     transition: dragMinRef.current.dragging ? "none"
-                      : "opacity 0.25s ease",
+                      : "opacity 0.3s ease",
                   }}
                 >
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <circle cx="12" cy="13" r="8" />
+                    <line x1="12" y1="9" x2="12" y2="13" />
+                    <line x1="12" y1="13" x2="15" y2="15" />
+                  </svg>
                   {restDisplay}
                 </button>
               );
             })()}
+
+            {/* S83 header ruling (G — "four things"): the gear is GONE from
+                the header. Its two jobs relocated: rest-timer settings open
+                by tapping the rest timer itself (header digits below, or the
+                inline timer at the set); Cancel Workout moved to the quiet
+                bottom of the exercise list. The header keeps only what's
+                glanced at mid-set: name, session clock, rest, Finish —
+                each owning its own region, nothing adjacent to anything. */}
+
+            {/* S87 (D-267): the OLD right-aligned rest digits died here —
+                they sat at right:18/top:30 directly under the Finish
+                button (right:18, y 9–43) and collided every countdown.
+                The S80 continuity job (timer never vanishes when its row
+                scrolls away) now belongs to the left-slot rest layer
+                above, which only appears when the inline timer is
+                actually off screen. */}
 
             {/* ACTIVE-ONLY — the rest drain line (S83, the app's rest
                 signature): during a COUNTDOWN rest, a gold hairline along
                 the header's bottom edge drains as the target runs out —
                 glanceable from the bench without reading digits. Countdown
                 only (count-up has nothing to drain). Fades with the active
-                chrome so the morph's docked gold borderTop never doubles. */}
+                chrome so the morph's docked gold borderTop never doubles.
+                S87 (D-267): rises and falls WITH the rest layer — while
+                the inline timer is on screen, its own drain line carries
+                the signature and the header stays clean. D-268: pulses
+                with the rest-over window, full-width. */}
             {restTimer && restTimerMode === "countdown" && (() => {
               const target = typeof restCountdownTarget === "number" && restCountdownTarget > 0 ? restCountdownTarget : 90;
               const frac = Math.max(0, Math.min(1, (target - restElapsed) / target));
@@ -8626,8 +10401,10 @@ function ActiveLogger({
                 <div style={{
                   position: "absolute", left: 0, right: 0, bottom: 0, height: 1.5,
                   background: "#2A2A2A",
-                  opacity: activeChromeOpacity,
+                  opacity: restInHeader ? activeChromeOpacity : 0,
                   pointerEvents: "none",
+                  animation: restAlertActive ? "mygTimePulse 1.05s ease-in-out 3" : "none",
+                  transition: dragMinRef.current.dragging ? "none" : "opacity 0.3s ease",
                 }}>
                   <div style={{
                     position: "absolute", left: 0, top: 0, bottom: 0,
@@ -8677,16 +10454,17 @@ function ActiveLogger({
       })()}
 
       {/* Rest-timer settings menu — two-level: main (mode picker) +
-          countdown duration submenu. S83: the gear is gone; this menu now
-          opens from the rest timer itself (header digits or the inline
-          timer at the set), so it anchors to the RIGHT where the header
-          digits sit. Cancel Workout no longer lives here — it moved to
-          the quiet bottom of the exercise list (same confirm modal). */}
+          countdown duration submenu. S83: the gear is gone; this menu
+          opens from the rest timer itself (the header's rest layer or the
+          inline timer at the set). S87 (D-267): the header trigger moved
+          to the LEFT slot, so the menu anchors left, under it. Cancel
+          Workout no longer lives here — it moved to the quiet bottom of
+          the exercise list (same confirm modal). */}
       {settingsMenuOpen && (
         <>
           <div onClick={() => { setSettingsMenuOpen(false); setSettingsMenuView("main"); }} style={{ position: "absolute", inset: 0, zIndex: 15 }} />
           <div style={{
-            position: "absolute", top: 56, right: 18, zIndex: 16,
+            position: "absolute", top: 56, left: 18, zIndex: 16,
             background: COLORS.card, border: `1px solid ${COLORS.border}`,
             borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.6)",
             minWidth: 170, padding: 6,
@@ -8927,6 +10705,7 @@ function ActiveLogger({
             onOpenVariantMenu={() => setVariantMenuFor(ex.uid)}
             onOpenRestSettings={() => setSettingsMenuOpen(true)}
             onOpenDetail={() => setDetailFor(ex.uid)}
+            inlineRestOuterRef={handleInlineRestNode}
             onFocusField={(setIdx, field) => {
               // Tapping a field just activates it — the placeholder (if any)
               // stays visible in gray so the user can see the suggested
@@ -9266,7 +11045,7 @@ function ActiveLogger({
             userEquipment={userEquipment}
             workoutHistory={workoutHistory}
             customExercises={customExercises}
-            inWorkout
+            anchors={anchors}
             initialVariant={activeEntry.variant}
             onClose={() => setDetailFor(null)}
           />
@@ -9290,6 +11069,7 @@ function ExerciseCard({
   onOpenSetTypePopover, onOpenVariantMenu,
   onFocusField, registerSetRef,
   onOpenRestSettings, onOpenDetail,
+  inlineRestOuterRef, // S87 (D-267): callback ref → the logger's visibility observer
 }) {
   // Header pointer handler: a single point of entry that disambiguates
   // between three gestures from rest:
@@ -9413,6 +11193,19 @@ function ExerciseCard({
       // name, open the exercise's full record. Previously a no-op.
       if (onOpenDetail) onOpenDetail();
     }
+    g.onName = false;
+    g.mode = "idle";
+  };
+  // S87 (#3's sibling, same class): a CANCELLED pointer is never a tap.
+  // The old wiring routed pointercancel through onPointerUp, whose
+  // pending-with-onName branch opened the detail sheet — so an iOS-
+  // cancelled scroll that began on the exercise name could pop the
+  // sheet. Cancel winds the gesture down and opens nothing.
+  const onPointerCancelGesture = () => {
+    const g = headerGestureRef.current;
+    cancelHoldTimer();
+    if (g.mode === "reorder") onReorderEnd();
+    else if (g.mode === "swipe" || g.mode === "closing") closeSwipe();
     g.onName = false;
     g.mode = "idle";
   };
@@ -9633,7 +11426,7 @@ function ExerciseCard({
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
-          onPointerCancel={onPointerUp}
+          onPointerCancel={onPointerCancelGesture}
           style={{ marginBottom: isCollapsed ? 0 : 10, cursor: "grab" }}
         >
           <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 8 }}>
@@ -10102,6 +11895,7 @@ function ExerciseCard({
                         countdownTarget={restCountdownTarget}
                         onDismiss={onClearRestTimer}
                         onOpenSettings={onOpenRestSettings}
+                        outerRef={inlineRestOuterRef}
                       />
                     )}
 
@@ -10173,6 +11967,12 @@ function SwipeableRestDivider({ seconds, onDelete }) {
       setDrag(0);
     }
   };
+  // S87 (#3's sibling, same class): a cancelled pointer never commits —
+  // snap back, delete nothing.
+  const onPointerCancelGesture = () => {
+    dragRef.current.dragging = false;
+    setDrag(0);
+  };
 
   const dragAbs = Math.abs(drag);
   const intensity = Math.min(1, dragAbs / DELETE_THRESHOLD);
@@ -10203,7 +12003,7 @@ function SwipeableRestDivider({ seconds, onDelete }) {
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
-        onPointerCancel={onPointerUp}
+        onPointerCancel={onPointerCancelGesture}
         style={{
           display: "flex", alignItems: "center",
           padding: "0px 6px",
@@ -10235,7 +12035,7 @@ function SwipeableRestDivider({ seconds, onDelete }) {
    was most recently checked). Counts based on a startTs prop so the
    elapsed value survives re-renders without resetting. Swipeable left
    to dismiss. */
-function InlineRestTimer({ startTs, mode, countdownTarget, onDismiss, onOpenSettings }) {
+function InlineRestTimer({ startTs, mode, countdownTarget, onDismiss, onOpenSettings, outerRef }) {
   // countdownTarget comes in as seconds (App-level pref). Default 90 if
   // somehow undefined, but the prop should always be supplied by the parent.
   const COUNTDOWN_TARGET = typeof countdownTarget === "number" && countdownTarget > 0 ? countdownTarget : 90;
@@ -10250,16 +12050,28 @@ function InlineRestTimer({ startTs, mode, countdownTarget, onDismiss, onOpenSett
   // builds proportional to drag distance.
   const DELETE_THRESHOLD = 200;
   const MAX_DRAG = 280;
+  const V_SLOP = 10; // vertical travel beyond this = the user is scrolling
   const [drag, setDrag] = useState(0);
-  const dragRef = useRef({ startX: 0, dragging: false });
+  const dragRef = useRef({ startX: 0, startY: 0, dragging: false });
   const onPointerDown = (e) => {
     e.stopPropagation();
-    dragRef.current = { startX: e.clientX, dragging: true };
+    dragRef.current = { startX: e.clientX, startY: e.clientY, dragging: true };
   };
   const onPointerMove = (e) => {
     if (!dragRef.current.dragging) return;
     e.stopPropagation();
     const dx = e.clientX - dragRef.current.startX;
+    const dy = e.clientY - dragRef.current.startY;
+    // S87 owner bug #3: vertical-first movement is a SCROLL, not a
+    // gesture on the timer — release it entirely so neither the tap nor
+    // the swipe can fire on pointer-up. (The old handler tracked only
+    // horizontal travel, so a scroll that started on the timer ended
+    // with drag ≈ 0 and read as a clean tap.)
+    if (Math.abs(drag) < V_SLOP && Math.abs(dy) >= V_SLOP && Math.abs(dy) > Math.abs(dx)) {
+      dragRef.current.dragging = false;
+      setDrag(0);
+      return;
+    }
     let next = dx;
     if (next > 0) next = 0;
     if (next < -MAX_DRAG) next = -MAX_DRAG;
@@ -10279,6 +12091,15 @@ function InlineRestTimer({ startTs, mode, countdownTarget, onDismiss, onOpenSett
       if (Math.abs(drag) < 4 && onOpenSettings) onOpenSettings();
       setDrag(0);
     }
+  };
+  // S87 owner bug #3, the sharper half: when iOS commits the gesture to
+  // native scrolling (touchAction: pan-y), it fires pointercancel — and
+  // the old wiring routed pointercancel through onPointerUp, whose
+  // "no horizontal travel" branch read every cancelled scroll as a tap.
+  // A cancelled pointer is never a tap: release the gesture, open nothing.
+  const onPointerCancelGesture = () => {
+    dragRef.current.dragging = false;
+    setDrag(0);
   };
 
   const sec = Math.max(0, Math.floor((now - startTs) / 1000));
@@ -10301,7 +12122,7 @@ function InlineRestTimer({ startTs, mode, countdownTarget, onDismiss, onOpenSett
   const intensity = Math.min(1, dragAbs / DELETE_THRESHOLD);
 
   return (
-    <div style={{
+    <div ref={outerRef} style={{
       position: "relative", margin: "2px 4px 4px",
       borderRadius: 6, overflow: "hidden",
     }}>
@@ -10326,7 +12147,7 @@ function InlineRestTimer({ startTs, mode, countdownTarget, onDismiss, onOpenSett
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
-        onPointerCancel={onPointerUp}
+        onPointerCancel={onPointerCancelGesture}
         style={{
           display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
           padding: "6px 0",
@@ -10742,7 +12563,7 @@ function NumericKeypad({
    Slim persistent bar that lives above the TabBar whenever an active
    workout exists AND (the user is not on the workout tab OR the workout
    is minimized). Tap → un-minimize and switch to the workout tab. */
-function SessionBar({ workout, restTimerMode, restCountdownTarget, onTap }) {
+function SessionBar({ workout, restTimerMode, restCountdownTarget, restAlertActive = false, onTap }) {
   const [elapsed, setElapsed] = useState(0);
   const [restElapsed, setRestElapsed] = useState(0);
   useEffect(() => {
@@ -10798,15 +12619,37 @@ function SessionBar({ workout, restTimerMode, restCountdownTarget, onTap }) {
         }}>
           {workout.workoutName || "Active Workout"}
         </div>
-        <div style={{
-          color: COLORS.gold, fontSize: 11, fontWeight: 500,
-          fontVariantNumeric: "tabular-nums", marginTop: 1,
-        }}>
-          {formatDuration(elapsed)} · {workout.exercises.length} {workout.exercises.length === 1 ? "exercise" : "exercises"}
-        </div>
+        {/* S87 (D-268): during the rest-over window the sub-line becomes
+            the alert — clock + "Time! — next set", triple pulse — then
+            hands back to the time · N line (and the steady pill takes
+            over the "Time!" duty). The bar was already the workout's
+            ambassador off-tab; now it also rings the bell. */}
+        {restAlertActive ? (
+          <div style={{
+            color: COLORS.gold, fontSize: 11, fontWeight: 600,
+            marginTop: 1, display: "flex", alignItems: "center", gap: 4,
+            animation: "mygTimePulse 1.05s ease-in-out 3",
+          }}>
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+              <circle cx="12" cy="13" r="8" />
+              <line x1="12" y1="9" x2="12" y2="13" />
+              <line x1="12" y1="13" x2="15" y2="15" />
+            </svg>
+            Time! — next set
+          </div>
+        ) : (
+          <div style={{
+            color: COLORS.gold, fontSize: 11, fontWeight: 500,
+            fontVariantNumeric: "tabular-nums", marginTop: 1,
+          }}>
+            {formatDuration(elapsed)} · {workout.exercises.length} {workout.exercises.length === 1 ? "exercise" : "exercises"}
+          </div>
+        )}
       </div>
-      {/* Rest timer pill — only shows when a rest timer is active */}
-      {restPill && (
+      {/* Rest timer pill — only shows when a rest timer is active; yields
+          to the sub-line alert during the D-268 window (two "Time!"s at
+          once would double-speak). */}
+      {restPill && !restAlertActive && (
         <div style={{
           display: "flex", alignItems: "center", gap: 5,
           padding: "5px 10px", borderRadius: 12,
@@ -10915,8 +12758,28 @@ function AddExerciseSheet({ userEquipment, customExercises = [], workoutHistory 
               Choose Variant
             </div>
             <div style={{ flex: 1, overflowY: "auto", marginBottom: 14 }}>
+              {/* S86 (Q6-B): ONE grammar for "choose a variant" — these
+                  cards adopt the detail-sheet variant menu's evidence line
+                  (session count + last top set, "No history" in inactive
+                  gray), derived at render from the SAME calls the menu
+                  makes (getVariantHistory + sessionTopSet + formatSetSummary
+                  — the D-254 derive-don't-store pattern's cheap cousin:
+                  wiring, not new machinery). The evidence matters most
+                  right here — you're choosing what to log next — and it
+                  makes the pickDefaultVariant pre-check legible: the check
+                  sits on Barbell BECAUSE 14 sessions say so. Q5-A kept
+                  stage 2 for single-variant exercises; this line is the
+                  cargo that earned that screen its keep. */}
               {pendingEx.variants.map((v, i) => {
                 const isActive = pendingVariant && variantKey(pendingVariant) === variantKey(v);
+                const vHist = getVariantHistory(pendingEx.id, variantKey(v), workoutHistory, customExercises);
+                let vPreview;
+                if (vHist.length > 0) {
+                  const vTop = sessionTopSet(vHist[vHist.length - 1].sets);
+                  vPreview = `${vHist.length} ${vHist.length === 1 ? "session" : "sessions"} · last ${formatSetSummary(vTop)}`;
+                } else {
+                  vPreview = "No history";
+                }
                 return (
                   <button
                     key={i}
@@ -10931,8 +12794,15 @@ function AddExerciseSheet({ userEquipment, customExercises = [], workoutHistory 
                       display: "flex", justifyContent: "space-between", alignItems: "center",
                     }}
                   >
-                    <span>{v.label}</span>
-                    {isActive && <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={COLORS.gold} strokeWidth="2.5"><polyline points="20 6 9 17 4 12" /></svg>}
+                    <span style={{ minWidth: 0 }}>
+                      {v.label}
+                      <span style={{
+                        display: "block", marginTop: 3,
+                        color: vHist.length > 0 ? COLORS.textSecondary : COLORS.inactive,
+                        fontSize: 10, fontWeight: 400, fontVariantNumeric: "tabular-nums",
+                      }}>{vPreview}</span>
+                    </span>
+                    {isActive && <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={COLORS.gold} strokeWidth="2.5" style={{ flexShrink: 0 }}><polyline points="20 6 9 17 4 12" /></svg>}
                   </button>
                 );
               })}
@@ -13515,6 +15385,7 @@ function ExercisesTab({
   userEquipment,
   onOpenEquipmentEditor,
   customExercises = [],
+  anchors = [], // S85 (D-257): rides through to the detail sheet's BENCHMARK strip
   exerciseSort,
   onChangeSort,
   workoutHistory = [],
@@ -13752,7 +15623,7 @@ function ExercisesTab({
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search exercises..."
-          style={{ width: "100%", padding: "7px 12px", background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 7, color: COLORS.text, fontSize: 13, outline: "none", boxSizing: "border-box", marginBottom: 8 }}
+          style={{ width: "100%", padding: "7px 12px", background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 7, color: COLORS.text, fontSize: 14, outline: "none", boxSizing: "border-box", marginBottom: 8 }}
         />
 
         {/* Filter row: Body Part dropdown (left) + Equipment toggle pill (right) */}
@@ -13795,24 +15666,6 @@ function ExercisesTab({
           </button>
         </div>
 
-        {/* Contextual "Update Equipment" link — shown only when My Equipment is active */}
-        {onlyMine && (
-          <div style={{ display: "flex", justifyContent: "flex-end", marginTop: -6, marginBottom: 8 }}>
-            <button
-              onClick={onOpenEquipmentEditor}
-              style={{
-                background: "none", border: "none", color: COLORS.gold,
-                fontSize: 11, cursor: "pointer", padding: "2px 4px",
-                display: "flex", alignItems: "center", gap: 4,
-              }}
-            >
-              Update Equipment
-              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                <polyline points="9 18 15 12 9 6" />
-              </svg>
-            </button>
-          </div>
-        )}
       </div>
 
       {/* Exercise list */}
@@ -13820,9 +15673,35 @@ function ExercisesTab({
         <ScrollHint scrollRef={exScrollRef} />
         {sorted.length === 0 && (
           <div style={{ textAlign: "center", color: COLORS.textSecondary, fontSize: 13, padding: "40px 20px" }}>
-            {onlyMine
-              ? "No exercises match your equipment. Try turning off the My Equipment filter."
-              : "No exercises found."}
+            {/* S86 (Q1-B): the Update Equipment door renders HERE and only
+                here — the standing third chrome row is dead (it rode the
+                toggle, shifted the list on every flip, and answered a
+                question nobody was asking yet). The moment the equipment
+                filter starves the list IS the moment "my equipment list
+                is wrong" gets asked, so the door replaces the old
+                "try turning off the filter" advice — the app fixes
+                instead of advising. Equipment's permanent home stays the
+                Coach's File PLAN row. */}
+            {onlyMine ? (
+              <>
+                No exercises match your equipment.
+                <div style={{ display: "flex", justifyContent: "center", marginTop: 10 }}>
+                  <button
+                    onClick={onOpenEquipmentEditor}
+                    style={{
+                      background: "none", border: "none", color: COLORS.gold,
+                      fontSize: 12, cursor: "pointer", padding: "2px 4px",
+                      display: "flex", alignItems: "center", gap: 4,
+                    }}
+                  >
+                    Update Equipment
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                      <polyline points="9 18 15 12 9 6" />
+                    </svg>
+                  </button>
+                </div>
+              </>
+            ) : "No exercises found."}
           </div>
         )}
         {sorted.map((e) => {
@@ -13862,10 +15741,19 @@ function ExercisesTab({
                 transition: "background 0.4s ease, border-left-color 0.4s ease",
               }}
             >
+              {/* S86 (Q7-C, owner-opened): the tab's type comes up to the
+                  picker's scale — names 15, sublines 12 — because the tab
+                  is where the reading happens and it ran a point under.
+                  The thumb HOLDS at 44 (D-248 placeholder; density matters
+                  more in a 117-row reference list than a transient picker).
+                  The pinned rule: ONE type scale everywhere (15/12); thumb
+                  size diverges by role — pickers 52, reference 44. At 44
+                  the thumb, not the text, sets row height, so this bump is
+                  density-free. */}
               <ExerciseThumbnail size={44} monogram={e.isCustom ? e.name.charAt(0) : undefined} />
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ color: COLORS.text, fontSize: 14, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{e.name}</div>
-                <div style={{ color: COLORS.textSecondary, fontSize: 11, marginTop: 1 }}>{e.primary}</div>
+                <div style={{ color: COLORS.text, fontSize: 15, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{e.name}</div>
+                <div style={{ color: COLORS.textSecondary, fontSize: 12, marginTop: 1 }}>{e.primary}</div>
               </div>
               <div style={{ textAlign: "right", flexShrink: 0, marginLeft: 8 }}>
                 {showFrequency ? (
@@ -13878,8 +15766,32 @@ function ExercisesTab({
                   )
                 ) : lastMax ? (
                   <>
-                    <div style={{ color: COLORS.gold, fontSize: 13, fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>{lastMax.value}</div>
-                    <div style={{ color: COLORS.textSecondary, fontSize: 9, marginTop: 1, fontVariantNumeric: "tabular-nums" }}>
+                    {/* S84 Q1-B (D-243): the last-max staircase fix — the
+                        logger's P-B spine transplanted verbatim (same
+                        34/12/22 cells, same gray ×). Weights RIGHT-align
+                        into the fixed ×, reps LEFT-align out, so digits
+                        stack down the whole list. Bodyweight reps-only
+                        values sit in the reps cell — one number-space for
+                        rep counts. The 9px subline stays right-anchored
+                        at the margin, keeping the row's outer silhouette
+                        while the spine block's right edge runs ragged
+                        (that ragged edge IS the idiom, per the ruling). */}
+                    <div style={{ display: "flex", justifyContent: "flex-end", fontVariantNumeric: "tabular-nums" }}>
+                      {lastMax.hasWeight ? (
+                        <>
+                          <span style={{ width: 34, textAlign: "right", color: COLORS.gold, fontSize: 13, fontWeight: 600 }}>{lastMax.weight}</span>
+                          <span style={{ width: 12, textAlign: "center", color: COLORS.inactive, fontSize: 13 }}>×</span>
+                          <span style={{ width: 22, textAlign: "left", color: COLORS.gold, fontSize: 13, fontWeight: 600 }}>{lastMax.reps}</span>
+                        </>
+                      ) : (
+                        <>
+                          <span style={{ width: 34 }} />
+                          <span style={{ width: 12 }} />
+                          <span style={{ width: 22, textAlign: "left", color: COLORS.gold, fontSize: 13, fontWeight: 600 }}>{lastMax.reps}</span>
+                        </>
+                      )}
+                    </div>
+                    <div style={{ color: COLORS.textSecondary, fontSize: 10, marginTop: 1, fontVariantNumeric: "tabular-nums" }}>
                       {formatRelativeDate(lastMax.date)}
                       {lastMax.variantLabel && ` · ${lastMax.variantLabel}`}
                     </div>
@@ -14006,6 +15918,7 @@ function ExercisesTab({
           userEquipment={userEquipment}
           workoutHistory={workoutHistory}
           customExercises={customExercises}
+          anchors={anchors}
           onClose={() => setDetailId(null)}
           onEditCustom={() => openEditCustom(detailId)}
           onDeleteCustom={() => {
@@ -14089,7 +16002,15 @@ function CustomExerciseForm({ existing, existingNames = [], onSave, onCancel }) 
     if (!v) return "";
     return v.equipment && v.equipment.length > 0 ? v.equipment[0] : "__none__";
   });
-  const [showError, setShowError] = useState(null);
+  // S86 (Q4-C) diligence find: this form shipped with TWO stacked intents —
+  // a disabled Save AND an explain-on-tap error branch ("Name is required."
+  // etc. + a centered red line) that could never run, because the disabled
+  // attribute silenced the tap before handleSave fired. Ruled: the silent
+  // disabled Save is the real design (three visible fields need no
+  // narration; gray-promising-nothing is honest — D-244 only bites when
+  // GOLD promises action). The dead branch, the showError state, and its
+  // setter calls are deleted. The inline name-taken error below the Name
+  // field — the only error that ever rendered — survives untouched.
 
   const PRIMARY_OPTIONS = ["Chest", "Back", "Shoulders", "Arms", "Legs", "Core", "Full Body", "Cardio"];
 
@@ -14099,13 +16020,7 @@ function CustomExerciseForm({ existing, existingNames = [], onSave, onCancel }) 
   const canSave = trimmedName.length > 0 && primary && equipmentId && !nameTaken;
 
   const handleSave = () => {
-    if (!canSave) {
-      if (nameTaken) setShowError("That name is already used by another exercise.");
-      else if (!trimmedName) setShowError("Name is required.");
-      else if (!primary) setShowError("Pick a primary muscle group.");
-      else if (!equipmentId) setShowError("Pick equipment.");
-      return;
-    }
+    if (!canSave) return; // unreachable via the disabled button; belt-and-suspenders
     const equipIds = equipmentId === "__none__" ? [] : [equipmentId];
     // Build a readable variant label from the equipment pick
     let variantLabel = "Bodyweight";
@@ -14192,8 +16107,8 @@ function CustomExerciseForm({ existing, existingNames = [], onSave, onCancel }) 
             <label style={{ display: "block", color: COLORS.textSecondary, fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>Name</label>
             <input
               value={name}
-              onChange={(e) => { setName(e.target.value); setShowError(null); }}
-              placeholder="e.g. Billy's Shoulder Thing"
+              onChange={(e) => setName(e.target.value)}
+              placeholder="e.g. Landmine Press"
               maxLength={50}
               style={{
                 width: "100%", padding: "10px 12px",
@@ -14219,7 +16134,7 @@ function CustomExerciseForm({ existing, existingNames = [], onSave, onCancel }) 
                 return (
                   <button
                     key={p}
-                    onClick={() => { setPrimary(p); setShowError(null); }}
+                    onClick={() => setPrimary(p)}
                     style={{
                       padding: "7px 12px", borderRadius: 18,
                       border: `1px solid ${active ? COLORS.gold : COLORS.border}`,
@@ -14246,7 +16161,7 @@ function CustomExerciseForm({ existing, existingNames = [], onSave, onCancel }) 
               {/* Bodyweight / other — covers the "no equipment" and "some
                   equipment not in our catalog" cases. */}
               <button
-                onClick={() => { setEquipmentId("__none__"); setShowError(null); }}
+                onClick={() => setEquipmentId("__none__")}
                 style={{
                   width: "100%", padding: "9px 10px", borderRadius: 6,
                   background: equipmentId === "__none__" ? COLORS.goldHighlight : "transparent",
@@ -14267,7 +16182,7 @@ function CustomExerciseForm({ existing, existingNames = [], onSave, onCancel }) 
                     return (
                       <button
                         key={item.id}
-                        onClick={() => { setEquipmentId(item.id); setShowError(null); }}
+                        onClick={() => setEquipmentId(item.id)}
                         style={{
                           width: "100%", padding: "9px 10px", borderRadius: 6,
                           background: active ? COLORS.goldHighlight : "transparent",
@@ -14282,12 +16197,6 @@ function CustomExerciseForm({ existing, existingNames = [], onSave, onCancel }) 
               ))}
             </div>
           </div>
-
-          {showError && (
-            <div style={{ color: "#D14343", fontSize: 12, marginTop: 4, textAlign: "center" }}>
-              {showError}
-            </div>
-          )}
 
           <div style={{ color: COLORS.textSecondary, fontSize: 11, marginTop: 20, lineHeight: 1.5, fontStyle: "italic", textAlign: "center" }}>
             {existing
@@ -14350,8 +16259,14 @@ function AlternativesSheet({
         <ExerciseThumbnail size={52} monogram={e.isCustom ? e.name.charAt(0) : undefined} />
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ color: COLORS.text, fontSize: 15, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{e.name}</div>
+          {/* S84 Q6-B (D-246): a dim row keeps its muscle — the subline
+              no longer swaps information for constraint, it holds both:
+              "Chest · needs chest press machine". Lowercase words, not a
+              badge (same grammar family as the door's provenance and the
+              Q3-B "· yours" candidate). Ellipsis overflow handles the
+              long tail past getMissingEquipmentLabel's 28-char guard. */}
           <div style={{ color: COLORS.textSecondary, fontSize: 12, marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-            {isAvailable ? e.primary : missingLabel}
+            {isAvailable ? e.primary : `${e.primary} · ${missingLabel.charAt(0).toLowerCase()}${missingLabel.slice(1)}`}
           </div>
         </div>
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={COLORS.textSecondary} strokeWidth="2.5"><polyline points="9 18 15 12 9 6" /></svg>
@@ -14466,14 +16381,16 @@ function AlternativesSheet({
 
 function ExerciseDetailSheet({
   exercise, userEquipment, workoutHistory = [], customExercises = [], onClose, onEditCustom, onDeleteCustom,
-  // S83 tap-through (opened from the active logger): inWorkout swaps the
-  // "+ Add" CTA for a quiet IN WORKOUT tag (adding what's already in the
-  // session is the one wrong action), and initialVariant pins the sheet
-  // to the variant being logged so History and the chart match the work
-  // in front of the user. Switching variants inside the sheet stays
-  // browse-only — it never mutates the workout; the logger's own chip
-  // owns that.
-  inWorkout = false, initialVariant = null,
+  // S83 tap-through (opened from the active logger): initialVariant pins
+  // the sheet to the variant being logged so History and the chart match
+  // the work in front of the user. Switching variants inside the sheet
+  // stays browse-only — it never mutates the workout; the logger's own
+  // chip owns that. (The logger-context status tag that once rode this
+  // door died in S87 — the sheet renders identically from every door.)
+  initialVariant = null,
+  // S85 (D-257): the anchor store, for the Records-tab BENCHMARK strip.
+  // Optional — callers that don't pass it just render no strip.
+  anchors = [],
 }) {
   const [activeTab, setActiveTab] = useState("about");
   const [variantMenuOpen, setVariantMenuOpen] = useState(false);
@@ -14525,9 +16442,11 @@ function ExerciseDetailSheet({
           <div style={{ width: 36, height: 4, borderRadius: 2, background: COLORS.border }} />
         </div>
 
-        {/* Header: centered name with compact CTA floating top-right.
-            For custom exercises, a 3-dot overflow menu (Edit / Delete)
-            sits in the top-LEFT so it doesn't crowd the Add CTA. */}
+        {/* Header: centered name; the top-right slot is EMPTY (S87 — the
+            logger-context status tag died, see the D-244 note below). For
+            custom exercises, a 3-dot overflow menu (Edit / Delete) sits
+            in the top-LEFT. The 72px name gutters stay for 3-dot
+            symmetry. */}
         <div style={{ padding: "6px 16px 10px", flexShrink: 0, position: "relative" }}>
           <h2 style={{
             fontFamily: "Georgia, 'Times New Roman', serif",
@@ -14557,38 +16476,18 @@ function ExerciseDetailSheet({
             </button>
           )}
 
-          {/* Add-to-Workout CTA — top-right. S83: when the sheet is opened
-              FROM the active logger the exercise is already in the session,
-              so the CTA becomes a quiet IN WORKOUT tag — gold-tint fill,
-              #4a3d00 border, the COACH ASKS card's grammar. */}
-          {inWorkout ? (
-            <div style={{
-              position: "absolute", right: 16, top: 4,
-              padding: "5px 10px", background: COLORS.goldHighlight,
-              border: "1px solid #4a3d00", color: COLORS.gold,
-              borderRadius: 13, fontSize: 10, fontWeight: 600, letterSpacing: 0.8,
-              display: "flex", alignItems: "center", gap: 4,
-            }}>
-              <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
-                <polyline points="20 6 9 17 4 12" />
-              </svg>
-              IN WORKOUT
-            </div>
-          ) : (
-            <button style={{
-              position: "absolute", right: 16, top: 2,
-              padding: "6px 11px", background: "transparent",
-              border: `1px solid ${COLORS.gold}`, color: COLORS.gold,
-              borderRadius: 14, fontSize: 11, fontWeight: 600, cursor: "pointer",
-              display: "flex", alignItems: "center", gap: 4,
-            }}>
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.8">
-                <line x1="12" y1="5" x2="12" y2="19" />
-                <line x1="5" y1="12" x2="19" y2="12" />
-              </svg>
-              Add
-            </button>
-          )}
+          {/* S84 Q2-B (D-244): the browse-context "+ Add" CTA is DEAD —
+              it was a no-op since it was drawn (gold promising action,
+              delivering nothing — the color law's inversion). Adding
+              keeps its two real homes: the logger's + Add Exercise
+              mid-workout, and the Workout door for starting a session
+              (D-241 contract — no side-door session entry from browse).
+              S87: the logger-context status tag that filled this slot
+              after the CTA died is dead too (it was static chrome
+              confirming the tap the user just made, and it collided with
+              long names). The slot is empty by ruling. If a wired
+              cross-tab add ever earns its way in, it renders here,
+              contextual on an active workout — never as a dead control. */}
 
           {/* Overflow menu for custom exercises — Edit / Delete. Anchored
               to the left now that the 3-dot lives in the top-left. */}
@@ -14628,18 +16527,27 @@ function ExerciseDetailSheet({
             </>
           )}
 
-          {/* Variant chip — centered under the name. Hidden for single-variant
-              exercises (nothing to switch to). */}
+          {/* Variant switch — centered under the name, BARE gold text +
+              caret (S84 Q5-B / D-245). The pill chrome is dead: S83
+              established the app's signature for actionable gold as bare
+              digits with no container (the header rest timer), and the
+              pill outshouted the exercise name it sat under. Position
+              carries the meaning (title/subtitle grammar — the qualifier
+              under the name IS the variant you're looking at, reinforced
+              by the per-variant empty states and menu previews); the
+              caret carries "this opens something." Hit area preserved via
+              padding. Hidden for single-variant exercises (nothing to
+              switch to). */}
           {hasMultipleVariants && (
             <div style={{ display: "flex", justifyContent: "center", marginTop: 10 }}>
               <button
                 onClick={() => setVariantMenuOpen(true)}
                 style={{
-                  padding: "6px 13px", borderRadius: 16,
-                  border: `1px solid ${COLORS.gold}`,
-                  background: COLORS.goldHighlight, color: COLORS.gold,
+                  padding: "6px 8px", borderRadius: 8,
+                  border: "none", background: "transparent",
+                  color: COLORS.gold,
                   fontSize: 12, fontWeight: 600, cursor: "pointer",
-                  display: "flex", alignItems: "center", gap: 6,
+                  display: "flex", alignItems: "center", gap: 5,
                 }}
               >
                 <span>{activeVariant.label}</span>
@@ -14686,9 +16594,51 @@ function ExerciseDetailSheet({
           {activeTab === "history" && (hasHistory
             ? <HistoryTabContent history={variantHistory} />
             : <EmptyTabState message={`No history yet for ${activeVariant.label}. Log it in a workout to track progress here.`} />)}
-          {activeTab === "records" && (hasHistory
-            ? <RecordsTabContent history={variantHistory} />
-            : <EmptyTabState message={`No records yet for ${activeVariant.label}. Complete a session to start tracking PRs.`} />)}
+          {activeTab === "records" && (() => {
+            // S85 (D-257): the BENCHMARK strip — the ONE surface where
+            // anchor status renders for the user. Eyebrow (INSTRUCTIONS-
+            // eyebrow grammar) + the anchor big on the × spine + the
+            // status word (CONFIRMED / NEW / IN REVIEW) + one derived
+            // why-sentence: the tutorial delivered at the moment of the
+            // question. Per-variant; renders only when this variant
+            // holds an anchor. Raw engine vocabulary never renders
+            // (D-129's user-facing sibling).
+            const variantAnchor = (anchors || []).find(
+              (a) => a && a.exerciseId === exercise.id && a.variantKey === activeVariantKey
+            );
+            const strip = variantAnchor ? (
+              <div style={{
+                margin: "14px 22px 0",
+                padding: 14,
+                background: COLORS.card,
+                border: `1px solid ${COLORS.border}`,
+                borderRadius: 12,
+              }}>
+                <div style={{ fontSize: 10, color: "#888", letterSpacing: 1.5, textTransform: "uppercase" }}>Benchmark</div>
+                <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginTop: 8 }}>
+                  <span style={{ display: "inline-flex", alignItems: "baseline" }}>
+                    {variantAnchor.weightLb > 0 && (
+                      <>
+                        <span style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 24, color: COLORS.text }}>{variantAnchor.weightLb}</span>
+                        <span style={{ fontSize: 16, color: "#666", padding: "0 6px" }}>×</span>
+                      </>
+                    )}
+                    <span style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 24, color: COLORS.text }}>{variantAnchor.reps}</span>
+                  </span>
+                  <span style={{ fontSize: 10, color: "#555", letterSpacing: 1, textTransform: "uppercase" }}>{anchorStatusWord(variantAnchor)}</span>
+                </div>
+                <div style={{ fontSize: 11, color: "#888", marginTop: 8, lineHeight: 1.5 }}>{anchorStatusWhy(variantAnchor)}</div>
+              </div>
+            ) : null;
+            return (
+              <>
+                {strip}
+                {hasHistory
+                  ? <RecordsTabContent history={variantHistory} />
+                  : <EmptyTabState message={`No records yet for ${activeVariant.label}. Complete a session to start tracking PRs.`} />}
+              </>
+            );
+          })()}
         </div>
 
         {/* Variant dropdown menu — overlays the sheet when the chip is tapped.
@@ -14843,13 +16793,18 @@ function AboutTabContent({ exercise, variant, userEquipment }) {
       </div>
 
       {/* Equipment callout for the active variant — compact single-row bar
-          replacing the old multi-row "Equipment Variants" list. */}
+          replacing the old multi-row "Equipment Variants" list.
+          S86 (Q2-B): the 0.55 whole-bar dim is DEAD — it was content-dim,
+          the species D-247 narrowed dim away from (dim = blocked option in
+          a PICKER, never lesser content; this bar is the page you're
+          reading, not a picker). Unavailability is carried by the gray dot
+          + the UNAVAILABLE word, which were already stating the fact the
+          fade was repeating. Full opacity, one border, always. */}
       <div style={{
         padding: "10px 14px", borderRadius: 10, marginBottom: 16,
         background: COLORS.card,
-        border: `1px solid ${available ? COLORS.border : "#2a2a2a"}`,
+        border: `1px solid ${COLORS.border}`,
         display: "flex", alignItems: "center", gap: 10,
-        opacity: available ? 1 : 0.55,
       }}>
         <span style={{
           width: 8, height: 8, borderRadius: "50%",
@@ -14864,31 +16819,38 @@ function AboutTabContent({ exercise, variant, userEquipment }) {
         )}
       </div>
 
-      {/* Form cues — placeholder content. In production these will be stored
-          per (exerciseId, variantKey) since cues legitimately differ between
-          e.g. Barbell Bench Press and Dumbbell Bench Press. */}
-      <div style={{ marginBottom: 18 }}>
-        <div style={{ color: COLORS.textSecondary, fontSize: 10, textTransform: "uppercase", letterSpacing: 0.8, marginBottom: 10 }}>Form Cues</div>
-        <ul style={{ margin: 0, padding: 0, listStyle: "none" }}>
-          {[
-            "Brace your core before unracking the weight.",
-            "Drive through your heels and keep your chest up.",
-            "Control the descent — don't let gravity do the work.",
-            "Last 2-3 reps should feel genuinely hard.",
-          ].map((cue, i) => (
-            <li key={i} style={{
-              color: COLORS.text, fontSize: 13, lineHeight: 1.55,
-              paddingLeft: 16, position: "relative", marginBottom: 8,
-            }}>
-              <span style={{
-                position: "absolute", left: 0, top: 8,
-                width: 4, height: 4, borderRadius: "50%", background: COLORS.gold,
-              }} />
-              {cue}
-            </li>
-          ))}
-        </ul>
-      </div>
+      {/* Instructions — real content per (exercise, variant), S84 content
+          pass (D-249). Steps resolve override-by-variant-label, else base.
+          null entries are the §8 ruling: cardio machines with nothing to
+          teach render NO section — no generic fallback may be added here
+          (the old four-liner is dead; PART 16 guards its grave). Numbers
+          are gray by the D-243 idiom: gray = ambient structure, gold = the
+          thing you act on. */}
+      {(() => {
+        const instr = EXERCISE_INSTRUCTIONS[exercise.id];
+        if (!instr) return null; // §8 — no Instructions section for this exercise
+        const steps = (instr.overrides && instr.overrides[variant.label]) || instr.base;
+        return (
+          <div style={{ marginBottom: 18 }}>
+            <div style={{ color: COLORS.textSecondary, fontSize: 10, textTransform: "uppercase", letterSpacing: 0.8, marginBottom: 10 }}>Instructions</div>
+            <ol style={{ margin: 0, padding: 0, listStyle: "none" }}>
+              {steps.map((step, i) => (
+                <li key={i} style={{
+                  color: COLORS.text, fontSize: 13, lineHeight: 1.55,
+                  paddingLeft: 22, position: "relative", marginBottom: 8,
+                }}>
+                  <span style={{
+                    position: "absolute", left: 0, top: 0,
+                    color: COLORS.textSecondary, fontSize: 12,
+                    fontVariantNumeric: "tabular-nums",
+                  }}>{i + 1}</span>
+                  {step}
+                </li>
+              ))}
+            </ol>
+          </div>
+        );
+      })()}
 
       {/* Secondary muscles — movement-level, same across all variants */}
       {exercise.secondary && exercise.secondary.length > 0 && (
@@ -15394,6 +17356,80 @@ function migrateBodyStats(bs) {
   return next;
 }
 
+/* ── S85 (D-257): BENCHMARKS derives from the anchor store ─────────
+   The old progressPRs letterbox had NO in-app writer — only snapshot
+   import and reset touched it, so a real user's PRs never reached the
+   file. Same disease Q3 found in the footer: a second copy of truth
+   nothing kept honest. Fix is the same law: derive at render from the
+   single source (the anchor records the engine already maintains).
+   The legacy store survives ONLY as import/tool substrate (see
+   coachToolBenchmarks) — it renders nowhere.
+
+   Row shape (pure, PART-17-testable):
+     { key, exerciseId, exerciseName, variant, variantKey,
+       weightLb, reps, repsOnly, isPRRecent, showVariant }
+   - sort: most recently worked first (lastEvaluatedAt desc).
+   - isPRRecent: the newest audit-trail entry beat the anchor — the
+     gold PR tag marks the row whose latest work set a new high. No
+     date on the tag (owner ruling); the date lives in the sheet.
+   - showVariant: parenthetical renders only when MORE THAN ONE
+     variant of the exercise holds an anchor — "Face Pull (Cable)" is
+     noise when cable is the only way you've ever done it (S85). */
+function deriveBenchmarkRows(anchors) {
+  const list = Array.isArray(anchors) ? anchors.filter(Boolean) : [];
+  const perExercise = {};
+  for (const a of list) {
+    perExercise[a.exerciseId] = (perExercise[a.exerciseId] || 0) + 1;
+  }
+  return [...list]
+    .sort((a, b) => String(b.lastEvaluatedAt || "").localeCompare(String(a.lastEvaluatedAt || "")))
+    .map((a) => {
+      const latest = (a.history && a.history[0]) || null;
+      return {
+        key: `${a.exerciseId}::${a.variantKey}`,
+        exerciseId: a.exerciseId,
+        exerciseName: a.exerciseName,
+        variant: a.variant,
+        variantKey: a.variantKey,
+        weightLb: a.weightLb,
+        reps: a.reps,
+        repsOnly: a.bodyweightMode === "reps_only" || !(a.weightLb > 0),
+        isPRRecent: !!(latest && latest.result === "beat"),
+        showVariant: (perExercise[a.exerciseId] || 0) > 1,
+      };
+    });
+}
+
+/* ── S85 (D-254, Q3-C): the signed footer's date is DERIVED ────────
+   The stored stamp (coachFileLastUpdatedAt) only moved on user-authored
+   edits — engine-authored changes (a new PR, a fresh observation)
+   didn't move it, so the file could visibly change while the signature
+   claimed it hadn't ("updated 9d ago" under a PR dated yesterday).
+   Same words, made true: the footer date is the max of the stamp and
+   the newest content actually on the file. Anchor dates are
+   "YYYY-MM-DD" strings; parsed as local-noon epochs so "1d ago" math
+   doesn't wobble across timezones. */
+function deriveFileUpdatedAt({ stampMs, coachRules, coachObservations, anchors, weightLog }) {
+  let max = typeof stampMs === "number" ? stampMs : 0;
+  for (const r of (coachRules || [])) {
+    if (r && typeof r.createdAt === "number" && r.createdAt > max) max = r.createdAt;
+  }
+  for (const o of (coachObservations || [])) {
+    if (!o) continue;
+    if (typeof o.createdAt === "number" && o.createdAt > max) max = o.createdAt;
+    if (typeof o.confirmedAt === "number" && o.confirmedAt > max) max = o.confirmedAt;
+  }
+  for (const a of (anchors || [])) {
+    if (!a || typeof a.lastEvaluatedAt !== "string" || !a.lastEvaluatedAt) continue;
+    const t = Date.parse(a.lastEvaluatedAt + "T12:00:00");
+    if (!Number.isNaN(t) && t > max) max = t;
+  }
+  for (const w of (weightLog || [])) {
+    if (w && typeof w.loggedAt === "number" && w.loggedAt > max) max = w.loggedAt;
+  }
+  return max || null;
+}
+
 // Coach monogram — gold C in a gold-bordered circle. Used in the
 // header bar (22px), the signed footer (18px), and inside the future
 // CoachCTACard (24px). Single source so the visual identity is one
@@ -15419,11 +17455,17 @@ function ProfileTab({
   userName,
   // Plan section data
   planGoal, fitnessLevel, timeAway, planDaysPerWeek,
-  // Equipment
+  // Equipment — S85 (D-255, Q4-B): the one-row EQUIPMENT section died
+  // (§8 stub law); equipment is now PLAN's last row.
   equipmentCount,
   equipmentLabel,
-  // Other section data
-  coachRules, progressPRs, coachObservations,
+  // Other section data. S85 (D-257): progressPRs is GONE from this
+  // surface — BENCHMARKS derives from the anchor store.
+  coachRules, coachObservations,
+  // S85 (D-257): the anchor records + everything the tapped-benchmark
+  // detail sheet needs (the shipped ExerciseDetailSheet, pinned to the
+  // row's variant — one component everywhere, no bespoke sub-screen).
+  anchors, userEquipment, workoutHistory, customExercises,
   // Body stats — surfaced in the header intake form (Step 2 this session).
   // Replaces the v27 identity-only header. Cells tap to edit; tap routes
   // to onOpenBodyStats which is a no-op stub until the Body Stats sub-
@@ -15446,12 +17488,16 @@ function ProfileTab({
 }) {
   const profileScrollRef = useRef(null);
   useScrollMemory("profile", profileScrollRef);
+  // S85 (D-257): tapping a benchmark row raises the shipped
+  // ExerciseDetailSheet pinned to that row's variant. Local state holds
+  // the resolved { exercise, variant } pair; null = closed.
+  const [benchDetail, setBenchDetail] = useState(null);
   // Empty-state detection. Bible §6.5: first-launch shows vitals in
   // muted gray, "New file" subtitle, one-liner italic placeholders per
   // section, and a "file opened today" signed footer.
   const isFirstLaunch = (sessionsCount || 0) === 0
     && (!coachRules || coachRules.length === 0)
-    && (!progressPRs || progressPRs.length === 0)
+    && (!anchors || anchors.length === 0)
     && (!coachObservations || coachObservations.length === 0);
 
   // Truncation helpers. Each section shows first 3 rows + a link
@@ -15465,20 +17511,41 @@ function ProfileTab({
   // the clipboard. Storage / internal identifiers still use the
   // progressPRs name; only user-facing strings are renamed.
   const sortedRules = [...(coachRules || [])].sort((a, b) => b.createdAt - a.createdAt);
-  // S81 full visibility (D-206): everything shows, status-ranked
-  // confirmed → asked → watching → denied, then recency. Bones now,
-  // pretty later (owner call).
-  const sortedObs = [...(coachObservations || [])].filter(Boolean)
+  // S85 (D-252, Q1-B): dropped observations LEAVE the landing — the
+  // front page shows live intelligence only. Full visibility (D-206)
+  // survives one tap in: the Observations sub-screen keeps every row
+  // including denied, and the View-all count below counts them
+  // honestly. This also resolves the last whole-content dim in the
+  // app (the 0.5-opacity denied row) against D-247's law: dim means
+  // blocked option in a picker, never lesser content.
+  const allObs = [...(coachObservations || [])].filter(Boolean);
+  const sortedObs = allObs
+    .filter((o) => !(o.source === "engine" && o.status === "denied"))
     .sort((a, b) => obsStatusRank(a) - obsStatusRank(b) || b.createdAt - a.createdAt);
-  const sortedPRs = [...(progressPRs || [])]
-    .filter((p) => p.isPR || p.isNew)
-    .sort((a, b) => b.achievedAt - a.achievedAt);
+  const totalObs = allObs.length; // honest View-all count (incl. denied)
+  // S85 (D-257): BENCHMARKS = the anchor table — the working numbers
+  // Coach holds, not a feed of PR moments. Derived at render from the
+  // anchor store (the letterbox progressPRs store renders nowhere).
+  const benchRows = deriveBenchmarkRows(anchors);
   const visibleRules = sortedRules.slice(0, 3);
   const visibleObs = sortedObs.slice(0, 3);
-  const visiblePRs = sortedPRs.slice(0, 3);
+  const visibleBench = benchRows.slice(0, 3);
   const moreRules = sortedRules.length - visibleRules.length;
-  const morePRs = sortedPRs.length - visiblePRs.length;
-  const moreObs = sortedObs.length - visibleObs.length;
+  const moreBench = benchRows.length - visibleBench.length;
+  const moreObs = totalObs - visibleObs.length;
+
+  // S85 (D-257): resolve a benchmark row to the { exercise, variant }
+  // pair the detail sheet needs. Name-independent: anchors carry ids
+  // and variantKeys. Unresolvable rows (e.g. a deleted custom) degrade
+  // quietly — the row renders, the tap no-ops, same convention as the
+  // anchor resolver.
+  const openBenchDetail = (row) => {
+    const exercise = findExerciseById(row.exerciseId, customExercises || []);
+    if (!exercise || !Array.isArray(exercise.variants)) return;
+    const variant = exercise.variants.find((v) => variantKey(v) === row.variantKey) || exercise.variants[0];
+    if (!variant) return;
+    setBenchDetail({ exercise, variant });
+  };
 
   // Identity name only — the subtitle ("Intermediate · Level 2 · Grinder")
   // was removed per session 36 feedback: gamification metadata (Level/badge)
@@ -15713,16 +17780,22 @@ function ProfileTab({
             // reference for first-launch shows Intermediate without
             // a Time Away row, so we treat null as "not yet set, hide".
             const showTimeAway = fitnessLevel !== "beginner" && timeAway != null;
+            // S85 (D-255, Q4-B): Equipment is PLAN's last row — one fact
+            // of the same species as Goal / Level / Days ("what Coach
+            // works with"), with its own deep link to the Equipment
+            // sub-screen. The one-row EQUIPMENT section died (§8 law:
+            // one-line stubs die rather than survive).
             const rows = [
               { key: "goal", label: "Goal", value: PLAN_GOAL_LABELS[planGoal] || "Build Muscle" },
               { key: "level", label: "Level", value: levelLabel },
               ...(showTimeAway ? [{ key: "timeAway", label: "Time away", value: PLAN_TIME_AWAY_LABELS[timeAway] }] : []),
               { key: "days", label: "Days / week", value: String(planDaysPerWeek || 3) },
+              { key: "equipment", label: "Equipment", value: equipmentLabel || `${equipmentCount || 0} items selected`, onTap: onOpenEquipment },
             ];
             return rows.map((r) => (
               <button
                 key={r.label}
-                onClick={() => onOpenPlan(r.key)}
+                onClick={() => (r.onTap ? r.onTap() : onOpenPlan(r.key))}
                 style={{
                   ...rowLineStyle(),
                   width: "100%",
@@ -15738,22 +17811,96 @@ function ProfileTab({
           })()}
         </div>
 
-        {/* ── Section: EQUIPMENT ── */}
+        {/* ── Section: BENCHMARKS (S85, D-257) ──
+            The anchor table — the working numbers Coach holds, derived
+            from the anchor store. Coach's-card order (D-258, Q8-A):
+            the living log opens right after the intake header.
+
+            Row grammar (owner-ruled after the status-column experiment
+            was tried and killed on sight): CLEAN SINGLE-LINE ROWS —
+            name + variant parenthetical (omitted when only one variant
+            is anchored) + gold PR tag (no date) + the anchor on the ×
+            spine (D-243 idiom: 34/12/22 cells, gray ×, weights
+            right-align in, reps left-align out; bodyweight reps-only
+            values sit in the reps cell). NO STATUS LANGUAGE on this
+            surface — status renders only in the detail sheet's
+            BENCHMARK strip and comes out of Coach's mouth (debrief)
+            everywhere else. Tap → ExerciseDetailSheet pinned to the
+            row's variant. */}
         <div style={sectionBlockStyle(false)}>
-          <button onClick={onOpenEquipment} style={sectionHeadBtnStyle}>
-            <span style={TYPE.sectionHead}>EQUIPMENT</span>
+          <button onClick={onOpenProgress} style={sectionHeadBtnStyle}>
+            <span style={TYPE.sectionHead}>BENCHMARKS</span>
             <hr style={TYPE.sectionRule} />
           </button>
-          <button
-            onClick={onOpenEquipment}
-            style={{ ...rowLineStyle(), background: "transparent", border: "none", padding: "10px 0", width: "100%", cursor: "pointer", fontFamily: "inherit", color: "inherit", textAlign: "left" }}
-          >
-            <span style={{ ...TYPE.body, flex: 1 }}>{equipmentLabel || `${equipmentCount || 0} items selected`}</span>
+          {visibleBench.length === 0 ? (
+            <div style={TYPE.emptyNote}>Your working numbers will appear here.</div>
+          ) : (
+            <>
+              {visibleBench.map((row) => (
+                <button
+                  key={row.key}
+                  onClick={() => openBenchDetail(row)}
+                  style={{ ...rowLineStyle(), width: "100%", background: "transparent", border: "none", cursor: "pointer", fontFamily: "inherit", color: "inherit", textAlign: "left" }}
+                >
+                  <span style={{ ...TYPE.body, flex: 1 }}>
+                    {row.exerciseName}{row.showVariant ? ` (${row.variant})` : ""}
+                    {row.isPRRecent && <span style={TYPE.tagInline}>PR</span>}
+                  </span>
+                  <span style={{ display: "inline-flex", alignItems: "baseline", whiteSpace: "nowrap" }}>
+                    <span style={{ ...TYPE.rowVal, width: 34, textAlign: "right", display: "inline-block" }}>{row.repsOnly ? "" : row.weightLb}</span>
+                    <span style={{ fontSize: 12, color: "#666", width: 12, textAlign: "center", display: "inline-block" }}>{row.repsOnly ? "" : "×"}</span>
+                    <span style={{ ...TYPE.rowVal, width: 22, textAlign: "left", display: "inline-block" }}>{row.reps}</span>
+                  </span>
+                </button>
+              ))}
+              {moreBench > 0 && (
+                <button onClick={onOpenProgress} style={TYPE.viewAll}>View all {benchRows.length} →</button>
+              )}
+            </>
+          )}
+        </div>
+
+        {/* ── Section: OBSERVATIONS ── */}
+        {/* S85 (D-258, Q8-A) coach's-card order: the living log —
+            BENCHMARKS then OBSERVATIONS (engine-fed intelligence,
+            siblings) — sits above the user-authored half (RULES).
+            S85 (D-252, Q1-B): denied rows are filtered upstream, so
+            the old denied-fade opacity is gone with them.
+            S85 (D-256, Observations-B): confirmed rows carry the gold
+            "in use — Coach builds with this" line — confirmed is the
+            only status that rides generation (D-216), and the label
+            says what the observation DOES. */}
+        <div style={sectionBlockStyle(false)}>
+          <button onClick={onOpenObservations} style={sectionHeadBtnStyle}>
+            <span style={TYPE.sectionHead}>OBSERVATIONS</span>
+            <hr style={TYPE.sectionRule} />
           </button>
+          {visibleObs.length === 0 ? (
+            <div style={TYPE.emptyNote}>Coach hasn&apos;t noticed anything yet.</div>
+          ) : (
+            <>
+              {visibleObs.map((o) => (
+                <div key={o.id} style={{ ...rowLineStyle(), flexDirection: "column", alignItems: "stretch", gap: 2 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 14 }}>
+                    <span style={{ ...TYPE.body, flex: 1 }}>{obsText(o)}</span>
+                    <span style={{ ...TYPE.meta, whiteSpace: "nowrap", letterSpacing: 1 }}>{formatDaysAgoCap(o.createdAt)}</span>
+                  </div>
+                  {o.source === "engine" && (
+                    <span style={{ ...TYPE.meta, letterSpacing: 0.5, textTransform: "none", color: o.status === "confirmed" ? COLORS.gold : "#555" }}>{obsStatusLabel(o)}</span>
+                  )}
+                </div>
+              ))}
+              {moreObs > 0 && (
+                <button onClick={onOpenObservations} style={TYPE.viewAll}>View all {totalObs} →</button>
+              )}
+            </>
+          )}
         </div>
 
         {/* ── Section: RULES ── */}
-        <div style={sectionBlockStyle(false)}>
+        {/* Last section (D-258): standing notes close the card, the
+            way they close a real coach's file. */}
+        <div style={sectionBlockStyle(true)}>
           <button onClick={onOpenRules} style={sectionHeadBtnStyle}>
             <span style={TYPE.sectionHead}>RULES</span>
             <hr style={TYPE.sectionRule} />
@@ -15775,76 +17922,13 @@ function ProfileTab({
           )}
         </div>
 
-        {/* ── Section: OBSERVATIONS ── */}
-        {/* Order this session: OBSERVATIONS now precedes BENCHMARKS.
-            Rules + Observations are both Coach-authored text rows with
-            identical row grammar (sentence + timestamp + delete in the
-            sub-screen); pairing them adjacent makes the visual rhythm
-            of the file cleaner. Benchmarks (formerly Progress) is the
-            longest list and lives at the bottom as reference data. */}
-        <div style={sectionBlockStyle(false)}>
-          <button onClick={onOpenObservations} style={sectionHeadBtnStyle}>
-            <span style={TYPE.sectionHead}>OBSERVATIONS</span>
-            <hr style={TYPE.sectionRule} />
-          </button>
-          {visibleObs.length === 0 ? (
-            <div style={TYPE.emptyNote}>Coach hasn&apos;t noticed anything yet.</div>
-          ) : (
-            <>
-              {visibleObs.map((o) => (
-                <div key={o.id} style={{ ...rowLineStyle(), flexDirection: "column", alignItems: "stretch", gap: 2 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 14 }}>
-                    <span style={{ ...TYPE.body, flex: 1, opacity: o.source === "engine" && o.status === "denied" ? 0.5 : 1 }}>{obsText(o)}</span>
-                    <span style={{ ...TYPE.meta, whiteSpace: "nowrap", letterSpacing: 1 }}>{formatDaysAgoCap(o.createdAt)}</span>
-                  </div>
-                  {o.source === "engine" && (
-                    <span style={{ ...TYPE.meta, letterSpacing: 0.5, textTransform: "none", color: o.status === "confirmed" ? COLORS.gold : "#555" }}>{obsStatusLabel(o)}</span>
-                  )}
-                </div>
-              ))}
-              {moreObs > 0 && (
-                <button onClick={onOpenObservations} style={TYPE.viewAll}>View all {sortedObs.length} →</button>
-              )}
-            </>
-          )}
-        </div>
-
-        {/* ── Section: BENCHMARKS ── */}
-        {/* Renamed from PROGRESS this session. The data Coach references
-            when reasoning about progression — PRs and new working weights
-            — is what the §12.7 / §12.5 architecture calls "anchors and
-            PR events." "Benchmarks" is the user-facing name that matches
-            what Coach actually uses. Filter still PR-or-NEW only, sort
-            still recency-desc (achievedAt). No item cap (locked this
-            session — full list available in the sub-screen). */}
-        <div style={sectionBlockStyle(true)}>
-          <button onClick={onOpenProgress} style={sectionHeadBtnStyle}>
-            <span style={TYPE.sectionHead}>BENCHMARKS</span>
-            <hr style={TYPE.sectionRule} />
-          </button>
-          {visiblePRs.length === 0 ? (
-            <div style={TYPE.emptyNote}>Your PRs and new lifts will appear here.</div>
-          ) : (
-            <>
-              {visiblePRs.map((p) => (
-                <div key={p.id} style={rowLineStyle()}>
-                  <span style={{ ...TYPE.body, flex: 1 }}>
-                    {p.exerciseName}
-                    {p.isPR && <span style={TYPE.tagInline}>PR</span>}
-                    {p.isNew && !p.isPR && <span style={TYPE.tagInline}>NEW</span>}
-                  </span>
-                  <span style={p.isPR ? TYPE.rowValUp : TYPE.rowVal}>{p.value}</span>
-                  <span style={{ ...TYPE.meta, whiteSpace: "nowrap", letterSpacing: 1 }}>{formatShortDateCap(p.achievedAt)}</span>
-                </div>
-              ))}
-              {morePRs > 0 && (
-                <button onClick={onOpenProgress} style={TYPE.viewAll}>View all {sortedPRs.length} →</button>
-              )}
-            </>
-          )}
-        </div>
-
         {/* ── Signed footer ── */}
+        {/* S85 (D-254, Q3-C): same words, made true. The date derives
+            at render from the newest thing actually on the file (the
+            stamp OR the newest rule / observation / anchor work /
+            weigh-in) — the stored stamp alone missed engine-authored
+            changes, so a PR dated yesterday could sit above
+            "updated 9d ago". */}
         <div style={{
           marginTop: 22,
           padding: "10px 0",
@@ -15854,12 +17938,35 @@ function ProfileTab({
           alignItems: "center",
         }}>
           <span style={TYPE.sigFooter}>
-            — C, {isFirstLaunch ? "file opened today" : `updated ${formatUpdatedAgo(coachFileLastUpdatedAt)}`}
+            — C, {isFirstLaunch ? "file opened today" : `updated ${formatUpdatedAgo(deriveFileUpdatedAt({
+              stampMs: coachFileLastUpdatedAt,
+              coachRules,
+              coachObservations,
+              anchors,
+              weightLog: (bodyStats || {}).weightLog,
+            }))}`}
           </span>
           <CoachMonogram size={18} />
         </div>
 
       </div>
+
+      {/* S85 (D-257): the benchmark tap-through — the SAME
+          ExerciseDetailSheet the Exercises tab and the logger's
+          name-tap raise (one component everywhere), pinned to the
+          tapped row's variant. Browse-only, no Add CTA (D-244); since
+          S87 every door renders the sheet identically. */}
+      {benchDetail && (
+        <ExerciseDetailSheet
+          exercise={benchDetail.exercise}
+          userEquipment={userEquipment}
+          workoutHistory={workoutHistory}
+          customExercises={customExercises}
+          anchors={anchors}
+          initialVariant={benchDetail.variant}
+          onClose={() => setBenchDetail(null)}
+        />
+      )}
     </div>
   );
 }
@@ -16141,20 +18248,65 @@ function SettingsSubscreen({
           onToggle={onChangeLeaderboard}
         />
 
-        {/* ── DATA (Session 68 — export/import bridge) ──
-            Backup for the localStorage-only prototype AND the dogfooding
-            feed for dev sessions. Import overwrites everything and
-            reloads — the reload runs the hydration migration chain, so
-            old exports stay compatible with future engines. */}
-        <div style={headStyle}>DATA</div>
-        <Row
-          label="Export data"
-          desc="Everything — chats, workouts, engine records — as JSON"
-          onClick={() => {
-            setImportError(null); setCopied(false); setImportText("");
-            setDataPanel(dataPanel === "export" ? null : "export");
+        {/* Logout button — restores the path lost when Coach's File
+            displaced settings to this sub-screen. Same red-border /
+            red-text vocabulary as the existing Logout button. */}
+        <button
+          onClick={() => setConfirmLogout(true)}
+          style={{
+            width: "100%", padding: 13, background: "transparent",
+            border: "1px solid #442222", borderRadius: 10,
+            color: "#cc4444", fontSize: 14, cursor: "pointer",
+            marginTop: 24, display: "flex", alignItems: "center",
+            justifyContent: "center", gap: 8, fontFamily: "inherit",
           }}
-        />
+        >
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4" />
+            <polyline points="16 17 21 12 16 7" />
+            <line x1="21" y1="12" x2="9" y2="12" />
+          </svg>
+          Log out
+        </button>
+
+        {/* Version footer */}
+        <div style={{
+          textAlign: "center", fontSize: 10, color: "#444",
+          marginTop: 18, letterSpacing: 1,
+          fontFamily: "-apple-system, system-ui, sans-serif",
+        }}>
+          MYG · {appVersion}
+        </div>
+
+        {/* ── S85 (D-253, Q2-B): the dev corner ──
+            The DATA section is dead. Export/Import (the Session 68
+            dev-era bridge, D-157-flagged for replacement at launch) are
+            scaffolding, and scaffolding never gets peer register — it
+            renders here, beside the build tag (the footer is already
+            the only place BUILD_TAG shows, S80). Same panels, same
+            machinery, one register down. When the real backup ships it
+            gets promoted into ACCOUNT properly. */}
+        <div style={{
+          textAlign: "center", fontSize: 10, color: "#555",
+          marginTop: 10, letterSpacing: 0.5,
+          fontFamily: "-apple-system, system-ui, sans-serif",
+        }}>
+          <button
+            onClick={() => {
+              setImportError(null); setCopied(false); setImportText("");
+              setDataPanel(dataPanel === "export" ? null : "export");
+            }}
+            style={{ background: "transparent", border: "none", color: "#555", fontSize: 10, letterSpacing: 0.5, cursor: "pointer", fontFamily: "inherit", textDecoration: "underline", textDecorationColor: "#333", textUnderlineOffset: 3, padding: 2 }}
+          >Export data</button>
+          <span style={{ padding: "0 6px", color: "#333" }}>·</span>
+          <button
+            onClick={() => {
+              setImportError(null); setCopied(false); setImportText(""); setImportArmed(false);
+              setDataPanel(dataPanel === "import" ? null : "import");
+            }}
+            style={{ background: "transparent", border: "none", color: "#555", fontSize: 10, letterSpacing: 0.5, cursor: "pointer", fontFamily: "inherit", textDecoration: "underline", textDecorationColor: "#333", textUnderlineOffset: 3, padding: 2 }}
+          >Import data</button>
+        </div>
         {dataPanel === "export" && (() => {
           const txt = exportSnapshotText();
           return (
@@ -16198,14 +18350,6 @@ function SettingsSubscreen({
             </div>
           );
         })()}
-        <Row
-          label="Import data"
-          desc="Restore a previous export — replaces everything"
-          onClick={() => {
-            setImportError(null); setCopied(false); setImportText(""); setImportArmed(false);
-            setDataPanel(dataPanel === "import" ? null : "import");
-          }}
-        />
         {dataPanel === "import" && (
           <div style={{ padding: "4px 0 14px" }}>
             <textarea
@@ -16243,35 +18387,6 @@ function SettingsSubscreen({
           </div>
         )}
 
-        {/* Logout button — restores the path lost when Coach's File
-            displaced settings to this sub-screen. Same red-border /
-            red-text vocabulary as the existing Logout button. */}
-        <button
-          onClick={() => setConfirmLogout(true)}
-          style={{
-            width: "100%", padding: 13, background: "transparent",
-            border: "1px solid #442222", borderRadius: 10,
-            color: "#cc4444", fontSize: 14, cursor: "pointer",
-            marginTop: 24, display: "flex", alignItems: "center",
-            justifyContent: "center", gap: 8, fontFamily: "inherit",
-          }}
-        >
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4" />
-            <polyline points="16 17 21 12 16 7" />
-            <line x1="21" y1="12" x2="9" y2="12" />
-          </svg>
-          Log out
-        </button>
-
-        {/* Version footer */}
-        <div style={{
-          textAlign: "center", fontSize: 10, color: "#444",
-          marginTop: 18, letterSpacing: 1,
-          fontFamily: "-apple-system, system-ui, sans-serif",
-        }}>
-          MYG · {appVersion}
-        </div>
       </div>
 
       {/* ── Rest timer picker modal ──
@@ -16830,42 +18945,38 @@ function RulesSubscreen({ coachRules, onDeleteRule, onOpenCoachChat, onBack }) {
   );
 }
 
-/* ── ProgressSubscreen (Bible §6.5) ─────────────────────────────────
-   Read-only. Rows grouped by time period with small spaced-cap section
-   headers (THIS WEEK / EARLIER THIS MONTH / LAST MONTH / EARLIER).
-   PR rows show gold value + gold "PR" tag, NEW rows show "NEW" tag.
-   No ⋯ menu (Coach owns the data). Signed "— C" footer at bottom.
+/* ── BenchmarksSubscreen (S85, D-257 — replaces ProgressSubscreen) ──
+   The full anchor table. Same row grammar as the landing's BENCHMARKS
+   section (single-line, variant parenthetical when >1 anchored variant,
+   gold PR tag on rows whose latest work beat the anchor, the × spine),
+   sorted most-recently-worked first. Tap a row → the shipped
+   ExerciseDetailSheet pinned to that variant — one component
+   everywhere; there is no bespoke benchmark detail surface. NO status
+   language here either (owner ruling): status renders only in the
+   sheet's BENCHMARK strip.
 
-   Filter matches the landing: only PR-or-NEW rows shown — non-PR
-   working sets belong in workout history, not on Coach's File
-   (session 36 decision).
-*/
-function ProgressSubscreen({ progressPRs, onBack }) {
-  // Font scale matches the bumped Profile landing.
+   The old ProgressSubscreen (PR-event feed off the progressPRs
+   letterbox) is dead with the letterbox: nothing in the app ever wrote
+   to that store, so a real user's list was empty forever. */
+function BenchmarksSubscreen({ anchors, userEquipment, workoutHistory, customExercises, onBack }) {
+  const [benchDetail, setBenchDetail] = useState(null);
   const TYPE = {
     body: { fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 15, color: "#e8e8e8", lineHeight: 1.5 },
-    meta: { fontFamily: "-apple-system, system-ui, sans-serif", fontSize: 10, color: "#555", letterSpacing: 1.5 },
     rowVal: { fontSize: 12, color: "#aaa", whiteSpace: "nowrap" },
-    rowValUp: { fontSize: 12, color: COLORS.gold, whiteSpace: "nowrap" },
     tagInline: { color: COLORS.gold, fontSize: 10, letterSpacing: 1, marginLeft: 4, fontFamily: "-apple-system, system-ui, sans-serif" },
     sigFooter: { fontFamily: "Georgia, 'Times New Roman', serif", fontStyle: "italic", color: "#666", fontSize: 11 },
   };
+  const rows = deriveBenchmarkRows(anchors);
+  const isEmpty = rows.length === 0;
 
-  // Flat date-sorted list (Session 40). The previous bucketed layout
-  // (THIS WEEK / EARLIER THIS MONTH / LAST MONTH / EARLIER) was a v26
-  // design that mirrored "this week's wins" framing but in practice
-  // it added visual chrome without information density — once each row
-  // carries its own date, group headers become redundant decoration.
-  // Tyler also flagged the landing-vs-sub-screen mismatch: landing
-  // showed exact dates ("APR 27"), sub-screen replaced them with
-  // bucket headers. Information density went the wrong way (glance =
-  // precise, deep = vague). New behavior: both surfaces show per-row
-  // dates; sub-screen is a flat sorted list with no group headers.
-  const filtered = (progressPRs || [])
-    .filter((p) => p.isPR || p.isNew)
-    .sort((a, b) => b.achievedAt - a.achievedAt);
+  const openBenchDetail = (row) => {
+    const exercise = findExerciseById(row.exerciseId, customExercises || []);
+    if (!exercise || !Array.isArray(exercise.variants)) return;
+    const variant = exercise.variants.find((v) => variantKey(v) === row.variantKey) || exercise.variants[0];
+    if (!variant) return;
+    setBenchDetail({ exercise, variant });
+  };
 
-  const isEmpty = filtered.length === 0;
   const footer = (
     <div style={{
       marginTop: 22, paddingTop: 12,
@@ -16879,37 +18990,53 @@ function ProgressSubscreen({ progressPRs, onBack }) {
   return (
     <SubscreenShell
       title="Benchmarks"
-      subtitle="Working weights Coach uses to plan your sessions."
+      subtitle="The working numbers Coach plans your sessions from."
       onBack={onBack}
       footer={footer}
     >
       {isEmpty ? (
         <div style={{ textAlign: "center", padding: "48px 16px 32px", fontFamily: "Georgia, 'Times New Roman', serif", fontStyle: "italic", color: "#888", fontSize: 15, lineHeight: 1.7 }}>
-          Nothing logged yet.<br />Your first PR will show up here.
+          Nothing logged yet.<br />Your working numbers will show up here.
         </div>
       ) : (
-        // Each row: exercise name (+ optional PR/NEW gold tag) on left;
-        // value (gold if PR, gray otherwise) and date stamp on the right.
-        // Same row grammar as the landing now, so navigating in/out feels
-        // continuous. Row dividers retained — without group headers,
-        // a flat list reads better with a hairline between rows than
-        // pure spacing (different from the landing where sections-as-
-        // cards carry the structure).
-        filtered.map((p) => (
-          <div key={p.id} style={{
-            padding: "12px 0", display: "flex",
-            justifyContent: "space-between", alignItems: "baseline",
-            borderBottom: "1px solid #1a1a1a", gap: 14,
-          }}>
+        rows.map((row) => (
+          <button
+            key={row.key}
+            onClick={() => openBenchDetail(row)}
+            style={{
+              padding: "12px 0", display: "flex",
+              justifyContent: "space-between", alignItems: "baseline",
+              borderBottom: "1px solid #1a1a1a", gap: 14,
+              width: "100%", background: "transparent", border: "none",
+              borderBottomStyle: "solid",
+              cursor: "pointer", fontFamily: "inherit", color: "inherit", textAlign: "left",
+            }}
+          >
             <span style={{ ...TYPE.body, flex: 1 }}>
-              {p.exerciseName}
-              {p.isPR && <span style={TYPE.tagInline}>PR</span>}
-              {p.isNew && !p.isPR && <span style={TYPE.tagInline}>NEW</span>}
+              {row.exerciseName}{row.showVariant ? ` (${row.variant})` : ""}
+              {row.isPRRecent && <span style={TYPE.tagInline}>PR</span>}
             </span>
-            <span style={p.isPR ? TYPE.rowValUp : TYPE.rowVal}>{p.value}</span>
-            <span style={{ ...TYPE.meta, whiteSpace: "nowrap", letterSpacing: 1 }}>{formatShortDateCap(p.achievedAt)}</span>
-          </div>
+            <span style={{ display: "inline-flex", alignItems: "baseline", whiteSpace: "nowrap" }}>
+              <span style={{ ...TYPE.rowVal, width: 34, textAlign: "right", display: "inline-block" }}>{row.repsOnly ? "" : row.weightLb}</span>
+              <span style={{ fontSize: 12, color: "#666", width: 12, textAlign: "center", display: "inline-block" }}>{row.repsOnly ? "" : "×"}</span>
+              <span style={{ ...TYPE.rowVal, width: 22, textAlign: "left", display: "inline-block" }}>{row.reps}</span>
+            </span>
+          </button>
         ))
+      )}
+
+      {/* Tap-through — the shipped sheet, pinned (D-257). SubscreenShell's
+          root is position:relative, so the absolute sheet fills it. */}
+      {benchDetail && (
+        <ExerciseDetailSheet
+          exercise={benchDetail.exercise}
+          userEquipment={userEquipment}
+          workoutHistory={workoutHistory}
+          customExercises={customExercises}
+          anchors={anchors}
+          initialVariant={benchDetail.variant}
+          onClose={() => setBenchDetail(null)}
+        />
       )}
     </SubscreenShell>
   );
@@ -16977,10 +19104,17 @@ function ObservationsSubscreen({ coachObservations, onAskCoach, onDeleteObservat
           justifyContent: "space-between", alignItems: "baseline",
           borderBottom: "1px solid #1a1a1a", gap: 14, position: "relative",
         }}>
-          <span style={{ ...TYPE.body, flex: 1, opacity: o.source === "engine" && o.status === "denied" ? 0.5 : 1 }}>
+          {/* S86: the denied fade is DEAD — it was the LAST whole-content
+              dim in the app (D-247 is now total: dim = blocked option in a
+              picker, nowhere else). The label "dropped — you said I had it
+              wrong" was already doing the whole job; the fade was
+              double-speaking. Denied rows already left the LANDING in S85 —
+              this sub-screen is the full record, and records render at full
+              strength. */}
+          <span style={{ ...TYPE.body, flex: 1 }}>
             {obsText(o)}
             {o.source === "engine" && (
-              <span style={{ display: "block", fontFamily: "-apple-system, system-ui, sans-serif", fontSize: 10, letterSpacing: 0.5, marginTop: 3, color: o.status === "confirmed" ? COLORS.gold : "#555" }}>{obsStatusLabel(o)}</span>
+              <span style={{ display: "block", fontFamily: "-apple-system, system-ui, sans-serif", fontSize: 10, letterSpacing: 0.5, marginTop: 3, color: o.status === "confirmed" ? COLORS.gold : "#555" }}>{obsStatusLabelDetailed(o)}</span>
             )}
           </span>
           <span style={{ ...TYPE.meta, whiteSpace: "nowrap" }}>{formatDaysAgoCap(o.createdAt)}</span>
@@ -18423,7 +20557,9 @@ export default function MYGFitness() {
   // user is — logger open, minimized to the bar, or on another tab. One
   // watcher: when the active countdown crosses zero, buzz the phone
   // (navigator.vibrate where the platform supports it — Android PWA yes,
-  // iOS Safari no) and flash the gold toast. Fires ONCE per rest timer
+  // iOS Safari no) and open the ~3.2s alert window that pulses the
+  // chrome (S87 D-268 — the logger header's rest layer and the
+  // SessionBar; the S80 floating toast is dead). Fires ONCE per rest timer
   // (ref keyed on the timer's startTs; checking the next set mints a new
   // startTs → a fresh watch). When real push notifications land (§16),
   // this same crossing is where the notification fires.
@@ -19783,6 +21919,7 @@ Deliver your reaction to these answers now, per THE REACTION TURN section of you
           restCountdownTarget={restCountdownTargetPref}
           onChangeRestTimerMode={setRestTimerModePref}
           onChangeRestCountdownTarget={setRestCountdownTargetPref}
+          anchors={anchors}
           onStartEmpty={requestStartEmptyWorkout}
           onAskCoach={askCoachToBuildWorkout}
           onUpdateWorkout={updateActiveWorkout}
@@ -19798,6 +21935,7 @@ Deliver your reaction to these answers now, per THE REACTION TURN section of you
           onEditWorkout={requestEditWorkout}
           onDeleteWorkout={deleteWorkoutFromHistory}
           onTabChange={setActiveTab}
+          restAlertActive={restAlertVisible}
         />
       );
       case "coach": return (
@@ -19845,6 +21983,7 @@ Deliver your reaction to these answers now, per THE REACTION TURN section of you
         <ExercisesTab
           userEquipment={selectedEquipment}
           onOpenEquipmentEditor={openEquipmentEditor}
+          anchors={anchors}
           browseState={exercisesBrowseState}
           onBrowseState={setExercisesBrowseState}
           customExercises={customExercises}
@@ -19890,8 +22029,13 @@ Deliver your reaction to these answers now, per THE REACTION TURN section of you
             equipmentCount={selectedEquipment.size}
             equipmentLabel={deriveEquipmentLabel(selectedEquipment)}
             coachRules={coachRules}
-            progressPRs={progressPRs}
             coachObservations={coachObservations}
+            // S85 (D-257): BENCHMARKS derives from anchors; the tapped-
+            // row detail sheet needs the same deps the other tabs pass.
+            anchors={anchors}
+            userEquipment={selectedEquipment}
+            workoutHistory={workoutHistory}
+            customExercises={customExercises}
             sessionsCount={sessionsCount}
             streakDays={streakDays}
             mostTrainedMuscle={mostTrainedMuscle}
@@ -20019,10 +22163,16 @@ Deliver your reaction to these answers now, per THE REACTION TURN section of you
       );
     }
     if (appSubScreen === "progress") {
+      // S85 (D-257): the route keeps its "progress" key (stored UI
+      // state in old snapshots stays valid) but mounts the anchor
+      // table now.
       return (
-        <ProgressSubscreen
+        <BenchmarksSubscreen
           onBack={() => setAppSubScreen(null)}
-          progressPRs={progressPRs}
+          anchors={anchors}
+          userEquipment={selectedEquipment}
+          workoutHistory={workoutHistory}
+          customExercises={customExercises}
         />
       );
     }
@@ -20101,41 +22251,17 @@ Deliver your reaction to these answers now, per THE REACTION TURN section of you
         >
           {renderTab()}
         </div>
-        {showSessionBar && <SessionBar workout={activeWorkout} restTimerMode={restTimerModePref} restCountdownTarget={restCountdownTargetPref} onTap={expandWorkoutFromBar} />}
+        {showSessionBar && <SessionBar workout={activeWorkout} restTimerMode={restTimerModePref} restCountdownTarget={restCountdownTargetPref} restAlertActive={restAlertVisible} onTap={expandWorkoutFromBar} />}
         {!hideTabBar && <TabBar active={activeTab} onTab={setActiveTab} coachDot={false} />}
 
-        {/* ── Rest-over toast (S80 owner bug #3) — gold, fixed, shows on
-            any tab. Slides in under the safe area, auto-dismisses after
-            ~3s (the watcher owns the timer); tap dismisses early. */}
-        {restAlertVisible && (
-          <button
-            onClick={() => {
-              setRestAlertVisible(false);
-              if (restAlertHideRef.current) { clearTimeout(restAlertHideRef.current); restAlertHideRef.current = null; }
-            }}
-            style={{
-              position: "fixed",
-              top: "calc(14px + env(safe-area-inset-top))",
-              left: "50%", transform: "translateX(-50%)",
-              zIndex: 200,
-              display: "flex", alignItems: "center", gap: 8,
-              padding: "11px 20px", borderRadius: 22,
-              background: COLORS.gold, border: "none",
-              color: COLORS.bg, fontSize: 14, fontWeight: 700,
-              cursor: "pointer", whiteSpace: "nowrap",
-              boxShadow: "0 6px 24px rgba(255,215,0,0.35), 0 4px 16px rgba(0,0,0,0.5)",
-              animation: "restToastIn 0.25s ease",
-            }}
-          >
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-              <circle cx="12" cy="13" r="8" />
-              <line x1="12" y1="9" x2="12" y2="13" />
-              <line x1="12" y1="13" x2="15" y2="15" />
-            </svg>
-            Rest over — next set
-            <style>{`@keyframes restToastIn { from { opacity: 0; transform: translateX(-50%) translateY(-12px); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }`}</style>
-          </button>
-        )}
+        {/* ── Rest-over signal (S87, D-268 — supersedes the S80 toast) —
+            the floating gold toast is DEAD (owner: too big, nowhere to
+            float that isn't the header or a card). The chrome the app
+            already pins carries the alert instead: the logger header's
+            rest layer flips to "Time!" and triple-pulses (restAlertActive
+            → ActiveLogger), and the SessionBar does the same on every
+            other tab (prop below). Always visible at any scroll position
+            by construction; covers nothing. */}
 
         {showStartConflict && (
           <>
@@ -20356,6 +22482,10 @@ Deliver your reaction to these answers now, per THE REACTION TURN section of you
         .myg-tab-btn:active { transform: scale(0.94); }
         .myg-press:active { transform: scale(0.98); background: #e6c200 !important; }
         @keyframes mygTabFade { from { opacity: 0; } to { opacity: 1; } }
+        /* S87 (D-268): the rest-over pulse — three cycles ≈ the 3.2s
+           alert window. Applied to the logger header's rest layer +
+           drain line and the SessionBar's alert line. */
+        @keyframes mygTimePulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
         input::placeholder { color: #555; }
         * { box-sizing: border-box; }
         ::-webkit-scrollbar { width: 0; }
