@@ -6878,7 +6878,7 @@ const IS_REAL_DEVICE = (() => {
 // Deploy cache-verification marker (owner's V.23 convention, formalized:
 // bump this one constant per push to confirm the phone isn't serving
 // stale cached code; rendered only on real devices, top-right).
-const BUILD_TAG = "V.43";
+const BUILD_TAG = "V.45";
 
 /* ── Visual-viewport pin (S77 — the "composer slides past the keyboard" bug) ──
    iOS (Safari tab and standalone PWA alike) never shrinks the LAYOUT
@@ -7195,6 +7195,42 @@ function ProgressBar({ current, total }) {
   );
 }
 
+/* ── S88 onboarding shared pieces (D-274, D-276) ─────────────────
+
+   DescOption — THE single-select card for onboarding question screens.
+   S88 ruled that Screens 2 (Goals), 3 (Fitness Level), and 3b (Time
+   Away) speak ONE card language: left-aligned label + one-line
+   description. Previously Goals used centered ChoicePills while 3/3b
+   used bespoke desc buttons — two dialects back to back in the user's
+   first thirty seconds. This component replaces the bespoke buttons
+   verbatim (same geometry) and Goals adopts it. NOTE: this is NOT a
+   ChoicePill restyle — the canonical app-wide chip is untouched.
+
+   OnbLabel — the R1c label register: near-white caps (#E8E8E8, 12px,
+   weight 600, tracking 1.5) over a neutral #2a2a2a hairline. Ruled S88
+   after gold (grammar option B) and full-grammar kickers (option C)
+   were rejected: structure without a new color. Lives on About You;
+   applies to any future labeled onboarding surface. The old soft-gray
+   micro-labels are dead. */
+
+function DescOption({ label, desc, selected, onClick }) {
+  return (
+    <button onClick={onClick} style={{ padding: 20, borderRadius: 10, border: `1.5px solid ${selected ? COLORS.gold : COLORS.border}`, background: selected ? COLORS.goldHighlight : COLORS.card, cursor: "pointer", textAlign: "left", transition: "all 0.2s ease" }}>
+      <div style={{ color: selected ? COLORS.gold : COLORS.text, fontSize: 16, fontWeight: 600, marginBottom: 4 }}>{label}</div>
+      <div style={{ color: COLORS.textSecondary, fontSize: 13, lineHeight: 1.4 }}>{desc}</div>
+    </button>
+  );
+}
+
+function OnbLabel({ children }) {
+  return (
+    <div style={{ margin: "0 0 12px" }}>
+      <span style={{ color: "#E8E8E8", fontSize: 12, letterSpacing: 1.5, textTransform: "uppercase", fontWeight: 600 }}>{children}</span>
+      <div style={{ height: 1, background: "#2a2a2a", marginTop: 6 }} />
+    </div>
+  );
+}
+
 /* ── ScrollHint (Bible §2 motion, Session 47) ─────────────────────
    Auto-hiding scroll-position indicator for long surfaces. Created
    (not the desktop scrollbar restored — that stays killed globally).
@@ -7440,10 +7476,39 @@ function MYGLogo({ size = 40 }) {
 
 /* ── ONBOARDING SCREENS ─────────────────────────────────────── */
 
+/* S88 (D-273): the one licensed cinematic beat. "Meet Your Goals" TYPES
+   itself into the shipped gold italic line — Coach's native register —
+   with a blinking caret, ~95ms/char, starting once the content block has
+   landed. Everything else about the screen is untouched (owner: "keep as
+   is but have coach type out meet your goals"). Types ONCE per app load:
+   back-nav from Sign In re-mounts the screen with the full line static
+   (module flag, not state — the trick performing twice would cheapen it). */
+let WELCOME_TYPED_ONCE = false;
+const WELCOME_TAG2 = "Meet Your Goals";
+
 function WelcomeScreen({ onGetStarted, onSignIn }) {
   const [logoV, setLogoV] = useState(false);
   const [contentV, setContentV] = useState(false);
+  const [typedCount, setTypedCount] = useState(WELCOME_TYPED_ONCE ? WELCOME_TAG2.length : 0);
+  const typingDone = typedCount >= WELCOME_TAG2.length;
   useEffect(() => { setTimeout(() => setLogoV(true), 200); setTimeout(() => setContentV(true), 900); }, []);
+  useEffect(() => {
+    if (WELCOME_TYPED_ONCE) return;
+    let iv = null;
+    const start = setTimeout(() => {
+      iv = setInterval(() => {
+        setTypedCount((c) => {
+          if (c + 1 >= WELCOME_TAG2.length) {
+            clearInterval(iv);
+            WELCOME_TYPED_ONCE = true;
+            return WELCOME_TAG2.length;
+          }
+          return c + 1;
+        });
+      }, 95);
+    }, 1500); // content lands at 900ms + a beat of stillness before Coach speaks
+    return () => { clearTimeout(start); if (iv) clearInterval(iv); };
+  }, []);
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "0 32px", position: "relative" }}>
       <div style={{ position: "absolute", top: "40%", textAlign: "center", opacity: logoV ? 1 : 0, transform: logoV ? "translateY(-50%) scale(1)" : "translateY(-50%) scale(1.08)", transition: "all 0.9s cubic-bezier(0.22,1,0.36,1)" }}>
@@ -7451,7 +7516,10 @@ function WelcomeScreen({ onGetStarted, onSignIn }) {
       </div>
       <div style={{ position: "absolute", bottom: 40, left: 32, right: 32, opacity: contentV ? 1 : 0, transform: contentV ? "translateY(0)" : "translateY(16px)", transition: "all 0.6s ease" }}>
         <p style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 22, color: COLORS.text, textAlign: "center", margin: "0 0 4px", fontWeight: 400 }}>Your AI fitness coach to help</p>
-        <p style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 18, color: COLORS.gold, textAlign: "center", margin: "0 0 28px", fontWeight: 400, fontStyle: "italic" }}>Meet Your Goals</p>
+        <p style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 18, color: COLORS.gold, textAlign: "center", margin: "0 0 28px", fontWeight: 400, fontStyle: "italic", minHeight: 24 }}>
+          {WELCOME_TAG2.slice(0, typedCount)}
+          {!typingDone && <span style={{ display: "inline-block", width: 2, height: 16, background: COLORS.gold, verticalAlign: -2, marginLeft: 1, animation: "blink 0.9s step-end infinite" }} />}
+        </p>
         <GoldButton onClick={onGetStarted}>Get Started</GoldButton>
         <button onClick={onSignIn} style={{ width: "100%", padding: 14, background: "none", border: "none", color: COLORS.textSecondary, fontSize: 14, cursor: "pointer", marginTop: 8 }}>
           Already have an account? <span style={{ color: COLORS.text, fontWeight: 500 }}>Sign in</span>
@@ -7484,55 +7552,62 @@ function SignInScreen({ onBack, onSignIn }) {
   );
 }
 
-function GoalsScreen({ onNext, onBack, onSkip }) {
-  const [selected, setSelected] = useState(null);
-  const goals = ["Lose Weight", "Build Muscle", "Gain Strength", "Get Lean"];
+/* S88 (D-274, D-278): Goals now speaks the unified DescOption language
+   and — the bigger fix — its answer is finally KEPT. Pre-S88 the screen
+   collected a selection into local state and the router discarded it;
+   Profile's Plan row then showed the planGoal default ("Build Muscle"),
+   which read as a preselection ghost. The screen is now controlled
+   (value/onChange, App-level draft) and the router commits the pick to
+   planGoal — the existing persisted schema — on Continue. Value ids ARE
+   planGoal ids. Continue is gated: mandatory completion (D-277). */
+function GoalsScreen({ value, onChange, onNext, onBack }) {
+  const goals = [
+    { id: "lose_weight", label: "Lose Weight", desc: "Drop fat, keep the muscle you have" },
+    { id: "build_muscle", label: "Build Muscle", desc: "Add size and shape" },
+    { id: "gain_strength", label: "Gain Strength", desc: "Lift heavier" },
+    { id: "get_lean", label: "Get Lean", desc: "Definition and conditioning" },
+  ];
+  const canContinue = value != null;
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
-      <TopBar onBack={onBack} onSkip={onSkip} />
+      <TopBar onBack={onBack} showSkip={false} />
       <div style={{ flex: 1, minHeight: 0, padding: "0 24px", overflowY: "auto", WebkitOverflowScrolling: "touch" }}>
         <h2 style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 28, color: COLORS.text, margin: "12px 0 8px", fontWeight: 400 }}>
           What is your <span style={{ color: COLORS.gold }}>primary fitness goal</span>?
         </h2>
         <p style={{ color: COLORS.textSecondary, fontSize: 15, margin: "0 0 28px" }}>Choose one — your Coach will build around this.</p>
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          {goals.map((g) => <SelectableChip key={g} label={g} selected={selected === g} onClick={() => setSelected(g)} />)}
+          {goals.map((g) => <DescOption key={g.id} label={g.label} desc={g.desc} selected={value === g.id} onClick={() => onChange(g.id)} />)}
         </div>
         <div style={{ height: 16 }} />
       </div>
       <div style={{ padding: "12px 24px 16px", flexShrink: 0, borderTop: `1px solid ${COLORS.border}`, background: COLORS.bg }}>
-        <GoldButton onClick={onNext}>Continue</GoldButton>
+        <GoldButton onClick={onNext} style={{ opacity: canContinue ? 1 : 0.35, pointerEvents: canContinue ? "auto" : "none" }}>Continue</GoldButton>
       </div>
     </div>
   );
 }
 
-function FitnessLevelScreen({ value, onChange, onNext, onBack, onSkip }) {
-  const level = value;
-  const setLevel = onChange;
+function FitnessLevelScreen({ value, onChange, onNext, onBack }) {
   const levels = [
     { id: "beginner", label: "Beginner", desc: "New to lifting" },
     { id: "intermediate", label: "Intermediate", desc: "Some experience in the gym" },
     { id: "advanced", label: "Advanced", desc: "Lifted seriously, know your way around the gym" },
   ];
+  const canContinue = value != null;
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
-      <TopBar onBack={onBack} onSkip={onSkip} />
+      <TopBar onBack={onBack} showSkip={false} />
       <div style={{ flex: 1, minHeight: 0, padding: "0 24px", overflowY: "auto", WebkitOverflowScrolling: "touch" }}>
         <h2 style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 28, color: COLORS.text, margin: "12px 0 8px", fontWeight: 400 }}>Your fitness level</h2>
         <p style={{ color: COLORS.textSecondary, fontSize: 15, margin: "0 0 28px" }}>Be honest — your Coach adjusts to you.</p>
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          {levels.map((l) => (
-            <button key={l.id} onClick={() => setLevel(l.id)} style={{ padding: 20, borderRadius: 10, border: `1.5px solid ${level === l.id ? COLORS.gold : COLORS.border}`, background: level === l.id ? COLORS.goldHighlight : COLORS.card, cursor: "pointer", textAlign: "left", transition: "all 0.2s ease" }}>
-              <div style={{ color: level === l.id ? COLORS.gold : COLORS.text, fontSize: 16, fontWeight: 600, marginBottom: 4 }}>{l.label}</div>
-              <div style={{ color: COLORS.textSecondary, fontSize: 13, lineHeight: 1.4 }}>{l.desc}</div>
-            </button>
-          ))}
+          {levels.map((l) => <DescOption key={l.id} label={l.label} desc={l.desc} selected={value === l.id} onClick={() => onChange(l.id)} />)}
         </div>
         <div style={{ height: 16 }} />
       </div>
       <div style={{ padding: "12px 24px 16px", flexShrink: 0, borderTop: `1px solid ${COLORS.border}`, background: COLORS.bg }}>
-        <GoldButton onClick={onNext}>Continue</GoldButton>
+        <GoldButton onClick={onNext} style={{ opacity: canContinue ? 1 : 0.35, pointerEvents: canContinue ? "auto" : "none" }}>Continue</GoldButton>
       </div>
     </div>
   );
@@ -7542,80 +7617,82 @@ function FitnessLevelScreen({ value, onChange, onNext, onBack, onSkip }) {
    Beginner skips this screen entirely (not applicable). The selected
    value lives on App state as `timeAway` and feeds the future Coach
    AI context packet (returning-lifter awareness — Bible §10). */
-function TimeAwayScreen({ value, onChange, onNext, onBack, onSkip }) {
-  const selected = value;
-  const setSelected = onChange;
+function TimeAwayScreen({ value, onChange, onNext, onBack }) {
   const options = [
     { id: "current", label: "Currently training", desc: "I'm in the gym right now" },
     { id: "lt1yr", label: "Less than a year off", desc: "Took a break, getting back into it" },
     { id: "1to3yr", label: "1–3 years off", desc: "Been a while since I was consistent" },
     { id: "gt3yr", label: "3+ years off", desc: "It's been a long time" },
   ];
+  const canContinue = value != null;
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
-      <TopBar onBack={onBack} onSkip={onSkip} />
+      <TopBar onBack={onBack} showSkip={false} />
       <div style={{ flex: 1, minHeight: 0, padding: "0 24px", overflowY: "auto", WebkitOverflowScrolling: "touch" }}>
         <h2 style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 28, color: COLORS.text, margin: "12px 0 8px", fontWeight: 400 }}>How long since you trained?</h2>
         <p style={{ color: COLORS.textSecondary, fontSize: 15, margin: "0 0 28px" }}>Helps your Coach ramp up at the right pace.</p>
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          {options.map((o) => (
-            <button key={o.id} onClick={() => setSelected(o.id)} style={{ padding: 20, borderRadius: 10, border: `1.5px solid ${selected === o.id ? COLORS.gold : COLORS.border}`, background: selected === o.id ? COLORS.goldHighlight : COLORS.card, cursor: "pointer", textAlign: "left", transition: "all 0.2s ease" }}>
-              <div style={{ color: selected === o.id ? COLORS.gold : COLORS.text, fontSize: 16, fontWeight: 600, marginBottom: 4 }}>{o.label}</div>
-              <div style={{ color: COLORS.textSecondary, fontSize: 13, lineHeight: 1.4 }}>{o.desc}</div>
-            </button>
-          ))}
+          {options.map((o) => <DescOption key={o.id} label={o.label} desc={o.desc} selected={value === o.id} onClick={() => onChange(o.id)} />)}
         </div>
         <div style={{ height: 16 }} />
       </div>
       <div style={{ padding: "12px 24px 16px", flexShrink: 0, borderTop: `1px solid ${COLORS.border}`, background: COLORS.bg }}>
-        <GoldButton onClick={onNext}>Continue</GoldButton>
+        <GoldButton onClick={onNext} style={{ opacity: canContinue ? 1 : 0.35, pointerEvents: canContinue ? "auto" : "none" }}>Continue</GoldButton>
       </div>
     </div>
   );
 }
 
-function AboutYouScreen({ initialGender, initialAgeRange, onNext, onBack, onSkip }) {
-  // AboutYouScreen was previously local-only — gender and ageRange were
-  // collected into local state and discarded on unmount. As of the Step 1
-  // (this session) schema migration, both fields are now the source of
-  // truth for bodyStats.gender and bodyStats.ageRange on Coach's File.
-  // onNext receives the picked values; onSkip fires onNext with nulls
-  // (skip is an explicit "don't capture" signal, not a "use current local
-  // state silently" — keeps the skip behavior auditable).
-  const [gender, setGender] = useState(initialGender || null);
-  const [ageRange, setAgeRange] = useState(initialAgeRange || null);
+function AboutYouScreen({ gender, ageRange, onChangeGender, onChangeAgeRange, onNext, onBack }) {
+  // S88 (D-275, D-277, D-278): the screen is fully controlled by the
+  // App-level onboarding DRAFT — it never reads persisted/mock bodyStats
+  // directly, so a fresh run always starts blank (the "Male already
+  // tapped" ghost is dead) while within-run back-nav keeps picks (the
+  // draft lives on App state for the run). Labels are the R1c register
+  // (OnbLabel — white caps + neutral hairline; the soft-gray micro-label
+  // dialect is dead). Skip is dead and Continue gates on BOTH fields —
+  // "Prefer not to say" exists precisely so the gate is always
+  // answerable. onNext commits the draft into bodyStats at the router.
   const genders = ["Male", "Female", "Prefer not to say"];
+  const canContinue = gender != null && ageRange != null;
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
-      <TopBar onBack={onBack} onSkip={() => onSkip({ gender: null, ageRange: null })} />
+      <TopBar onBack={onBack} showSkip={false} />
       <div style={{ flex: 1, minHeight: 0, padding: "0 24px", overflowY: "auto", WebkitOverflowScrolling: "touch" }}>
         <h2 style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 28, color: COLORS.text, margin: "12px 0 8px", fontWeight: 400 }}>A bit about you</h2>
         <p style={{ color: COLORS.textSecondary, fontSize: 15, margin: "0 0 28px" }}>Helps your Coach tailor recommendations.</p>
-        <p style={{ color: COLORS.textSecondary, fontSize: 12, margin: "0 0 10px", letterSpacing: 1, textTransform: "uppercase", fontWeight: 500 }}>Gender</p>
+        <OnbLabel>Gender</OnbLabel>
         <div style={{ display: "flex", gap: 8, marginBottom: 28 }}>
-          {genders.map((g) => <SelectableChip key={g} label={g} selected={gender === g} onClick={() => setGender(g)} style={{ padding: "12px 12px", fontSize: 13, flex: g === "Prefer not to say" ? "none" : 1 }} />)}
+          {genders.map((g) => <SelectableChip key={g} label={g} selected={gender === g} onClick={() => onChangeGender(g)} style={{ padding: "12px 12px", fontSize: 13, flex: g === "Prefer not to say" ? "none" : 1 }} />)}
         </div>
-        <p style={{ color: COLORS.textSecondary, fontSize: 12, margin: "0 0 10px", letterSpacing: 1, textTransform: "uppercase", fontWeight: 500 }}>Age Range</p>
+        <OnbLabel>Age Range</OnbLabel>
         <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-          {["18–24", "25–34", "35–44"].map((a) => <SelectableChip key={a} label={a} selected={ageRange === a} onClick={() => setAgeRange(a)} style={{ flex: 1, padding: "12px 8px", fontSize: 14 }} />)}
+          {["18–24", "25–34", "35–44"].map((a) => <SelectableChip key={a} label={a} selected={ageRange === a} onClick={() => onChangeAgeRange(a)} style={{ flex: 1, padding: "12px 8px", fontSize: 14 }} />)}
         </div>
         <div style={{ display: "flex", gap: 8, justifyContent: "center" }}>
-          {["45–54", "55+"].map((a) => <SelectableChip key={a} label={a} selected={ageRange === a} onClick={() => setAgeRange(a)} style={{ flex: 1, maxWidth: "calc(33.33% - 3px)", padding: "12px 8px", fontSize: 14 }} />)}
+          {["45–54", "55+"].map((a) => <SelectableChip key={a} label={a} selected={ageRange === a} onClick={() => onChangeAgeRange(a)} style={{ flex: 1, maxWidth: "calc(33.33% - 3px)", padding: "12px 8px", fontSize: 14 }} />)}
         </div>
         <div style={{ height: 16 }} />
       </div>
       <div style={{ padding: "12px 24px 16px", flexShrink: 0, borderTop: `1px solid ${COLORS.border}`, background: COLORS.bg }}>
-        <GoldButton onClick={() => onNext({ gender, ageRange })}>Continue</GoldButton>
+        <GoldButton onClick={() => onNext({ gender, ageRange })} style={{ opacity: canContinue ? 1 : 0.35, pointerEvents: canContinue ? "auto" : "none" }}>Continue</GoldButton>
       </div>
     </div>
   );
 }
 
-function DaysScreen({ onNext, onBack, onSkip }) {
-  const [days, setDays] = useState(3);
+/* S88 (D-278): the Days answer is finally KEPT — pre-S88 the slider
+   value lived in local state and the router discarded it (planDaysPerWeek
+   sat on its own default of 6). Now controlled by the App-level draft and
+   committed to planDaysPerWeek on Continue, which also feeds the D-100
+   split seed the number the user actually picked. The slider itself stays
+   per the S88 ruling — the recorded exception to no-preselection: a
+   slider must rest somewhere, and 3 is the resting position. */
+function DaysScreen({ days, onChangeDays, onNext, onBack }) {
+  const setDays = onChangeDays;
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
-      <TopBar onBack={onBack} onSkip={onSkip} />
+      <TopBar onBack={onBack} showSkip={false} />
       <div style={{ flex: 1, minHeight: 0, padding: "0 24px", display: "flex", flexDirection: "column", overflowY: "auto", WebkitOverflowScrolling: "touch" }}>
         <h2 style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 28, color: COLORS.text, margin: "12px 0 8px", fontWeight: 400 }}>How many days per week?</h2>
         <p style={{ color: COLORS.textSecondary, fontSize: 15, margin: 0 }}>Your Coach will plan around your schedule.</p>
@@ -7640,7 +7717,7 @@ function DaysScreen({ onNext, onBack, onSkip }) {
 
 /* ── Equipment Preset Screen ─────────────────────────────────── */
 
-function EquipmentPresetScreen({ onBack, onSkip, selectedEquipment, onPickPreset, onEditDetail, onContinue }) {
+function EquipmentPresetScreen({ onBack, selectedEquipment, onPickPreset, onEditDetail, onContinue }) {
   const count = selectedEquipment.size;
   const hasSelection = count > 0;
 
@@ -7676,52 +7753,67 @@ function EquipmentPresetScreen({ onBack, onSkip, selectedEquipment, onPickPreset
     { id: "bodyweight", label: "Bodyweight Only", icon: iconBody, desc: "No equipment needed" },
   ];
 
+  /* S88 (D-279): presets SELECT IN PLACE. Pre-S88 tapping any preset —
+     including "Full Gym, all equipment" — routed into the 59-row
+     accordion; the common path paid the granular toll. Now a tap applies
+     the preset to selectedEquipment and lights the card; the accordion
+     is an opt-in refinement behind Edit. Cards light by SET-MATCH (does
+     the current selection equal this preset?), not by a sticky preset
+     id, so an Edit that diverges from the preset honestly un-lights it
+     and the count card falls back to the "N items selected" vocabulary
+     via deriveEquipmentLabel. Chevrons are dead — cards no longer
+     navigate. */
+  const presetMatches = (id) => {
+    const ids = PRESETS[id];
+    if (!ids || ids.length !== count) return false;
+    return ids.every((eid) => selectedEquipment.has(eid));
+  };
+  const selLabel = deriveEquipmentLabel(selectedEquipment);
+  const countLine = selLabel.includes("item") ? selLabel : `${selLabel} — ${count} ${count === 1 ? "item" : "items"}`;
+
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
-      <TopBar onBack={onBack} onSkip={onSkip} />
+      <TopBar onBack={onBack} showSkip={false} />
       <div style={{ flex: 1, minHeight: 0, padding: "0 24px", overflowY: "auto", WebkitOverflowScrolling: "touch" }}>
         <h2 style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 28, color: COLORS.text, margin: "12px 0 8px", fontWeight: 400 }}>Your equipment</h2>
         <p style={{ color: COLORS.textSecondary, fontSize: 14, margin: "0 0 24px", fontStyle: "italic" }}>
           Coach will only suggest exercises using equipment you select.
         </p>
-        {!hasSelection && (
-          <p style={{ color: COLORS.textSecondary, fontSize: 15, margin: "0 0 24px" }}>
-            Select a starting point to customize.
-          </p>
-        )}
 
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          {opts.map((o) => (
-            <button
-              key={o.id}
-              onClick={() => onPickPreset(o.id)}
-              style={{
-                padding: "20px", borderRadius: 10,
-                border: `1px solid ${COLORS.border}`,
-                background: COLORS.card,
-                cursor: "pointer", textAlign: "left",
-                display: "flex", alignItems: "center", gap: 14,
-                transition: "all 0.15s ease",
-              }}
-            >
-              <div style={{ width: 40, height: 40, borderRadius: 8, background: "rgba(255,215,0,0.08)", border: `1px solid rgba(255,215,0,0.2)`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                {o.icon}
-              </div>
-              <div style={{ flex: 1 }}>
-                <div style={{ color: COLORS.text, fontSize: 16, fontWeight: 600, marginBottom: 3 }}>{o.label}</div>
-                <div style={{ color: COLORS.textSecondary, fontSize: 13 }}>{o.desc}</div>
-              </div>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={COLORS.textSecondary} strokeWidth="2"><polyline points="9 18 15 12 9 6" /></svg>
-            </button>
-          ))}
+          {opts.map((o) => {
+            const isSel = presetMatches(o.id);
+            return (
+              <button
+                key={o.id}
+                onClick={() => onPickPreset(o.id)}
+                style={{
+                  padding: "20px", borderRadius: 10,
+                  border: `1.5px solid ${isSel ? COLORS.gold : COLORS.border}`,
+                  background: isSel ? COLORS.goldHighlight : COLORS.card,
+                  cursor: "pointer", textAlign: "left",
+                  display: "flex", alignItems: "center", gap: 14,
+                  transition: "all 0.15s ease",
+                }}
+              >
+                <div style={{ width: 40, height: 40, borderRadius: 8, background: "rgba(255,215,0,0.08)", border: `1px solid rgba(255,215,0,0.2)`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                  {o.icon}
+                </div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ color: isSel ? COLORS.gold : COLORS.text, fontSize: 16, fontWeight: 600, marginBottom: 3 }}>{o.label}</div>
+                  <div style={{ color: COLORS.textSecondary, fontSize: 13 }}>{o.desc}</div>
+                </div>
+              </button>
+            );
+          })}
         </div>
 
         {hasSelection && (
           <div style={{ marginTop: 20, padding: "16px 18px", background: COLORS.goldHighlight, border: `1px solid rgba(255,215,0,0.25)`, borderRadius: 10 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <div>
-                <div style={{ color: COLORS.gold, fontSize: 15, fontWeight: 600 }}>{count} items selected</div>
-                <div style={{ color: COLORS.textSecondary, fontSize: 12, marginTop: 2 }}>Equipment saved</div>
+                <div style={{ color: COLORS.gold, fontSize: 15, fontWeight: 600 }}>{countLine}</div>
+                <div style={{ color: COLORS.textSecondary, fontSize: 12, marginTop: 2 }}>You can refine this anytime</div>
               </div>
               <button onClick={onEditDetail} style={{ padding: "8px 16px", background: "transparent", border: `1px solid ${COLORS.gold}`, borderRadius: 8, color: COLORS.gold, fontSize: 13, fontWeight: 500, cursor: "pointer" }}>
                 Edit
@@ -7964,7 +8056,7 @@ function CreateAccountScreen({ onNext, onBack }) {
       <div style={{ flex: 1, minHeight: 0, padding: "0 24px", overflowY: "auto", WebkitOverflowScrolling: "touch" }}>
         <div style={{ marginTop: 8, marginBottom: 32 }}><MYGLogo size={36} /></div>
         <h2 style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 28, color: COLORS.text, margin: "0 0 8px", fontWeight: 400 }}>Create your account</h2>
-        <p style={{ color: COLORS.textSecondary, fontSize: 15, margin: "0 0 28px" }}>One last step before you meet your Coach.</p>
+        <p style={{ color: COLORS.textSecondary, fontSize: 15, margin: "0 0 28px" }}>Almost there — your Coach is waiting.</p>
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
           <TextInput placeholder="Email" value={email} onChange={setEmail} type="email" />
           <TextInput placeholder="Password" value={pw} onChange={setPw} type="password" />
@@ -7981,10 +8073,15 @@ function CreateAccountScreen({ onNext, onBack }) {
 }
 
 function NameScreen({ onNext, onBack }) {
+  // S88 (D-277): the silent "Athlete" fallback is dead — a blank name
+  // was a skip wearing a Continue button, and Coach addresses the user
+  // by this name. Continue now gates on a non-empty trimmed name.
   const [name, setName] = useState("");
+  const canContinue = name.trim().length > 0;
   const handleNext = () => {
     const trimmed = name.trim();
-    onNext(trimmed || "Athlete");
+    if (!trimmed) return;
+    onNext(trimmed);
   };
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
@@ -7996,7 +8093,7 @@ function NameScreen({ onNext, onBack }) {
         <div style={{ flex: 1, minHeight: 40 }} />
       </div>
       <div style={{ padding: "12px 24px 16px", flexShrink: 0, borderTop: `1px solid ${COLORS.border}`, background: COLORS.bg }}>
-        <GoldButton onClick={handleNext}>Continue</GoldButton>
+        <GoldButton onClick={handleNext} style={{ opacity: canContinue ? 1 : 0.35, pointerEvents: canContinue ? "auto" : "none" }}>Continue</GoldButton>
       </div>
     </div>
   );
@@ -8011,7 +8108,12 @@ function CompletionScreen({ onEnter }) {
         <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke={COLORS.gold} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg>
       </div>
       <h2 style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 28, color: COLORS.text, margin: "0 0 12px", fontWeight: 400, textAlign: "center" }}>You're all set</h2>
-      <p style={{ color: COLORS.textSecondary, fontSize: 15, textAlign: "center", lineHeight: 1.6, margin: "0 0 48px" }}>Your Coach is ready. Let's get to work.</p>
+      {/* S88 (D-280): the SS10.13 honest-expectations framing line finally
+          lands — ruled to exist in S82, homeless since. This is the one
+          moment the user is finished, listening, and about to meet Coach.
+          "Let's get to work" survives as the gold italic sign-off. */}
+      <p style={{ color: COLORS.textSecondary, fontSize: 15, textAlign: "center", lineHeight: 1.6, margin: "0 0 8px" }}>Your first few workouts help Coach learn how you actually train.</p>
+      <p style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontStyle: "italic", color: COLORS.gold, fontSize: 15, textAlign: "center", margin: "0 0 44px" }}>Let's get to work.</p>
       <GoldButton onClick={onEnter}>Meet Coach AI</GoldButton>
     </div>
   );
@@ -8019,465 +8121,335 @@ function CompletionScreen({ onEnter }) {
 
 /* ── MAIN TABS ───────────────────────────────────────────────── */
 
-/* HOME_NOTES_V1 — hardcoded NOTES feed for v1 Home screen. Mixed
-   Coach tips + app updates; rendered identically (no visual kind
-   distinction in v1). Replace with a real content pipeline later;
-   the array shape ({id, text}) is what HomeTab consumes, so the
-   replacement is a drop-in swap from this constant to a fetched
-   value. Empty array → NOTES section hides entirely. */
-const HOME_NOTES_V1 = [
-  { id: "tip-log-between-sets", text: "Log between sets when you can — rest data is only useful when it's real." },
-  { id: "update-v14-swap", text: "New in v1.4 — swipe to swap exercises mid-workout." },
-];
-
 /* ── Home Tab ─────────────────────────────────────────────────────
-   Session 44 rebuild. Direction #4 from the heavy-mockup explore:
-   vitals-first dashboard built on Coach's File row grammar. Replaces
-   the prior gamification dashboard (Streak / XP / Workouts cards +
-   recent workouts list). Locked spec:
+   Session 89 rebuild (D-281): THE HYBRID — the daily brief's top half
+   on the quiet ledger's bottom half. Replaces the S44 scoreboard
+   (owner kill: "shows numbers, doesn't serve a purpose"). Direction
+   found by elimination in the S89 brainstorm: launchpad and Coach's-
+   presence both died as "a single feed wearing a whole tab"; the
+   ledger died-once-revived only where every row EARNS its place.
 
-     - Header: greeting + avatar. No level badge, no date line.
-     - Coach CTA at top — three states:
-         A) Mode 0 carry-forward exists → "<session name> ready when
-            you are" / "Tap to start"; routes to Workout tab and
-            starts the prepared session.
-         B) No carry-forward → "Coach's Pick" / "Generate today's
-            workout"; routes to Coach tab with a pre-filled draft
-            (Claude not yet wired — D-053; this is the bridge
-            behavior).
-         C) Workout already in progress → "Resume your workout";
-            routes back into the active logger. Standard pattern,
-            already handled elsewhere in the app; CTA defers to A or
-            B if no workout is active.
-     - Below the CTA: three sections in Coach's File row grammar
-       (15px gold sectionHead caps, #3a2e00 underline rule, #2a2a2a
-       section-bottom hairline, Georgia 15px row labels, 12px sans
-       row values; rowValUp gold for "earned" values).
-         THIS WEEK  — Sessions, Volume, PRs (rolling Mon-anchored)
-         MOMENTUM   — Streak, Most trained, Last session
-         NOTES      — Coach tips + app updates mixed feed (paragraph
-                      rows, no value column; hidden if empty)
-     - Rows are display-only in v1. Tappability is a future pass
-       (some have natural destinations, some don't; consistency
-       deferred per Session 44 decision).
-     - Cold-start (no workouts logged): sections hide, single italic
-       Georgia "Log your first workout to see your training stats
-       here." line replaces them. CTA stays — State B can fire on
-       day 1 (Claude doesn't need history to generate from
-       onboarding data).
+   THE ROW TEST (D-285, the page's constitution): nothing renders in
+   the bottom half unless it changed recently or wants a tap. Static
+   state ("Most trained: Chest") can never come back. Sections are
+   empty-by-absence (S49's surviving law) — a boring week produces a
+   short page, and that is correct.
 
-   Props the App now passes (computed in the renderTab case "home"
-   block, mirroring how ProfileTab's vitals are computed):
-     - userName, history (already passed before)
-     - customExercises (for findExerciseByName during muscle-count)
-     - nextSession (Mode 0 carry-forward; null until that pipeline
-       is wired — Bible §10 / D-039)
-     - notes (array of {id, text}; hardcoded mock for v1, content
-       pipeline lands later)
+   Page composition, top to bottom — deterministic, NO model call on
+   the render path (owner ruling: live-model Home "will never work"):
 
-   Why Coach's File grammar on Home: Session 35–43 stabilized that
-   row pattern across PLAN / RULES / OBSERVATIONS / BODY STATS. Home
-   was the only main surface still using its own visual language
-   (gold-bordered stat cards + outlined recent-workout cards). Unify-
-   ing on the same grammar means one type system across the app,
-   which is what Session 36 said the typography work was for. */
-function HomeTab({ onTabChange, userName, history, customExercises, nextSession, notes, unanalyzedCount = 0, unanalyzedPreview = "", onAnalyze }) {
+     HEADER (D-282)    name (Georgia 22) + caps date subline; streak
+                       pill top-right, only when streak > 0 (a dead
+                       streak shows nothing — never shame). The S44
+                       avatar is dead on Home; identity lives in
+                       Profile.
+     READ (D-283)      CoachMonogram + one Georgia line from
+                       buildCoachGreeting — the S57 tiered table
+                       (event lines win when they fire). V1
+                       PLACEHOLDER FEED by owner's explicit license;
+                       the named upgrade is the cached finish-flow
+                       read (written by Coach's D-062 background call
+                       at Finish, stored, rendered as a string —
+                       model never on render path even then).
+     TODAY (D-284)     due focus from walkRotation(resolveRotation)
+                       as the head's right meta. When Mode 0 carry-
+                       forward wires (nextSession pipe, §10/D-039),
+                       its lift rows render here + gold "Start
+                       workout" → workout tab. Until then: one
+                       Georgia line naming what's due + gold "Build
+                       today's workout" → onBuildToday (the S80
+                       askCoachToBuildWorkout path — auto-sends the
+                       build request through the real Coach send
+                       path; one tap, no typing). The gold button is
+                       the page's ONE loud thing (ScrollHint-era
+                       law). In-progress resume stays the minimized
+                       bar's job, not Home's (S44 parity).
+     IN MOTION (D-285) up to 3 lift rows from homeInMotionLifts —
+                       anchors whose history heads with a beat chain
+                       (newest-first per anchorPushHistory), recent
+                       within 21 days: "155 → 165 / Up 3 sessions
+                       straight". Reps-only anchors render "×8 →
+                       ×10". Plus the bodyweight row from
+                       homeWeightRow when a real 30d delta exists
+                       (±1 lb dead-band; flat is NOT in motion).
+                       Movement only — no stall/miss language here
+                       (S85: status vocabulary never lands on a
+                       landing; a wrong "stalled" is worse than no
+                       row). Named open item from the lock: whether
+                       these derivations stay sharp in live use.
+     WAITING (D-286)   rows that want a tap, absent when none:
+                       - the debrief catch-up (D-230's standing
+                         door, migrated from card to row — SAME
+                         affordance, same deadpan count, same
+                         onAnalyze, only the clothing changed;
+                         still the app's only skipper affordance)
+                       - the S78 finish-your-profile gaps, S88-
+                         narrowed: height missing → Profile; no
+                         weigh-in yet → Profile. Split choice is
+                         deliberately NOT here (naming the split
+                         would leak the splits-brainstorm seed the
+                         owner kept silent in S88).
+
+   NOTES is dead (D-287) and HOME_NOTES_V1 with it — the hardcoded
+   feed was scoreboard-era filler; a content pipeline that earns a
+   section can re-open the door later.
+
+   Cold-start (D-288): the italic "Log your first workout…" line is
+   dead. S88's mandatory onboarding guarantees goal/level/days/
+   equipment/name at first render, so the page simply COMPOSES:
+   greeting is personal, the read fires (greeting table handles
+   fresh users), TODAY names the due focus from the seeded rotation
+   (D-278: seeded from the user's real day count), and WAITING
+   typically opens with the height row (Coach estimates until then).
+   Day one is a real page, not an apology.
+
+   PR-morning ceremony (the gold benchmark line above TODAY) is
+   DESIGNED-NOT-BUILT — named open item with the gold-conflict
+   question (does the PR line take the gold and the CTA drop to
+   outlined?). It rides the D-114 event tier when that lands.
+
+   Props (computed in renderTab case "home", both sites):
+     userName, history, customExercises (S44 carryovers)
+     nextSession        Mode 0 pipe, still null (§10/D-039)
+     coachRotation, rotationCursor, planDaysPerWeek  (due focus +
+                        greeting — same trio CoachTab gets)
+     anchors            IN MOTION's feed (S85 store)
+     bodyStats          weight row + profile-gap rows
+     unanalyzedCount, unanalyzedPreview, onAnalyze  (D-230, as before)
+     onBuildToday       askCoachToBuildWorkout
+     onTabChange        routing */
+function HomeTab({ onTabChange, userName, history, customExercises, nextSession, coachRotation, rotationCursor, planDaysPerWeek, anchors, bodyStats, unanalyzedCount = 0, unanalyzedPreview = "", onAnalyze, onBuildToday, sessionSeed }) {
   const hist = history || [];
-  const hasWorkouts = hist.length > 0;
-
-  const initial = (userName || "").trim().charAt(0).toUpperCase() || "?";
-
-  // ── Coach CTA copy — picks State A or State B ──
-  // State A wins if a prepared session exists; State B is the
-  // Coach's Pick fallback that routes to the Coach tab with a draft
-  // (Claude isn't wired yet — D-053 / Session 44 locked Option 2).
-  // Wiring: App passes nextSession=null today; once Mode 0 carry-
-  // forward exists, App will pass {name, sessionId} here.
-  const ctaState = nextSession ? "A" : "B";
-  const ctaTitle = ctaState === "A"
-    ? `${nextSession.name} ready when you are`
-    : "Coach's Pick";
-  const ctaSub = ctaState === "A"
-    ? "Tap to start"
-    : "Generate today's workout";
-  const onCtaTap = () => {
-    if (ctaState === "A") {
-      // Future: dispatch "start prepared session" into Workout tab.
-      // For now, just route to Workout tab — when nextSession is
-      // null this branch can't fire, so this stays safe even though
-      // the start handoff isn't wired.
-      onTabChange("workout");
-    } else {
-      // State B: Coach's Pick. Route to Coach tab. Pre-filling the
-      // draft message is a Coach-tab concern (separate task); this
-      // CTA's job ends at routing.
-      onTabChange("coach");
-    }
-  };
-
-  // ── Vitals derivation ──
-  // All computed inline from history to keep HomeTab a pure render
-  // of what the App already has. If any of these grow expensive we
-  // can lift them into App + memoize, but for ≤1000 sessions the
-  // per-render cost is negligible.
-  const sessionsThisWeek = countSessionsThisWeek(hist);
-  const volumeThisWeek = sumVolumeThisWeek(hist);
-  const prsThisWeek = countPRsThisWeek(hist);
   const streak = computeStreak(hist);
-  const mostTrained = computeMostTrainedMuscle(hist, customExercises || []);
-  const lastSessionLabel = hist[0] ? formatRelativeDate(hist[0].date) : "—";
 
-  // ── Shared Coach's File row grammar ──
-  // Mirrors the TYPE / rowLineStyle / sectionBlockStyle / section
-  // HeadBtnStyle in ProfileTab. Duplicated here rather than lifted
-  // to module scope because the rest of the app is also using
-  // local TYPE objects per-component — keeps the locality of the
-  // typography decision and avoids a premature shared-styles file.
+  // ── Due focus + read line — the same derivations CoachTab runs ──
+  const due = walkRotation(resolveRotation(coachRotation, planDaysPerWeek), rotationCursor);
+  const dueLabel = due && due.label ? due.label : null;
+  const readLine = buildCoachGreeting({
+    userName, now: new Date(), workoutHistory: hist,
+    coachRotation, rotationCursor, planDaysPerWeek,
+    sessionSeed,
+  });
+
+  // ── Bottom-half derivations (pure, over stores App already has) ──
+  const motionLifts = homeInMotionLifts(anchors);
+  const weightRow = homeWeightRow(bodyStats);
+  const showMotion = motionLifts.length > 0 || !!weightRow;
+
+  const bs = bodyStats || {};
+  const heightMissing = typeof bs.heightIn !== "number";
+  const noWeighIn = !Array.isArray(bs.weightLog) || bs.weightLog.length === 0;
+  const showWaiting = unanalyzedCount > 0 || heightMissing || noWeighIn;
+
+  // ── Coach's File grammar — same TYPE locals as ProfileTab (kept
+  // per-component per the standing locality decision). ──
   const TYPE = {
     body: { fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 15, color: "#e8e8e8", lineHeight: 1.5 },
     sectionHead: { fontFamily: "-apple-system, system-ui, sans-serif", fontSize: 15, color: COLORS.gold, fontWeight: 700, letterSpacing: 2, textTransform: "uppercase" },
     sectionRule: { border: "none", height: 1, background: "#3a2e00", margin: 0, width: "100%" },
-    rowVal: { fontSize: 12, color: "#aaa", whiteSpace: "nowrap" },
-    rowValUp: { fontSize: 12, color: COLORS.gold, whiteSpace: "nowrap" },
-    noteBody: { fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 14, color: "#ccc", lineHeight: 1.5 },
-    emptyNote: { fontFamily: "Georgia, 'Times New Roman', serif", fontStyle: "italic", color: "#666", fontSize: 14, lineHeight: 1.6 },
+    rowVal: { fontSize: 12, color: "#aaa", whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" },
+    rowValGold: { fontSize: 12, color: COLORS.gold, whiteSpace: "nowrap" },
+    rowSub: { fontFamily: "-apple-system, system-ui, sans-serif", fontSize: 11.5, color: "#666", marginTop: 3 },
+    read: { fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 14.5, color: "#ccc", lineHeight: 1.55 },
+    headMeta: { fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 12, color: COLORS.textSecondary },
   };
-  const rowLineStyle = {
-    padding: "10px 0",
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "baseline",
-    gap: 14,
-  };
-  // isLast drops the bottom hairline on the final section. NOTES is
-  // last when present; MOMENTUM is last when NOTES is empty/hidden.
-  const sectionBlockStyle = (isLast) => ({
-    marginTop: 22,
-    paddingBottom: 6,
-    borderBottom: isLast ? "none" : "1px solid #2a2a2a",
-  });
-  const sectionHeadStyle = {
-    display: "flex", flexDirection: "column", gap: 6, marginBottom: 12,
-  };
+  const rowLineStyle = { padding: "10px 0", display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 14 };
+  const sectionBlockStyle = (isLast) => ({ marginTop: 22, paddingBottom: 6, borderBottom: isLast ? "none" : "1px solid #2a2a2a" });
+  const sectionHeadStyle = { display: "flex", flexDirection: "column", gap: 6, marginBottom: 4 };
+  const sectionHeadRow = (label, meta) => (
+    <div style={sectionHeadStyle}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12 }}>
+        <span style={TYPE.sectionHead}>{label}</span>
+        {meta ? <span style={TYPE.headMeta}>{meta}</span> : null}
+      </div>
+      <hr style={TYPE.sectionRule} />
+    </div>
+  );
 
-  const visibleNotes = notes || [];
-  const showNotes = visibleNotes.length > 0;
-
-  // ── THIS WEEK rows ──
-  // PRs uses rowValUp (gold) when > 0 — it's an "earned" value, same
-  // convention Coach's File uses for highlighted values like the
-  // PR-or-NEW tags in BENCHMARKS.
-  const thisWeekRows = [
-    { label: "Sessions", value: `${sessionsThisWeek} of ${planDaysForWeek()}`, up: false },
-    { label: "Volume", value: `${formatVolumeLb(volumeThisWeek)} lb`, up: false },
-    { label: "PRs", value: prsThisWeek > 0 ? `${prsThisWeek} new` : "0", up: prsThisWeek > 0 },
-  ];
-
-  // ── MOMENTUM rows ──
-  // Streak uses rowValUp (gold) when > 0 — same convention. Locked
-  // Session 44: streak earns a row on Home even though it was
-  // dropped from Coach's File Vitals (Session 35). Different
-  // audience — Coach's File is for Coach, Home is for the user.
-  const momentumRows = [
-    { label: "Streak", value: streak > 0 ? `${streak} ${streak === 1 ? "day" : "days"}` : "—", up: streak > 0 },
-    { label: "Most trained", value: mostTrained || "—", up: false },
-    { label: "Last session", value: lastSessionLabel, up: false },
-  ];
+  // ── Date subline — "WED · AUG 19", local clock ──
+  const now = new Date();
+  const DOWS = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
+  const MONS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
+  const dateLine = `${DOWS[now.getDay()]} · ${MONS[now.getMonth()]} ${now.getDate()}`;
 
   const homeScrollRef = useRef(null);
   useScrollMemory("home", homeScrollRef);
   return (
     <div ref={homeScrollRef} style={{ flex: 1, padding: "20px 24px", overflowY: "auto", overscrollBehavior: "contain" }}>
 
-      {/* Header row — greeting + avatar. Matches ProfileTab header
-          shape (no level badge, no date subline). */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
-        <h2 style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 22, color: COLORS.text, margin: 0, fontWeight: 400 }}>Hey, {userName}</h2>
-        <div style={{ width: 40, height: 40, borderRadius: 20, background: COLORS.card, border: `2px solid ${COLORS.gold}`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-          <span style={{ color: COLORS.gold, fontFamily: "Georgia, 'Times New Roman', serif", fontWeight: 700, fontSize: 16 }}>{initial}</span>
+      {/* ── HEADER — name + date; streak pill only when earned ── */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 18 }}>
+        <div>
+          <h2 style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 22, color: COLORS.text, margin: 0, fontWeight: 400 }}>{userName}</h2>
+          <div style={{ fontFamily: "-apple-system, system-ui, sans-serif", fontSize: 10, letterSpacing: 2, color: COLORS.textSecondary, marginTop: 4 }}>{dateLine}</div>
         </div>
+        {streak > 0 && (
+          <div style={{
+            border: "1px solid rgba(255, 215, 0, 0.35)", background: "rgba(212, 175, 55, 0.08)",
+            borderRadius: 14, padding: "4px 10px", fontSize: 12, color: COLORS.gold,
+            fontVariantNumeric: "tabular-nums", flexShrink: 0,
+          }}>
+            🔥 {streak}
+          </div>
+        )}
       </div>
 
-      {/* Coach CTA — gold-bordered card with C monogram + title +
-          subtitle + chevron. CoachMonogram is the same component
-          Coach's File uses for its header monogram, so the visual
-          link between this CTA and Coach as an identity is
-          deliberate. */}
-      <button
-        onClick={onCtaTap}
-        style={{
-          width: "100%", padding: 20,
-          background: COLORS.goldHighlight,
-          border: `1.5px solid ${COLORS.gold}`,
-          borderRadius: 12,
-          cursor: "pointer", textAlign: "left",
-          display: "block",
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <CoachMonogram size={40} />
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ color: COLORS.gold, fontSize: 16, fontWeight: 600, marginBottom: 2 }}>{ctaTitle}</div>
-            <div style={{ color: COLORS.textSecondary, fontSize: 13 }}>{ctaSub}</div>
-          </div>
-          <span style={{ color: COLORS.gold, fontSize: 20, lineHeight: 1, flexShrink: 0 }}>›</span>
-        </div>
-      </button>
+      {/* ── READ — one Coach line, monogram-led ── */}
+      <div style={{ display: "flex", gap: 12, marginBottom: 4 }}>
+        <CoachMonogram size={28} />
+        <p style={{ ...TYPE.read, margin: 0, flex: 1, paddingTop: 3 }}>{readLine}</p>
+      </div>
 
-      {/* ── THE DEBRIEF catch-up card (S82, D-230) ──
-          The skipper's door: exists ONLY while un-analyzed workouts do,
-          vanishes the moment the user is caught up. Deadpan counting per
-          the standing owner rule — never corny, never a nag; the same
-          quiet gold-tinted register as the dead survey pin, one line and
-          a plain verb. Tapping opens a debrief over everything waiting. */}
-      {unanalyzedCount > 0 && onAnalyze && (
-        <button
-          onClick={onAnalyze}
-          style={{
-            width: "100%", display: "flex", alignItems: "center", gap: 12,
-            background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 10,
-            padding: "12px 14px", cursor: "pointer", marginTop: 12, fontFamily: "inherit",
-            textAlign: "left",
-          }}
-        >
-          <div style={{
-            width: 32, height: 32, borderRadius: "50%", border: `1.5px solid ${COLORS.gold}`,
-            display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
-          }}>
-            <span style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontStyle: "italic", color: COLORS.gold, fontSize: 15, fontWeight: 700 }}>C</span>
-          </div>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ color: COLORS.text, fontSize: 13.5, fontWeight: 600 }}>
-              {unanalyzedCount} {unanalyzedCount === 1 ? "workout" : "workouts"} awaiting debrief
-            </div>
-            {unanalyzedPreview ? (
-              <div style={{ color: COLORS.textSecondary, fontSize: 12, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {unanalyzedPreview}
-              </div>
-            ) : null}
-          </div>
-          <span style={{ color: COLORS.gold, fontSize: 20, lineHeight: 1, flexShrink: 0 }}>›</span>
-        </button>
-      )}
-
-      {!hasWorkouts ? (
-        /* ── Cold-start ── Sections hidden until first workout
-            logged. Single italic Georgia line invites the user to
-            train without nagging — same emptyNote style Coach's
-            File uses for empty RULES / OBSERVATIONS. */
-        <div style={{ ...TYPE.emptyNote, padding: "32px 4px", textAlign: "center" }}>
-          Log your first workout to see your training stats here.
-        </div>
-      ) : (
-        <>
-          {/* ── THIS WEEK ── */}
-          <div style={sectionBlockStyle(false)}>
-            <div style={sectionHeadStyle}>
-              <span style={TYPE.sectionHead}>THIS WEEK</span>
-              <hr style={TYPE.sectionRule} />
-            </div>
-            {thisWeekRows.map((r) => (
-              <div key={r.label} style={rowLineStyle}>
-                <span style={{ ...TYPE.body, flex: 1 }}>{r.label}</span>
-                <span style={r.up ? TYPE.rowValUp : TYPE.rowVal}>{r.value}</span>
+      {/* ── TODAY — due focus + the page's one loud thing ── */}
+      <div style={sectionBlockStyle(!showMotion && !showWaiting)}>
+        {sectionHeadRow("TODAY", dueLabel)}
+        {nextSession && Array.isArray(nextSession.exercises) && nextSession.exercises.length > 0 ? (
+          <>
+            {nextSession.exercises.slice(0, 3).map((ex, i) => (
+              <div key={ex.id || i} style={rowLineStyle}>
+                <span style={{ ...TYPE.body, flex: 1 }}>{ex.name}</span>
+                <span style={TYPE.rowVal}>{ex.prescription || ""}</span>
               </div>
             ))}
-          </div>
+            <GoldButton onClick={() => onTabChange("workout")} style={{ width: "100%", marginTop: 12 }}>Start workout</GoldButton>
+          </>
+        ) : (
+          <>
+            <p style={{ ...TYPE.body, margin: "10px 0 2px" }}>
+              {dueLabel ? `${dueLabel} is up next.` : "Your next session is up to you."}
+            </p>
+            <GoldButton onClick={onBuildToday} style={{ width: "100%", marginTop: 12 }}>Build today's workout</GoldButton>
+          </>
+        )}
+      </div>
 
-          {/* ── MOMENTUM ── */}
-          <div style={sectionBlockStyle(!showNotes)}>
-            <div style={sectionHeadStyle}>
-              <span style={TYPE.sectionHead}>MOMENTUM</span>
-              <hr style={TYPE.sectionRule} />
-            </div>
-            {momentumRows.map((r) => (
-              <div key={r.label} style={rowLineStyle}>
+      {/* ── IN MOTION — the row test's home turf: movement only ── */}
+      {showMotion && (
+        <div style={sectionBlockStyle(!showWaiting)}>
+          {sectionHeadRow("IN MOTION", null)}
+          {motionLifts.map((r) => (
+            <div key={r.key} style={{ padding: "10px 0" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 14 }}>
                 <span style={{ ...TYPE.body, flex: 1 }}>{r.label}</span>
-                <span style={r.up ? TYPE.rowValUp : TYPE.rowVal}>{r.value}</span>
+                <span style={TYPE.rowVal}>{r.value}</span>
               </div>
-            ))}
-          </div>
-
-          {/* ── NOTES ── Mixed Coach-tip / app-update feed. Hidden
-              entirely when empty. v1 ships with a hardcoded array
-              from App; content pipeline is later. Note kind not
-              visually distinguished — tips and updates render as
-              identical Georgia paragraphs. Per-note hairline
-              between, no hairline above the first or after the
-              last (the section bottom hairline handles the latter
-              when not the last section). */}
-          {showNotes && (
-            <div style={sectionBlockStyle(true)}>
-              <div style={sectionHeadStyle}>
-                <span style={TYPE.sectionHead}>NOTES</span>
-                <hr style={TYPE.sectionRule} />
+              {r.sub ? <div style={TYPE.rowSub}>{r.sub}</div> : null}
+            </div>
+          ))}
+          {weightRow && (
+            <div style={{ padding: "10px 0" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 14 }}>
+                <span style={{ ...TYPE.body, flex: 1 }}>{weightRow.label}</span>
+                <span style={TYPE.rowVal}>{weightRow.value}</span>
               </div>
-              {visibleNotes.map((n, i) => (
-                <div
-                  key={n.id || i}
-                  style={{
-                    padding: "12px 0",
-                    borderTop: i === 0 ? "none" : "1px solid #2a2a2a",
-                    ...TYPE.noteBody,
-                  }}
-                >
-                  {n.text}
-                </div>
-              ))}
+              {weightRow.sub ? <div style={TYPE.rowSub}>{weightRow.sub}</div> : null}
             </div>
           )}
-        </>
+        </div>
+      )}
+
+      {/* ── WAITING ON YOU — rows that want a tap; absent when none ── */}
+      {showWaiting && (
+        <div style={sectionBlockStyle(true)}>
+          {sectionHeadRow("WAITING ON YOU", null)}
+          {unanalyzedCount > 0 && onAnalyze && (
+            <button onClick={onAnalyze} style={{ width: "100%", background: "none", border: "none", padding: 0, cursor: "pointer", textAlign: "left", fontFamily: "inherit" }}>
+              <div style={rowLineStyle}>
+                <span style={{ ...TYPE.body, flex: 1 }}>
+                  {unanalyzedCount} {unanalyzedCount === 1 ? "workout" : "workouts"} awaiting debrief
+                </span>
+                <span style={TYPE.rowValGold}>Analyze ›</span>
+              </div>
+              {unanalyzedPreview ? <div style={{ ...TYPE.rowSub, marginTop: 0, paddingBottom: 8 }}>{unanalyzedPreview}</div> : null}
+            </button>
+          )}
+          {heightMissing && (
+            <button onClick={() => onTabChange("profile")} style={{ width: "100%", background: "none", border: "none", padding: 0, cursor: "pointer", textAlign: "left", fontFamily: "inherit" }}>
+              <div style={rowLineStyle}>
+                <span style={{ ...TYPE.body, flex: 1 }}>Profile: height missing</span>
+                <span style={TYPE.rowValGold}>Add ›</span>
+              </div>
+              <div style={{ ...TYPE.rowSub, marginTop: 0, paddingBottom: 8 }}>Coach estimates until then</div>
+            </button>
+          )}
+          {noWeighIn && (
+            <button onClick={() => onTabChange("profile")} style={{ width: "100%", background: "none", border: "none", padding: 0, cursor: "pointer", textAlign: "left", fontFamily: "inherit" }}>
+              <div style={rowLineStyle}>
+                <span style={{ ...TYPE.body, flex: 1 }}>No weigh-ins yet</span>
+                <span style={TYPE.rowValGold}>Log one ›</span>
+              </div>
+            </button>
+          )}
+        </div>
       )}
     </div>
   );
 }
 
-/* ── Home vitals helpers ──────────────────────────────────────────
-   Pulled out of HomeTab so the component body stays readable. All
-   are pure functions over history; safe to call on empty arrays.
+/* ── Home derivation helpers ─────────────────────────────────────
+   Pure functions over stores App already holds; safe on empty input.
+   The S44 vitals set (week counts, volume, most-trained,
+   planDaysForWeek stub, mondayOfThisWeek) died with the scoreboard
+   (D-281) — nothing else referenced them.
 
-   Week boundary: Monday-anchored, local time. Standard fitness-app
-   convention (matches how Strong / Hevy define "this week"). Sunday
-   sessions belong to the week that ended that day.
-
-   Date strings in history are "YYYY-MM-DD" (toISODate output); the
-   per-day comparison uses string equality on those, no Date math
-   inside the loop. */
-function mondayOfThisWeek() {
-  const d = new Date();
-  d.setHours(0, 0, 0, 0);
-  // getDay(): 0 = Sun, 1 = Mon, ... 6 = Sat. We want Monday as the
-  // anchor. Shift: Sun → back 6 days; Mon → 0; Tue → 1; etc.
-  const dow = d.getDay();
-  const shift = dow === 0 ? 6 : dow - 1;
-  d.setDate(d.getDate() - shift);
-  return d;
-}
-
-function countSessionsThisWeek(history) {
-  if (!history || history.length === 0) return 0;
-  const monday = mondayOfThisWeek();
-  const mondayISO = toISODate(monday);
-  // Count workouts with date >= mondayISO. String comparison on
-  // YYYY-MM-DD is correct ordering, so this is safe.
-  return history.filter((w) => (w.date || "") >= mondayISO).length;
-}
-
-function sumVolumeThisWeek(history) {
-  if (!history || history.length === 0) return 0;
-  const monday = mondayOfThisWeek();
-  const mondayISO = toISODate(monday);
-  let total = 0;
-  for (const w of history) {
-    if ((w.date || "") < mondayISO) continue;
-    for (const ex of (w.exercises || [])) {
-      for (const s of (ex.sets || [])) {
-        // Warmup sets count toward volume (Strong-app convention) —
-        // a deliberate decision that may be revisited if dogfooding
-        // surfaces a complaint. Today: volume is "lb moved" regard-
-        // less of set type. (History sets are already done-filtered at
-        // commit — the old `!s.completed` guard here was dead code that
-        // skipped EVERY set, zeroing this stat. Fixed in the Finish
-        // Flow session.)
-        const w_lb = Number(s.weight);
-        const reps = Number(s.reps);
-        if (!Number.isFinite(w_lb) || !Number.isFinite(reps)) continue;
-        total += w_lb * reps;
-      }
-    }
+   homeInMotionLifts — IN MOTION's lift feed (D-285). An anchor
+   qualifies when its history HEAD is a beat (history is newest-first
+   per anchorPushHistory) and that beat is recent (≤21 days). The
+   trailing beat chain gives the streak count; the entry just past
+   the chain gives the "from" value. Reps-only anchors render ×R.
+   Cap 3, newest beat first. Movement only — misses, stales, and
+   holds never produce a row here (S85 landing-language law). */
+function homeInMotionLifts(anchors, now = new Date()) {
+  const rows = [];
+  const nowMs = now instanceof Date ? now.getTime() : Date.now();
+  for (const a of anchors || []) {
+    const hist = a && Array.isArray(a.history) ? a.history : [];
+    if (hist.length === 0 || hist[0].result !== "beat") continue;
+    const beatDate = new Date(String(hist[0].date) + "T00:00:00");
+    if (isNaN(beatDate) || (nowMs - beatDate.getTime()) / 86400000 > 21) continue;
+    let chain = 0;
+    while (chain < hist.length && hist[chain].result === "beat") chain++;
+    const latest = hist[0];
+    const prev = hist[chain] || null;
+    const repsOnly = a.bodyweightMode === "reps_only";
+    const fmt = (e) => (repsOnly ? `×${e.reps}` : `${e.weight}`);
+    rows.push({
+      key: `${a.exerciseId}\u0000${a.variantKey}`,
+      label: a.exerciseName,
+      value: prev ? `${fmt(prev)} → ${fmt(latest)}` : fmt(latest),
+      sub: chain >= 2 ? `Up ${chain} sessions straight` : `New best · ${formatRelativeDate(latest.date)}`,
+      sortDate: String(latest.date || ""),
+    });
   }
-  return total;
+  rows.sort((x, y) => y.sortDate.localeCompare(x.sortDate));
+  return rows.slice(0, 3);
 }
 
-function countPRsThisWeek(history) {
-  // PR detection: a set is a PR if its weight×reps tuple beats every
-  // prior set of the same exercise across all earlier history. We
-  // walk history in chronological order, maintaining a per-exercise
-  // running max of e1RM. A set this week that bumps the e1RM counts
-  // as one PR (the heaviest of multiple this-week PRs on the same
-  // lift still counts as one — same convention as Strong).
-  //
-  // e1RM via Epley: w * (1 + reps/30). Stable enough for PR detection
-  // even though it's not a true 1RM. Switching to a different formula
-  // (Brzycki, Lombardi) is a one-line change here.
-  if (!history || history.length === 0) return 0;
-  const monday = mondayOfThisWeek();
-  const mondayISO = toISODate(monday);
-  // Sort ascending by date so we can walk chronologically. history
-  // is stored most-recent-first elsewhere, so we don't mutate it.
-  const chrono = [...history].sort((a, b) => (a.date || "").localeCompare(b.date || ""));
-  const maxByEx = new Map();
-  const prExercisesThisWeek = new Set();
-  for (const w of chrono) {
-    const isThisWeek = (w.date || "") >= mondayISO;
-    for (const ex of (w.exercises || [])) {
-      const name = ex.name;
-      if (!name) continue;
-      for (const s of (ex.sets || [])) {
-        // (History sets are already done-filtered at commit — a stale
-        // `!s.completed` guard here skipped every set and zeroed the
-        // count. Removed in the Finish Flow session.)
-        const w_lb = Number(s.weight);
-        const reps = Number(s.reps);
-        if (!Number.isFinite(w_lb) || !Number.isFinite(reps) || w_lb <= 0 || reps <= 0) continue;
-        const e1 = e1rm(w_lb, reps);
-        const prior = maxByEx.get(name) || 0;
-        if (e1 > prior) {
-          maxByEx.set(name, e1);
-          if (isThisWeek) prExercisesThisWeek.add(name);
-        }
-      }
-    }
+/* homeWeightRow — IN MOTION's bodyweight row (D-285). Same 30d
+   baseline walk as getWeightTrend30d (closest entry to the cutoff),
+   same ±1 lb dead-band: flat is NOT in motion and returns null, as
+   does a log with fewer than two entries. Sub acknowledges the goal
+   only when the direction actually matches it — deadpan otherwise,
+   never a cheer for drift. */
+function homeWeightRow(bodyStats) {
+  const log = bodyStats && Array.isArray(bodyStats.weightLog) ? bodyStats.weightLog : [];
+  if (log.length < 2) return null;
+  const sorted = [...log].sort((a, b) => a.loggedAt - b.loggedAt);
+  const latest = sorted[sorted.length - 1];
+  const cutoff = latest.loggedAt - 30 * 24 * 60 * 60 * 1000;
+  let baseline = sorted[0];
+  for (const e of sorted) {
+    if (Math.abs(e.loggedAt - cutoff) < Math.abs(baseline.loggedAt - cutoff)) baseline = e;
   }
-  return prExercisesThisWeek.size;
-}
-
-function computeMostTrainedMuscle(history, customExercises) {
-  // Lookback window: last 30 days. Bigger than "this week" because
-  // training emphasis is something you see over a mesocycle, not a
-  // week. Falls through to all-time if 30-day window is empty.
-  if (!history || history.length === 0) return null;
-  const thirtyAgo = new Date();
-  thirtyAgo.setHours(0, 0, 0, 0);
-  thirtyAgo.setDate(thirtyAgo.getDate() - 30);
-  const cutoffISO = toISODate(thirtyAgo);
-
-  const tally = (filterFn) => {
-    const counts = {};
-    for (const w of history) {
-      if (filterFn && !filterFn(w)) continue;
-      for (const ex of (w.exercises || [])) {
-        const def = findExerciseByName(ex.name, customExercises);
-        const primary = def && def.primary;
-        if (!primary) continue;
-        counts[primary] = (counts[primary] || 0) + 1;
-      }
-    }
-    const entries = Object.entries(counts);
-    if (entries.length === 0) return null;
-    entries.sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
-    return entries[0][0];
+  const delta = Math.round((latest.lb - baseline.lb) * 10) / 10;
+  if (Math.abs(delta) < 1) return null;
+  const dir = bodyStats.weightGoalDirection;
+  const aligned = (dir === "lose" && delta < 0) || (dir === "gain" && delta > 0);
+  return {
+    label: "Bodyweight",
+    value: `${latest.lb} · ${delta > 0 ? "+" : "−"}${Math.abs(delta)} / 30d`,
+    sub: aligned ? "Tracking your goal" : "30-day change",
   };
-
-  return tally((w) => (w.date || "") >= cutoffISO) || tally(null);
-}
-
-function formatVolumeLb(n) {
-  // 38,240 lb reads cleaner than 38240 lb on a tight row. Under 1000
-  // we keep the bare number; above we use thousands separators. No
-  // unit conversion here — that's the units-pref concern and Volume
-  // doesn't go through the same display layer as bodyweight yet.
-  const v = Math.round(Number(n) || 0);
-  if (v < 1000) return String(v);
-  return v.toLocaleString("en-US");
-}
-
-function planDaysForWeek() {
-  // Stub: when planDaysPerWeek is threaded into HomeTab, return that
-  // value instead. Until then, "Sessions · 4 of 6" reads sensibly
-  // for most users; refining to the user's actual plan is a one-line
-  // change once the prop comes through. Tracked as a follow-up.
-  return 6;
 }
 
 // Consecutive-day streak walking backward from the most recent workout.
@@ -20173,12 +20145,30 @@ export default function MYGFitness() {
   const [onboardingComplete, setOnboardingComplete] = useState(hasCompletedOnboarding);
   const [activeTab, setActiveTab] = useState(h.activeTab || "home");
   const [equipPreset, setEquipPreset] = useState(null);
-  const [selectedEquipment, setSelectedEquipment] = useState(() => h.selectedEquipment || new Set(PRESETS.full));
+  // S88 (D-275): the dev-era full-gym seed is DEAD. A fresh run starts
+  // with an empty selection — the preset screen arrives blank and gates
+  // Continue. Post-onboarding users always have a real selection now
+  // (mandatory completion, D-277); the sign-in dev shortcut lands with
+  // an empty set, which every consumer already handles gracefully
+  // (deriveEquipmentLabel -> "No equipment selected").
+  const [selectedEquipment, setSelectedEquipment] = useState(() => h.selectedEquipment || new Set());
+
+  // ── S88 onboarding drafts (D-275/D-278) ──
+  // Per-run scratch state for screens whose committed home lives
+  // elsewhere (planGoal / bodyStats / planDaysPerWeek). App-level so
+  // within-run Back keeps picks; NOT persisted, so a fresh run always
+  // starts blank — persisted or mock values can never pre-light chips.
+  // Committed to their real homes at each screen's Continue.
+  const [onbGoalDraft, setOnbGoalDraft] = useState(null);
+  const [onbGenderDraft, setOnbGenderDraft] = useState(null);
+  const [onbAgeRangeDraft, setOnbAgeRangeDraft] = useState(null);
+  const [onbDaysDraft, setOnbDaysDraft] = useState(3); // slider resting position — the ruled exception
 
   // ── User name — single source of truth ──
-  // Collected on the Name screen (Screen 8). Defaults to Tyler if the
-  // user skips or leaves it blank. Threaded to Home, Profile, and Coach
-  // so the name renders identically everywhere. See Bible §6.1.
+  // Collected on the Name screen (Screen 8). S88 (D-277): the screen
+  // gates on a non-empty name — no silent fallback. Threaded to Home,
+  // Profile, and Coach so the name renders identically everywhere.
+  // See Bible §6.1.
   const [userName, setUserName] = useState(h.userName || "");
 
   // ── Fitness level + time-away ──
@@ -20188,8 +20178,12 @@ export default function MYGFitness() {
   // future Coach AI context packet (Bible §10 returning-lifter awareness)
   // and surface in the Plan section of Coach's File (Bible §6.5 v26).
   // Persisted as of Session 36 — see note in saveSnapshot above.
-  const [fitnessLevel, setFitnessLevel] = useState(h.fitnessLevel || "advanced");
-  const [timeAway, setTimeAway] = useState(h.timeAway || "current");
+  // S88 (D-275): the dev-era seeds ("advanced" / "current") are DEAD —
+  // they pre-lit Screens 3 and 3b for every fresh user. Both default
+  // null; every consumer already null-guards (PLAN_LEVEL_LABELS
+  // fallbacks, coachTitleCase || "Intermediate", showTimeAway checks).
+  const [fitnessLevel, setFitnessLevel] = useState(h.fitnessLevel || null);
+  const [timeAway, setTimeAway] = useState(h.timeAway || null);
 
   const goTo = (s) => setScreen(s);
 
@@ -21881,19 +21875,20 @@ Deliver your reaction to these answers now, per THE REACTION TURN section of you
           userName={userName}
           history={workoutHistory}
           customExercises={customExercises}
-          // Mode 0 carry-forward — Bible §10 / D-039. Not yet wired;
-          // CTA falls through to State B ("Coach's Pick") until this
-          // pipeline lands. When it does, App computes the prepared
-          // session from Coach's last response and passes it here.
+          // Mode 0 carry-forward — Bible §10 / D-039. Still null; TODAY
+          // falls through to the due-label + Build CTA until the
+          // splits/programs build wires the pipe. Same pipe feeds the
+          // Workout door's prepared-work slot (S83) — when it lands,
+          // rule the division of labor between the two surfaces.
           nextSession={null}
-          // NOTES feed — hardcoded mock for v1. Content pipeline
-          // (authored tips + changelog generation) is a later task.
-          // Empty array hides the section entirely.
-          notes={HOME_NOTES_V1}
-          // THE DEBRIEF's standing door (S82, D-230): deadpan count of
-          // committed-but-never-debriefed sessions; the card exists only
-          // while the count is nonzero and the model is reachable, and
-          // disappears the moment the user is caught up — never clutter.
+          coachRotation={coachRotation}
+          rotationCursor={rotationCursor}
+          planDaysPerWeek={planDaysPerWeek}
+          anchors={anchors}
+          bodyStats={bodyStats}
+          // THE DEBRIEF's standing door (S82, D-230), now a WAITING ON
+          // YOU row (D-286) — same deadpan count, same gate, same
+          // handler; only the clothing changed.
           unanalyzedCount={isOnline ? workoutHistory.filter((s) => s && !(debriefedSessionIds || []).includes(s.id)).length : 0}
           unanalyzedPreview={(() => {
             const waiting = workoutHistory.filter((s) => s && !(debriefedSessionIds || []).includes(s.id));
@@ -21903,6 +21898,8 @@ Deliver your reaction to these answers now, per THE REACTION TURN section of you
             return names.join(", ") + (more > 0 ? ` + ${more} more` : "");
           })()}
           onAnalyze={analyzeFromHome}
+          onBuildToday={askCoachToBuildWorkout}
+          sessionSeed={COACH_SESSION_SEED}
         />
       );
       case "workout": return (
@@ -22071,7 +22068,13 @@ Deliver your reaction to these answers now, per THE REACTION TURN section of you
           history={workoutHistory}
           customExercises={customExercises}
           nextSession={null}
-          notes={HOME_NOTES_V1}
+          coachRotation={coachRotation}
+          rotationCursor={rotationCursor}
+          planDaysPerWeek={planDaysPerWeek}
+          anchors={anchors}
+          bodyStats={bodyStats}
+          onBuildToday={askCoachToBuildWorkout}
+          sessionSeed={COACH_SESSION_SEED}
         />
       );
     }
@@ -22335,7 +22338,18 @@ Deliver your reaction to these answers now, per THE REACTION TURN section of you
       case "signin":
         return <SignInScreen onBack={() => goTo("welcome")} onSignIn={enterApp} />;
       case "goals":
-        return <GoalsScreen onNext={() => goTo("level")} onBack={() => goTo("welcome")} onSkip={() => goTo("level")} />;
+        // S88 (D-278): the Goals answer is KEPT. The screen is controlled
+        // by the onboarding draft (fresh-blank, no preselection) and
+        // Continue commits the pick into planGoal — the existing
+        // persisted schema the Plan section and Coach already read.
+        return (
+          <GoalsScreen
+            value={onbGoalDraft}
+            onChange={setOnbGoalDraft}
+            onNext={() => { setPlanGoal(onbGoalDraft); goTo("level"); }}
+            onBack={() => goTo("welcome")}
+          />
+        );
       case "level":
         return (
           <FitnessLevelScreen
@@ -22349,7 +22363,6 @@ Deliver your reaction to these answers now, per THE REACTION TURN section of you
             }}
             onNext={() => goTo(fitnessLevel === "beginner" ? "aboutyou" : "timeaway")}
             onBack={() => goTo("goals")}
-            onSkip={() => goTo("aboutyou")}
           />
         );
       case "timeaway":
@@ -22359,28 +22372,25 @@ Deliver your reaction to these answers now, per THE REACTION TURN section of you
             onChange={setTimeAway}
             onNext={() => goTo("aboutyou")}
             onBack={() => goTo("level")}
-            onSkip={() => goTo("aboutyou")}
           />
         );
       case "aboutyou":
-        // AboutYouScreen captures gender and ageRange (Step 1 schema
-        // migration this session). Both fields now flow into bodyStats
-        // so Coach's File header and the Settings body-stats row reflect
-        // the user's onboarding answers. Skip is treated as "user did
-        // not provide" — bodyStats retains its current value (null
-        // fields on first launch, or whatever was already there if the
-        // user is re-entering onboarding for some reason).
+        // S88 (D-275/D-277): the screen is controlled by the onboarding
+        // drafts — it never reads persisted/mock bodyStats, so a fresh
+        // run starts blank while within-run Back keeps picks. Both
+        // fields are required (gated on-screen); Continue commits the
+        // drafts into bodyStats so Coach's File header and the Settings
+        // body-stats row reflect the user's answers. Skip is dead.
         return (
           <AboutYouScreen
-            initialGender={bodyStats ? bodyStats.gender : null}
-            initialAgeRange={bodyStats ? bodyStats.ageRange : null}
+            gender={onbGenderDraft}
+            ageRange={onbAgeRangeDraft}
+            onChangeGender={setOnbGenderDraft}
+            onChangeAgeRange={setOnbAgeRangeDraft}
             onNext={({ gender, ageRange }) => {
               setBodyStats((prev) => {
-                // Start from prev if present, else build a fresh skeleton.
-                // Then overlay the just-captured gender / ageRange. Empty
-                // values (null) from the screen don't clobber a previously
-                // set value — that lets a user back into onboarding without
-                // losing data.
+                // Start from prev if present, else build a fresh skeleton,
+                // then overlay the captured gender / ageRange.
                 const base = prev || { heightIn: null, weightLog: [], weightGoalTarget: null, weightGoalDirection: null, ageYears: null, ageRange: null, gender: null };
                 return {
                   ...base,
@@ -22391,30 +22401,33 @@ Deliver your reaction to these answers now, per THE REACTION TURN section of you
               goTo("days");
             }}
             onBack={() => goTo(fitnessLevel === "beginner" || fitnessLevel === null ? "level" : "timeaway")}
-            onSkip={() => goTo("days")}
           />
         );
       case "days":
-        return <DaysScreen onNext={() => goTo("equipment")} onBack={() => goTo("aboutyou")} onSkip={() => goTo("equipment")} />;
+        // S88 (D-278): the Days answer is KEPT — Continue commits the
+        // draft to planDaysPerWeek, which the D-100 split resolver seeds
+        // from. Pre-S88 the slider value was discarded and the split
+        // seeded off planDaysPerWeek's own default (6).
+        return (
+          <DaysScreen
+            days={onbDaysDraft}
+            onChangeDays={setOnbDaysDraft}
+            onNext={() => { setPlanDaysPerWeek(onbDaysDraft); goTo("equipment"); }}
+            onBack={() => goTo("aboutyou")}
+          />
+        );
       case "equipment":
+        // S88 (D-279): presets select IN PLACE — a tap applies the preset
+        // set and stays on this screen; the accordion is opt-in behind
+        // Edit. The skip-to-full-gym path is dead (D-277): selection is
+        // mandatory, and the fresh state is empty (D-275).
         return (
           <EquipmentPresetScreen
             onBack={() => goTo("days")}
-            onSkip={() => {
-              // Skip-for-now defaults to ALL equipment available, so the
-              // user gets the full library by default. They can refine
-              // later in Profile → Fitness Profile → Equipment.
-              const allIds = new Set();
-              for (const cat of EQUIPMENT_CATEGORIES) {
-                for (const item of cat.items) allIds.add(item.id);
-              }
-              setSelectedEquipment(allIds);
-              goTo("account");
-            }}
             selectedEquipment={selectedEquipment}
             onPickPreset={(id) => {
               setEquipPreset(id);
-              goTo("equipment_detail");
+              setSelectedEquipment(new Set(PRESETS[id]));
             }}
             onEditDetail={() => {
               setEquipPreset(null);
