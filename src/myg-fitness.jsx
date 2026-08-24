@@ -213,15 +213,64 @@ function saveSnapshot(state) {
   }
 }
 
+/* ── S91: ENTRY-LEVEL SNAPSHOT SANITIZER ──
+   loadSnapshot validated every TOP-LEVEL field but trusted the contents of
+   every array. The S91 corruption fuzzer showed that one null session, one
+   exercise without `sets`, one null chat, one null weigh-in, or one custom
+   exercise without a name crashes EVERY tab on mount — which means the
+   user can't even reach Export to save the rest of their data. Realistic
+   origin: a half-written commit (the S90 double-fire class), a bad import
+   paste, or a future schema slip. Fix at the root, once, here — not
+   thirty null-guards across the renderers. Entries that fail the shape are
+   DROPPED (never repaired); each drop console.warns with a count so a
+   recurring drop is visible as the signal it is (the S64 convention). */
+function sanitizeSnapshotEntries(parsed) {
+  const dropped = [];
+  const isObj = (x) => x && typeof x === "object" && !Array.isArray(x);
+  const keep = (label, arr, ok) => {
+    if (!Array.isArray(arr)) return arr;
+    const out = arr.filter(ok);
+    if (out.length === arr.length) return arr; // untouched → reference-preserved (cheap, and hydration compares by identity)
+    dropped.push(`${label}: ${arr.length - out.length}`);
+    return out;
+  };
+  const p = { ...parsed };
+  p.workoutHistory = keep("workoutHistory", p.workoutHistory, isObj);
+  if (Array.isArray(p.workoutHistory)) {
+    p.workoutHistory = p.workoutHistory.map((sess) => {
+      const exs = Array.isArray(sess.exercises) ? sess.exercises : [];
+      const kept = keep(`session ${sess.id || "?"} exercises`, exs, isObj);
+      const cleaned = kept.some((ex) => !Array.isArray(ex.sets)) ? kept.map((ex) => (Array.isArray(ex.sets) ? ex : { ...ex, sets: [] })) : kept;
+      return cleaned === sess.exercises ? sess : { ...sess, exercises: cleaned };
+    });
+  }
+  p.coachChats = keep("coachChats", p.coachChats, isObj);
+  if (Array.isArray(p.coachChats)) {
+    p.coachChats = p.coachChats.map((c) => {
+      const msgs = keep(`chat ${c.id || "?"} messages`, Array.isArray(c.messages) ? c.messages : [], isObj);
+      return msgs === c.messages ? c : { ...c, messages: msgs };
+    });
+  }
+  p.customExercises = keep("customExercises", p.customExercises, (x) => isObj(x) && typeof x.name === "string" && x.name.length > 0);
+  if (isObj(p.bodyStats) && Array.isArray(p.bodyStats.weightLog)) {
+    const log = keep("weightLog", p.bodyStats.weightLog, (w) => isObj(w) && typeof w.lb === "number" && Number.isFinite(w.lb) && typeof w.loggedAt === "number");
+    if (log !== p.bodyStats.weightLog) p.bodyStats = { ...p.bodyStats, weightLog: log };
+  }
+  for (const k of ["coachRules", "coachObservations", "anchors", "obsDenials", "obsWatchHolds", "coachSurveyEvents", "progressPRs"]) p[k] = keep(k, p[k], isObj);
+  if (dropped.length) console.warn(`[myg] snapshot sanitizer dropped malformed entries — ${dropped.join("; ")}`);
+  return p;
+}
+
 function loadSnapshot() {
   if (!storageAvailable()) return null;
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    if (!parsed || parsed.v !== 1) return null;
+    const parsedRaw = JSON.parse(raw);
+    if (!parsedRaw || parsedRaw.v !== 1) return null;
+    const parsed = sanitizeSnapshotEntries(parsedRaw);
     return {
-      onboardingComplete: !!parsed.onboardingComplete,
+      onboardingComplete: !!parsedRaw.onboardingComplete,
       userName: parsed.userName,
       // Array → Set back to live state shape
       selectedEquipment: new Set(parsed.selectedEquipment || []),
@@ -3523,7 +3572,10 @@ function buildDebriefReport(sessions, history, observations) {
           }
         }
       }
-      return { name: ex.name, variant: ex.variantLabel || null, top, dir: debriefDirection(top, prev) };
+      // S90 owner round 2: isNew disambiguates the unmarked row — "held"
+      // (has a reference, insignificant move) vs "first time ever" (no
+      // reference; a direction is impossible). Renders as a quiet tag.
+      return { name: ex.name, variant: ex.variantLabel || null, top, dir: debriefDirection(top, prev), isNew: !prev };
     }).filter((row) => row.top); // session order preserved — the ledger is the path of the session
     const dev = s.deviation;
     const card = dev ? {
@@ -3534,6 +3586,9 @@ function buildDebriefReport(sessions, history, observations) {
     } : null;
     return { sessionId: s.id, title: s.name || "Workout", numbers, card };
   });
+  // S90 (D-298, owner-corrected): WATCHING stays — "it still is a log of
+  // what coach notices" — but MINIMIZED: the ledger renders one collapsed
+  // row (count + chevron) that expands on tap. The list itself:
   const watching = (observations || [])
     .filter((o) => o && o.source === "engine" && (o.status === "watching" || o.status === "asked"))
     .map((o) => `${obsText(o)} · seen ${(o.occurrences || []).length}×`);
@@ -4469,6 +4524,9 @@ function getRowLastMax(exerciseId, exercise, workoutHistory = [], customs = []) 
     for (const ex of session.exercises || []) {
       const resolved = resolveSessionExercise(ex, customs);
       if (!resolved || resolved.exerciseId !== exerciseId) continue;
+      // S91: an exercise with no logged sets is not a "last max" — skip it
+      // (a zero-set entry crashed the row on sessionTopSet(null).weight).
+      if (!Array.isArray(ex.sets) || ex.sets.length === 0) continue;
       if (!latestDate || session.date > latestDate) {
         latestDate = session.date;
         latestVKey = resolved.vKey;
@@ -6078,41 +6136,6 @@ function orderSessionsForReplay(history) {
     .map((x) => x.s);
 }
 
-/* Observation store rebuild. Provenance split (same contract as
-   migrateObservationStore): engine records (source === "engine") are
-   derived state and re-fold from history; everything else — Coach-authored
-   notes, the user's answered survey questions — is a real statement with
-   independent standing and passes through untouched (owner lock, Session
-   70: survey answers survive even if their session is deleted). */
-function refoldObservations(store, history, customs = [], denials = []) {
-  const base = Array.isArray(store) ? store : [];
-  const kept = base.filter((o) => !(o && o.source === "engine"));
-  // S81: confirmed/denied engine records are USER ANSWERS — terminal to
-  // replay (D-155/D-135). They seed the fold, which never touches them
-  // and never mints a duplicate for their pattern.
-  let engineRecords = base.filter((o) => o && o.source === "engine"
-    && (o.status === "confirmed" || o.status === "denied"));
-  for (const session of orderSessionsForReplay(history)) {
-    engineRecords = applySessionToObservations(engineRecords, session, customs, denials);
-  }
-  return [...kept, ...engineRecords];
-}
-
-/* Rule store rebuild. Rules are user statements (pass through untouched);
-   adherence is derived state — tracked rules get their counters wiped and
-   replay history through the same fold the hydration migration uses. */
-function refoldRuleAdherence(rules, history) {
-  if (!Array.isArray(rules)) return rules || [];
-  const ordered = orderSessionsForReplay(history);
-  return rules.map((rule) => {
-    const p = rule && rule.predicate;
-    if (!p || !p.trackAdherence) return rule;
-    let arr = [{ ...rule, adherence: null }];
-    for (const s of ordered) arr = applySessionToRuleAdherence(arr, s);
-    return arr[0];
-  });
-}
-
 
 /* ═══════════════════════════════════════════════════════════════════
    RULES PIPELINE COMPILER (Session 79 — D-199 realized)
@@ -7009,7 +7032,7 @@ const IS_REAL_DEVICE = (() => {
 // Deploy cache-verification marker (owner's V.23 convention, formalized:
 // bump this one constant per push to confirm the phone isn't serving
 // stale cached code; rendered only on real devices, top-right).
-const BUILD_TAG = "V.47";
+const BUILD_TAG = "V.50";
 
 /* ── Visual-viewport pin (S77 — the "composer slides past the keyboard" bug) ──
    iOS (Safari tab and standalone PWA alike) never shrinks the LAYOUT
@@ -7388,7 +7411,14 @@ function OnbLabel({ children }) {
        ...content...
      </div>
 */
-function ScrollHint({ scrollRef }) {
+function ScrollHint({ scrollRef, edge = 0 }) {
+  /* S90 (D-297): edge = the scroll container's right PADDING. The pill
+     positions off the content box, so inside a padded container right:3
+     sat ~27px into the page and overlapped content (the owner's red
+     circle: the pill on top of Coach's icons). right: 3 - edge walks it
+     back through the padding to 3px off the true container edge — where
+     the native indicator lived and where eyes expect it. Still inside
+     the border box, so no horizontal overflow. */
   const PILL = 36;        // fixed pill length, px
   const PAD = 4;          // inset from track top/bottom
   const hintRef = useRef(null);
@@ -7460,7 +7490,7 @@ function ScrollHint({ scrollRef }) {
       <div
         ref={hintRef}
         style={{
-          position: "absolute", right: 3, width: 3, height: 36,
+          position: "absolute", right: 3 - edge, width: 3, height: 36,
           borderRadius: 3, background: "rgba(170,170,170,0.45)",
           opacity: 0, pointerEvents: "none",
           transition: "opacity 220ms cubic-bezier(0.22,1,0.36,1)",
@@ -8557,7 +8587,7 @@ function homeInMotionLifts(anchors, now = new Date()) {
 }
 
 /* homeWeightRow — IN MOTION's bodyweight row (D-285). Same 30d
-   baseline walk as getWeightTrend30d (closest entry to the cutoff),
+   baseline walk as the retired S42 getWeightTrend30d (closest entry to the cutoff),
    same ±1 lb dead-band: flat is NOT in motion and returns null, as
    does a log with fewer than two entries. Sub acknowledges the goal
    only when the direction actually matches it — deadpan otherwise,
@@ -8706,9 +8736,6 @@ const MOCK_WORKOUT_HISTORY = [];
    to "now" so they read as "12D", "22D", etc. on first run. The signed-
    footer "updated 2d ago" is the most recent of any of these timestamps.
 */
-const NOW_FOR_SEED = Date.now();
-const DAY = 24 * 60 * 60 * 1000;
-
 /* Session 78 — FACTORY WIPE (owner call): seeded rules, observations,
    benchmark rows, and body stats removed. Coach's File now starts truly
    empty — nothing appears in it that the user didn't put there (the same
@@ -8720,7 +8747,6 @@ const MOCK_COACH_RULES = [];
 
 const MOCK_COACH_OBSERVATIONS = [];
 
-const _D = (iso) => new Date(iso + "T12:00:00").getTime();
 const MOCK_PROGRESS_PRS = [];
 
 const MOCK_BODY_STATS = {
@@ -9039,7 +9065,7 @@ function WorkoutTab({
   return (
     <div ref={containerRef} style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, position: "relative" }}>
       <div ref={workoutScrollRef} style={{ flex: 1, padding: "8px 24px 20px", overflowY: "auto", overscrollBehavior: "contain", position: "relative" }}>
-        <ScrollHint scrollRef={workoutScrollRef} />
+        <ScrollHint scrollRef={workoutScrollRef} edge={24} />
         <h2 style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 22, color: COLORS.text, margin: "0 0 12px", fontWeight: 400 }}>Workout</h2>
 
         {/* CTA section — messaging only when no workout. Buttons always
@@ -9328,25 +9354,39 @@ function ActiveLogger({
   // session-clock state, which GATE B renders.
   const [inlineRestVisible, setInlineRestVisible] = useState(true);
   const inlineRestObsRef = useRef(null);
-  const handleInlineRestNode = (node) => {
+  /* S90 (D-296): the handler is IDENTITY-STABLE (useMemo, no deps — it
+     closes only over refs and a setter). The old inline arrow was a new
+     function every render, so React detached (null → forced visible:true)
+     and reattached the callback ref on EVERY render — and the logger
+     renders every second on the rest tick. Detach flipped the header to
+     the clock; the fresh observer's async answer flipped it back; that
+     state change rendered again and re-churned the ref: a self-sustaining
+     oscillator that kept both header layers mid-swap forever — the
+     "Time! keeps playing over the workout clock" the owner photographed
+     twice. No transition styling could fix it (D-291 didn't) because the
+     disease was upstream of the styles. Stable identity = refs fire only
+     on real mount/unmount, the observer lives across renders, and the
+     slot answer is steady. Root falls back to the viewport when the
+     scroller ref hasn't attached yet (child refs run before ancestors on
+     first mount), so an observer always exists. */
+  const handleInlineRestNode = useMemo(() => (node) => {
     if (inlineRestObsRef.current) {
       inlineRestObsRef.current.disconnect();
       inlineRestObsRef.current = null;
     }
-    if (node && typeof IntersectionObserver !== "undefined" && scrollRef.current) {
+    if (node && typeof IntersectionObserver !== "undefined") {
       const obs = new IntersectionObserver(
         (entries) => setInlineRestVisible(entries[0].isIntersecting),
         // rootMargin trims the boundary slightly so the flip happens just
-        // before the timer is fully gone; the 0.3s cross-fade absorbs any
-        // jitter at the line.
-        { root: scrollRef.current, rootMargin: "-8px 0px", threshold: 0 }
+        // before the timer is fully gone.
+        { root: scrollRef.current || null, rootMargin: "-8px 0px", threshold: 0 }
       );
       obs.observe(node);
       inlineRestObsRef.current = obs;
     } else if (!node) {
       setInlineRestVisible(true);
     }
-  };
+  }, []);
   useEffect(() => () => {
     if (inlineRestObsRef.current) inlineRestObsRef.current.disconnect();
   }, []);
@@ -9761,20 +9801,6 @@ function ActiveLogger({
   const isEligible = (s, field) =>
     s.type !== "warmup" && !s.done &&
     !(s[`${field}UserEdited`] && fieldHasRealValue(s, field));
-
-  // Resolve the suggestion a given eligible set should show for `field`:
-  // the nearest user-typed value strictly above it, skipping warmups,
-  // stopping at a done set (a done set is a wall — nothing above it
-  // reaches past it). Returns "" if no source found.
-  const resolveSuggestion = (sets, idx, field) => {
-    for (let i = idx - 1; i >= 0; i--) {
-      const s = sets[i];
-      if (s.type === "warmup") continue;
-      if (isSource(s, field)) return s[field];
-      if (s.done) return ""; // done wall blocks the chain
-    }
-    return "";
-  };
 
   const updateSet = (uid, setIdx, patch) => {
     setExercises((prev) => prev.map((ex) => {
@@ -13010,7 +13036,7 @@ function AddExerciseSheet({ userEquipment, customExercises = [], workoutHistory 
             </div>
 
             <div ref={pickerScrollRef} style={{ flex: 1, padding: "4px 20px 16px", overflowY: "auto", overscrollBehavior: "contain", minHeight: 0, position: "relative" }}>
-              <ScrollHint scrollRef={pickerScrollRef} />
+              <ScrollHint scrollRef={pickerScrollRef} edge={20} />
               {filtered.length === 0 && (
                 <div style={{ textAlign: "center", color: COLORS.textSecondary, fontSize: 13, padding: "32px 20px" }}>
                   No exercises found.
@@ -13797,13 +13823,7 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
   // FIRST_TOKEN_DELAY_MS — pre-first-token wait. Mirrors the ~300ms
   //   "Coach is thinking..." → first-token transition called out in
   //   §6.3 Response streaming. The thinking indicator covers this gap.
-  //
-  // STREAM_TICK_MS / STREAM_CHARS_PER_TICK — the per-chunk cadence of
-  //   the fake stream. Tuned to land near 40-50 chars/sec which sits
-  //   inside the 30-60 t/s band D-051 measured on Sonnet.
   const FIRST_TOKEN_DELAY_MS = 350;
-  const STREAM_TICK_MS = 70;
-  const STREAM_CHARS_PER_TICK = 4;
 
   // ─────────────────────────────────────────────────────────────────
 
@@ -13834,6 +13854,11 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
   // First-run: render the cold-start nudge as Coach's first message (visible
   // before send). Not-first-run empty: render the bare greeting.
   const showFirstRunNudge = currentIsEmpty && neverMessagedCoach;
+  // S90 (D-298, owner-corrected): the ledger's collapsed WATCHING row —
+  // open state lives per visit and resets when the room changes.
+  const [ledgerWatchOpen, setLedgerWatchOpen] = useState(false);
+  useEffect(() => { setLedgerWatchOpen(false); }, [chat && chat.id]);
+
   // S90 (D-290): a debrief room NEVER wears the workout-facing greeting
   // ("What are we hitting today?" behind a loading debrief — owner bug).
   // Empty debrief chats fall through to THE DEBRIEF header block, which
@@ -13890,9 +13915,9 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
   // messages still persist them — so a future re-add (owner: "down the
   // line we can discuss") is a render-layer decision, not a migration.
   // (The greetingDue rotation walk lived only to label the greeting
-  // chip — retired with it; buildCoachGreeting does its own walk.)
-  const quickReplies = null;
-  const quickReplySrc = null;
+  // chip — retired with it; buildCoachGreeting does its own walk.
+  // S91: the `const quickReplies = null` derivation itself was cut as
+  // dead code — nothing in this component derives chips anymore.)
   // S77: every suggestion set carries a SOURCE KEY so the X can dismiss
   // exactly this set and nothing else. Message-derived sets key on the
   // message id (dismissal persists on the message via the S75 id-scoped
@@ -14580,7 +14605,7 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
 
       {/* Messages */}
       <div ref={coachScrollRef} style={{ flex: 1, minHeight: 0, padding: "16px 24px", overflowY: "auto", overscrollBehavior: "contain", WebkitOverflowScrolling: "touch", position: "relative" }}>
-        <ScrollHint scrollRef={coachScrollRef} />
+        <ScrollHint scrollRef={coachScrollRef} edge={24} />
         {showGreeting ? (
           /* ── Empty-state (Session 57) ────────────────────────────────
              Warm, contextual greeting instead of a fixed command menu. The
@@ -14625,7 +14650,8 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
           const Inner = (
             <>
               <div style={{
-                color: COLORS.gold, fontSize: 10, fontWeight: 700,
+                fontFamily: "Georgia, 'Times New Roman', serif", fontStyle: "italic",
+                color: COLORS.gold, fontSize: 10, fontWeight: 400,
                 letterSpacing: 2.5, textTransform: "uppercase", marginBottom: 7,
               }}>The Debrief</div>
               <div style={{
@@ -14678,25 +14704,42 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
         {chat && chat.kind === "debrief" && chat.debriefReport && (() => {
           const rep = chat.debriefReport;
           const reports = rep.reports || [];
-          if (reports.length === 0 && (rep.watching || []).length === 0) return null;
+          const watchList = rep.watching || [];
+          if (reports.length === 0 && watchList.length === 0) return null;
+          /* S90 (D-298, owner-corrected final form):
+             - heads speak the WORKOUT CARD's title face — Georgia italic
+               gold, letterspaced, normal weight, at the original 10px
+               ("its some bold type face, no georgia or whatever else we
+               use" — the bold system sans was the foreign note);
+             - THE CARD names are white Georgia; only the Added·/Skipped·
+               prefixes are gray, and the mode label is gone;
+             - NEW tags disambiguate first-time lifts from held ones;
+             - WATCHING is one collapsed row (count + chevron), expanding
+               in place on tap — a log, minimized, never a wall;
+             - hairline dividers + the 90ms stagger stand. */
           const head = {
-            color: COLORS.gold, fontSize: 10, fontWeight: 700,
+            fontFamily: "Georgia, 'Times New Roman', serif", fontStyle: "italic",
+            color: COLORS.gold, fontSize: 10, fontWeight: 400,
             letterSpacing: 2.5, textTransform: "uppercase",
           };
-          const metaLine = { color: COLORS.textSecondary, fontSize: 12.5, marginTop: 7, lineHeight: 1.4 };
           const many = reports.length > 1;
+          let stg = 0; // stagger step across all sections
+          const arrive = () => ({
+            animation: "mygLedgerIn 400ms cubic-bezier(0.22,1,0.36,1) both",
+            animationDelay: `${(stg++) * 90}ms`,
+          });
           return (
-            <div style={{ borderBottom: "1px solid #262626", marginBottom: 18, paddingBottom: 14 }}>
-              {reports.map((r) => (
-                <div key={r.sessionId} style={{ marginBottom: 14 }}>
+            <div style={{ borderBottom: "1px solid #262626", marginBottom: 18, paddingBottom: 16 }}>
+              {reports.map((r, ri) => (
+                <div key={r.sessionId}>
                   {many && (
-                    <div style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 15, color: COLORS.text, marginBottom: 8 }}>{r.title}</div>
+                    <div style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 16, color: COLORS.text, margin: ri === 0 ? "0 0 10px" : "16px 0 10px", ...arrive() }}>{r.title}</div>
                   )}
                   {(r.numbers || []).length > 0 && (
-                    <>
+                    <div style={arrive()}>
                       <div style={head}>Numbers</div>
                       {r.numbers.map((n, i) => (
-                        <div key={i} style={{ display: "flex", alignItems: "center", marginTop: i === 0 ? 8 : 7, fontSize: 13.5 }}>
+                        <div key={i} style={{ display: "flex", alignItems: "center", marginTop: i === 0 ? 10 : 8, fontSize: 13.5 }}>
                           <span style={{
                             width: 18, flexShrink: 0, fontSize: 11,
                             color: n.dir === "up" ? COLORS.gold : COLORS.textSecondary,
@@ -14705,40 +14748,65 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
                             fontFamily: "Georgia, 'Times New Roman', serif", color: COLORS.text,
                             flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
                             paddingRight: 10,
-                          }}>{n.name}</span>
+                          }}>
+                            {n.name}
+                            {n.isNew ? <span style={{ color: COLORS.textSecondary, fontSize: 10.5, letterSpacing: 1, fontFamily: "-apple-system, system-ui, sans-serif", fontStyle: "normal" }}> NEW</span> : null}
+                          </span>
                           <span style={{ color: COLORS.text, fontVariantNumeric: "tabular-nums", flexShrink: 0 }}>
                             {n.top.w > 0 ? `${n.top.w} × ${n.top.r}` : `× ${n.top.r}`}
                           </span>
                         </div>
                       ))}
-                    </>
+                    </div>
                   )}
-                  {r.card && (
-                    <div style={{ marginTop: 12 }}>
-                      <div style={head}>
-                        The Card
-                        {r.card.label ? (
-                          <span style={{ color: COLORS.textSecondary, letterSpacing: 0.3, textTransform: "none", fontWeight: 400 }}> · {r.card.label}</span>
-                        ) : null}
-                      </div>
+                  {r.card && (r.card.added.length > 0 || r.card.skipped.length > 0 || (r.card.label === "went your own way" && r.card.kept.length > 0)) && (
+                    <div style={{ borderTop: "1px solid #262626", marginTop: 14, paddingTop: 12, ...arrive() }}>
+                      <div style={head}>The Card</div>
                       {r.card.label === "went your own way" && r.card.kept.length > 0 && (
-                        <div style={metaLine}>Kept · {r.card.kept.join(", ")}</div>
+                        <div style={{ fontSize: 13, marginTop: 8, lineHeight: 1.45 }}>
+                          <span style={{ color: COLORS.textSecondary }}>Kept · </span>
+                          <span style={{ fontFamily: "Georgia, 'Times New Roman', serif", color: COLORS.text }}>{r.card.kept.join(", ")}</span>
+                        </div>
                       )}
                       {r.card.added.length > 0 && (
-                        <div style={metaLine}>Added · {r.card.added.join(", ")}</div>
+                        <div style={{ fontSize: 13, marginTop: 8, lineHeight: 1.45 }}>
+                          <span style={{ color: COLORS.textSecondary }}>Added · </span>
+                          <span style={{ fontFamily: "Georgia, 'Times New Roman', serif", color: COLORS.text }}>{r.card.added.join(", ")}</span>
+                        </div>
                       )}
                       {r.card.skipped.length > 0 && (
-                        <div style={metaLine}>Skipped · {r.card.skipped.join(", ")}</div>
+                        <div style={{ fontSize: 13, marginTop: 6, lineHeight: 1.45 }}>
+                          <span style={{ color: COLORS.textSecondary }}>Skipped · </span>
+                          <span style={{ fontFamily: "Georgia, 'Times New Roman', serif", color: COLORS.text }}>{r.card.skipped.join(", ")}</span>
+                        </div>
                       )}
                     </div>
                   )}
                 </div>
               ))}
-              {(rep.watching || []).length > 0 && (
-                <div>
-                  <div style={head}>Watching</div>
-                  {rep.watching.map((w, i) => (
-                    <div key={i} style={metaLine}>{w}</div>
+              {watchList.length > 0 && (
+                <div style={{ borderTop: "1px solid #262626", marginTop: 14, paddingTop: 12, ...arrive() }}>
+                  <button
+                    onClick={() => setLedgerWatchOpen((v) => !v)}
+                    style={{
+                      display: "flex", alignItems: "center", width: "100%",
+                      background: "none", border: "none", padding: 0, cursor: "pointer",
+                      fontFamily: "inherit", textAlign: "left", WebkitTapHighlightColor: "transparent",
+                    }}
+                  >
+                    <span style={head}>Watching</span>
+                    <span style={{ color: COLORS.textSecondary, fontSize: 12.5, marginLeft: 8, flex: 1 }}>
+                      {watchList.length} {watchList.length === 1 ? "pattern" : "patterns"}
+                    </span>
+                    <span style={{
+                      color: COLORS.textSecondary, fontSize: 13,
+                      display: "inline-block",
+                      transform: ledgerWatchOpen ? "rotate(90deg)" : "none",
+                      transition: "transform 180ms cubic-bezier(0.22,1,0.36,1)",
+                    }}>›</span>
+                  </button>
+                  {ledgerWatchOpen && watchList.map((w, i) => (
+                    <div key={i} style={{ fontSize: 12.5, marginTop: i === 0 ? 9 : 6, lineHeight: 1.45, color: COLORS.text }}>{w}</div>
                   ))}
                 </div>
               )}
@@ -15021,7 +15089,6 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
             let nlIdx = buf.indexOf(WORKOUT_STREAM_DELIM);
             if (nlIdx < 0 && buf.indexOf("\n") >= 0 && !m.streaming) nlIdx = buf.indexOf("\n");
             const introVisible = nlIdx >= 0 ? buf.slice(0, nlIdx) : buf;
-            const outroVisible = nlIdx >= 0 ? buf.slice(nlIdx + 1) : "";
             const showWorkoutBlock = nlIdx >= 0;
             const isDone = m.streaming === false;
             return (
@@ -15219,8 +15286,8 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
           The ghost-bubble suggestion stack (S77, which superseded the
           S76 pill strip, which superseded the S60 pills) rendered here.
           Removed entirely — live verdict: a wall of boxes cutting off
-          the transcript. quickReplies is hard-null upstream; message
-          data still persists for a possible future re-add. */}
+          the transcript. No chip derivation exists in this component (S91);
+          message data still persists for a possible future re-add. */}
 
       {/* Input */}
       <div style={{ padding: "12px 24px", borderTop: `1px solid ${COLORS.border}`, flexShrink: 0 }}>
@@ -15913,7 +15980,7 @@ function ExercisesTab({
 
       {/* Exercise list */}
       <div ref={exScrollRef} style={{ flex: 1, padding: "4px 24px 20px", overflowY: "auto", overscrollBehavior: "contain", minHeight: 0, position: "relative" }}>
-        <ScrollHint scrollRef={exScrollRef} />
+        <ScrollHint scrollRef={exScrollRef} edge={24} />
         {sorted.length === 0 && (
           <div style={{ textAlign: "center", color: COLORS.textSecondary, fontSize: 13, padding: "40px 20px" }}>
             {/* S86 (Q1-B): the Update Equipment door renders HERE and only
@@ -17477,18 +17544,6 @@ function formatUpdatedAgo(epochMs) {
   return `${days}d ago`;
 }
 
-function formatShortDateCap(epochMs) {
-  // Returns "APR 8" style — short month + day, all caps. Used on PR
-  // rows in Progress where the timestamp is a historical event (the
-  // day the PR was hit) rather than a recency tag. Different from
-  // formatDaysAgoCap which is used on Rules/Observations where "12D"
-  // emphasizes "how long this has been on file".
-  if (!epochMs) return "";
-  const d = new Date(epochMs);
-  const month = d.toLocaleDateString("en-US", { month: "short" }).toUpperCase();
-  return `${month} ${d.getDate()}`;
-}
-
 // ── Weight log helpers ──
 // The bodyStats.weightLog is the canonical store for body weight over
 // time. Helpers here derive everything else (current weight, trend
@@ -17519,37 +17574,6 @@ function getCurrentWeightLb(weightLog) {
     if (e.loggedAt > latest.loggedAt) latest = e;
   }
   return latest.lb;
-}
-
-// Returns epoch ms of the most recent weigh-in, or null.
-function getLastWeightLogAt(weightLog) {
-  if (!Array.isArray(weightLog) || weightLog.length === 0) return null;
-  let latest = weightLog[0];
-  for (const e of weightLog) {
-    if (e.loggedAt > latest.loggedAt) latest = e;
-  }
-  return latest.loggedAt;
-}
-
-// Returns one of "up" | "down" | "flat" | null based on the trend over
-// the last 30 days. Compares the most recent entry to the entry closest
-// to 30 days before it. Threshold for "flat" is ±1 lb (noise band).
-// Used for the trend arrow on Coach's File header WEIGHT cell.
-function getWeightTrend30d(weightLog) {
-  if (!Array.isArray(weightLog) || weightLog.length < 2) return null;
-  const sorted = [...weightLog].sort((a, b) => a.loggedAt - b.loggedAt);
-  const latest = sorted[sorted.length - 1];
-  const cutoff = latest.loggedAt - 30 * 24 * 60 * 60 * 1000;
-  // Find entry closest to cutoff (could be before or just after).
-  let baseline = sorted[0];
-  for (const e of sorted) {
-    if (Math.abs(e.loggedAt - cutoff) < Math.abs(baseline.loggedAt - cutoff)) {
-      baseline = e;
-    }
-  }
-  const delta = latest.lb - baseline.lb;
-  if (Math.abs(delta) < 1) return "flat";
-  return delta > 0 ? "up" : "down";
 }
 
 // Add or overwrite a weigh-in for today. Same-day entries replace each
@@ -17892,7 +17916,7 @@ function ProfileTab({
         {/* S90 (D-293): Profile was the one long page without ScrollHint —
             with the native indicator dead, it joins the app's one scroll
             language like Workout/Coach/Exercises. */}
-        <ScrollHint scrollRef={profileScrollRef} />
+        <ScrollHint scrollRef={profileScrollRef} edge={24} />
 
         {/* Identity / intake block — Variant D (this session). The bare
             "Tyler" name from v27 was rewritten as a clipboard-style intake
@@ -19534,7 +19558,6 @@ function ObservationsSubscreen({ coachObservations, onAskCoach, onDeleteObservat
 function WeightTrackerCard({ weightLog, weightGoalTarget, weightGoalDirection, unitsPref, onLogWeight, onDeleteEntry, onSetGoal }) {
   const isKg = unitsPref === "kg";
   const LB_PER_KG = 0.453592;
-  const toDisplay = (lb) => (isKg ? lb / LB_PER_KG * LB_PER_KG : lb); // identity for lb; kept explicit for symmetry
   const lbToDisp = (lb) => (isKg ? lb / LB_PER_KG : lb);
   const dispToLb = (v) => (isKg ? v * LB_PER_KG : v);
   const unit = isKg ? "kg" : "lb";
@@ -20912,7 +20935,7 @@ export default function MYGFitness() {
   // Coach split rotation + cursor (Session 56). Rotation is null until set;
   // resolveRotation() seeds from days/week at read-time. Cursor advances on
   // a "next"-sourced Coach workout start.
-  const [coachRotation, setCoachRotation] = useState(validateStoredRotation(h.coachRotation));
+  const [coachRotation] = useState(validateStoredRotation(h.coachRotation));
   const [rotationCursor, setRotationCursor] = useState(Number.isInteger(h.rotationCursor) ? h.rotationCursor : 0);
   // S90 (D-289): commit double-fire latch. A double-tapped Finish/Done ran
   // commitFinishedSessionCore twice in one tick: the history write is an
@@ -22798,6 +22821,9 @@ Deliver your reaction to these answers now, per THE REACTION TURN section of you
            alert window. Applied to the logger header's rest layer +
            drain line and the SessionBar's alert line. */
         @keyframes mygTimePulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+        /* S90 (D-298): the debrief ledger composes in a stagger instead of
+           popping whole — 400ms standard curve, 90ms steps per section. */
+        @keyframes mygLedgerIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
         input::placeholder { color: #555; }
         /* S90 (D-293): scrollbar-width kills Firefox bars; the webkit rule
            gains display:none because iOS ignores bare width:0 for its
