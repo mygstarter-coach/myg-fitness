@@ -247,7 +247,13 @@ function loadSnapshot() {
       planGoal: ["build_muscle", "lose_weight", "gain_strength", "get_lean"].includes(parsed.planGoal) ? parsed.planGoal : "build_muscle",
       planDaysPerWeek: typeof parsed.planDaysPerWeek === "number" && parsed.planDaysPerWeek >= 1 && parsed.planDaysPerWeek <= 7 ? parsed.planDaysPerWeek : 3,
       coachRotation: validateStoredRotation(parsed.coachRotation),
-      rotationCursor: Number.isInteger(parsed.rotationCursor) && parsed.rotationCursor >= 0 ? parsed.rotationCursor : 0,
+      // S90 (D-289): the cursor is DERIVED at load, not trusted. The S70
+      // lock makes it equal the count of fromCoach sessions; deriving here
+      // self-heals any device whose stored value drifted (the double-fired
+      // commit bug doubled it on the owner's phone — cursor 6, history 3).
+      // The reload IS the compatibility layer, same doctrine as import.
+      // (§15 caveat stands: a manual "skip this day" feature must revisit.)
+      rotationCursor: (Array.isArray(parsed.workoutHistory) ? parsed.workoutHistory : []).filter((s) => s && s.fromCoach).length,
       coachRules: Array.isArray(parsed.coachRules) ? parsed.coachRules : null,
       coachObservations: Array.isArray(parsed.coachObservations) ? parsed.coachObservations : null,
       obsDenials: Array.isArray(parsed.obsDenials) ? parsed.obsDenials : [],
@@ -3006,6 +3012,20 @@ async function callCoach(systemPrompt, userMessage, opts = {}) {
    rule contract. Paragraphs are the voice; structure is earned, never
    default. The renderer (S77 chat-subset markdown) already supports
    everything permitted here. */
+/* ── S90 (D-295): THE VOICE RULES — shared by COACH_SYSTEM_PROMPT and
+   DEBRIEF_SYSTEM_PROMPT. Born from the owner's strongest reaction of the
+   S90 debrief brainstorm ("I really hate the way coach talks") at three
+   named offenders: the aphorism ("that's a deposit, not a story"), the
+   personified number ("the benchmark is lying"), the therapy phrase
+   ("noticing, not judging"). The register is a coach who's seen a
+   thousand sessions, not a writer describing one. ── */
+const COACH_VOICE_SECTION = `== VOICE (hard rules) ==
+State the fact, state what you're doing about it, stop. Concretely:
+- NO metaphors or aphorisms ("that's a deposit, not a story" — banned). If a line would look good on a poster, delete it.
+- NO personifying numbers or data ("the benchmark is lying", "the bar said otherwise" — banned). Numbers are out of date, confirmed, or unconfirmed — nothing else.
+- NO therapy phrasing ("noticing, not judging", "holding space", "I hear you" — banned). You are a coach, not a counselor.
+- Every claim concrete enough to act on: "225 for a clean double means 205×7 is out of date — next push day bench starts at 215" is the register. "Your ceiling is telling a story" is not.`;
+
 const COACH_FORMATTING_SECTION = `== FORMATTING (earned structure — paragraphs are the voice) ==
 - Paragraphs are how you speak: SHORT ones, two to four sentences, ONE idea each. **Bold** is for anchors — lift names, weights and reps, session names — the scannable spine of a message, and mostly what makes long prose unnecessary.
 - Bullets are EARNED, never default: use them ONLY when three or more truly parallel items exist (a lift-by-lift roundup, a multi-workout catch-up). Each bullet is one or two lines with a bold lead-in ("**Rows** — 165 → 172, prescribing 175 next"). Two items are a sentence, not a list.
@@ -3089,6 +3109,8 @@ Rules:
 - If the user asks to swap something in a workout you built, reply with ONLY the kind:"text" object above — the question naming the workout's exercises — and when they pick, re-issue the full updated CoachWorkout JSON. If they ask for a shorter session, re-issue a shorter CoachWorkout (fewer exercises/sets), same focus.
 
 ${COACH_RULE_PROPOSAL_SECTION}
+
+${COACH_VOICE_SECTION}
 
 ${COACH_FORMATTING_SECTION}
 == HOW TO RESPOND (decide every message) ==
@@ -3196,10 +3218,23 @@ You may say a number "stands" or "your numbers are your numbers" ONLY for lifts 
 - Watching tallies not on the card: the raw receipt facts (a skip, an add) are yours to mention as facts; what they MEAN stays a question for a future card. Never state a suspicion as a thing you know.
 - Length matches material — this is credibility. A boring night reads SHORT (a few sentences and out). An eventful night earns its length. Never pad.
 
+== THE LEDGER CARRIES THE RECEIPTS (S90, D-294) ==
+The app renders tonight's numbers, the card diff, and the watch list as a deterministic ledger ABOVE your message — with direction arrows on lifts that moved significantly. The user is looking at every set, weight, and rep before you say a word. Therefore:
+- NEVER recite the receipts in prose: no set counts, no lift-by-lift roll calls, no kept/added/skipped lists, no volume totals. The ledger already said it.
+- You may NAME a specific number only when its size IS the story (the 225 double against a 205 benchmark) — one number per point, never an inventory.
+- Your job is what the ledger cannot say: what the numbers mean, what changes because of them, what you want to see next.
+
+== READ BUDGET (computed per night, in your context) ==
+Your context carries a READ BUDGET the engine computed from the night (arrows fired, card blowups):
+- quiet: one or two sentences. A night where nothing moved deserves exactly that much — say it plainly and stop. The short read IS the credibility.
+- notable: up to four sentences on the one or two things that moved.
+- big: up to two short paragraphs — a real read, every sentence interpretation.
+The user's depth setting (below) can widen or tighten this one notch. Never pad past the budget; the contrast between quiet and big nights is the product.
+
 == DEPTH (the user's setting, in your context) ==
-- quick: the headline, the flags, the hand-off. A few sentences total, in and out.
-- standard: headline, the watched patterns, one flag explained, the hand-off. A few short paragraphs.
-- deep: the full read — tonight against recent same-type sessions, lift-by-lift where earned, what's trending, what's stalling, what you want to see next session. Still prose, still no padding.
+- quick: tighten the budget one notch.
+- standard: the budget as computed.
+- deep: widen one notch; on a big night, the full read — tonight against recent same-type sessions where earned, what's trending, what's stalling, what you want next session.
 The user can ask for more or less depth in chat at any time; honor it.
 
 == THE REACTION TURN ==
@@ -3210,6 +3245,8 @@ You may propose a rule when a noticing is CONCRETE AND ENFORCEABLE — something
 ${COACH_RULE_PROPOSAL_SECTION}
 == YOUR TOOLS ==
 The same read tools as the main chat: get_exercise_history, get_session_detail, get_user_rules_full, get_observations, get_benchmarks. Use them for trend claims the context doesn't already carry — never guess a number a tool can fetch, never mention tool names or internals. A couple of purposeful lookups, not a fishing trip.
+
+${COACH_VOICE_SECTION}
 
 ${COACH_FORMATTING_SECTION}
 
@@ -3424,6 +3461,95 @@ function debriefSessionReceipt(s, priorHistory, customs) {
   }
   return lines.join("\n");
 }
+/* ── S90 (D-294): THE DEBRIEF LEDGER ENGINE ──────────────────────────
+   The debrief's receipts render deterministically (the model is BANNED
+   from reciting them — see the prompt's ledger law); this block computes
+   the frozen report stored on the chat at creation.
+
+   DIRECTION (the owner's rule: an arrow fires only on a SIGNIFICANT
+   change by the 1RM calculator; session order is never re-sorted; held
+   rows get NO mark — silence is the held state):
+   - different weights → capped e1rm (D-087) delta ≥ DEBRIEF_DIR_BAND.
+   - same weight with reps beyond the D-087 cap → the cap blinds e1rm,
+     so raw rep delta ≥ DEBRIEF_DIR_REPS carries it (25×15 → 25×12 is a
+     real drop; 15 → 14 is a Tuesday).
+   - bodyweight (no load either night) → raw rep delta ≥ DEBRIEF_DIR_REPS.
+   - no earlier session with this exercise+variant → no mark (a first
+     night has no direction; the read may call it a baseline).
+   The previous reference is the receipts contract: the most recent
+   EARLIER session (id ≠, date ≤) carrying the same exerciseId+variant. */
+const E1RM_REP_CAP = 12;         // the D-087 cap, named — e1rm (below) reads it; direction falls back to raw reps past it
+const DEBRIEF_DIR_BAND = 0.015;  // capped-e1rm fraction — 1.5% clears a 5 lb plate move at a 235 bench, holds a microload
+const DEBRIEF_DIR_REPS = 2;      // raw-rep fallback where e1rm is blind
+function debriefBestWorkingSet(ex) {
+  let best = null;
+  for (const t of (ex.sets || [])) {
+    if (!t || t.type === "warmup") continue;
+    const w = Number(t.weight) || 0;
+    const r = Number(t.reps) || 0;
+    if (r <= 0) continue;
+    if (!best) { best = { w, r }; continue; }
+    if (w > 0 || best.w > 0) {
+      if (e1rm(w, r) > e1rm(best.w, best.r)) best = { w, r };
+    } else if (r > best.r) {
+      best = { w: 0, r };
+    }
+  }
+  return best;
+}
+function debriefDirection(top, prev) {
+  if (!top || !prev) return null;
+  const stepFromReps = (d) => (Math.abs(d) >= DEBRIEF_DIR_REPS ? (d > 0 ? "up" : "down") : null);
+  if (top.w <= 0 && prev.w <= 0) return stepFromReps(top.r - prev.r);
+  if (top.w === prev.w && (top.r > E1RM_REP_CAP || prev.r > E1RM_REP_CAP)) return stepFromReps(top.r - prev.r);
+  const b = e1rm(prev.w, prev.r);
+  if (!b) return null;
+  const delta = (e1rm(top.w, top.r) - b) / b;
+  return Math.abs(delta) >= DEBRIEF_DIR_BAND ? (delta > 0 ? "up" : "down") : null;
+}
+function buildDebriefReport(sessions, history, observations) {
+  const modeLabel = (m) => (m === "A" ? "followed" : m === "B" ? "adjusted" : m === "C" ? "went your own way" : null);
+  const reports = (sessions || []).map((s) => {
+    const earlier = (history || []).filter((h) => h && h.id !== s.id && h.date <= s.date); // newest-first, receipts contract
+    const numbers = (s.exercises || []).map((ex) => {
+      const top = debriefBestWorkingSet(ex);
+      let prev = null;
+      if (top) {
+        for (const h of earlier) {
+          const match = (h.exercises || []).find((e2) => e2 && e2.exerciseId === ex.exerciseId && e2.variantLabel === ex.variantLabel);
+          if (match) {
+            prev = debriefBestWorkingSet(match);
+            if (prev) break;
+          }
+        }
+      }
+      return { name: ex.name, variant: ex.variantLabel || null, top, dir: debriefDirection(top, prev) };
+    }).filter((row) => row.top); // session order preserved — the ledger is the path of the session
+    const dev = s.deviation;
+    const card = dev ? {
+      label: modeLabel(dev.mode),
+      kept: (dev.kept || []).map((k) => k.name),
+      added: (dev.added || []).map((k) => k.name),
+      skipped: (dev.skipped || []).map((k) => k.name),
+    } : null;
+    return { sessionId: s.id, title: s.name || "Workout", numbers, card };
+  });
+  const watching = (observations || [])
+    .filter((o) => o && o.source === "engine" && (o.status === "watching" || o.status === "asked"))
+    .map((o) => `${obsText(o)} · seen ${(o.occurrences || []).length}×`);
+  return { schemaVersion: 1, reports, watching };
+}
+/* Night weight → the read budget. Arrows fired + card blowups; the
+   contrast between quiet and big nights is the D-294 ceremony. */
+function debriefNightWeight(report) {
+  let score = 0;
+  for (const r of ((report && report.reports) || [])) {
+    score += (r.numbers || []).filter((n) => n.dir).length;
+    if (r.card && r.card.label === "went your own way") score += 1;
+  }
+  return score >= 3 ? "big" : score >= 1 ? "notable" : "quiet";
+}
+
 function buildDebriefTurn(state, ctx) {
   const goalLabel = COACH_GOAL_LABELS[state.planGoal] || state.planGoal || "Build Muscle";
   const rulesText = (state.rules || []).map((r) => "- " + (typeof r === "string" ? r : r.text)).join("\n") || "(none)";
@@ -3469,6 +3595,7 @@ function buildDebriefTurn(state, ctx) {
   const cardLines = (ctx.card || []).map((q, qi) => `${qi + 1}. ${q.stemCanned}`).join("\n");
   return `== DEBRIEF MODE ==
 Depth setting: ${ctx.depth || "standard"}
+READ BUDGET: ${ctx.nightWeight || "notable"} night — see your budget rules; the ledger above your message already carries every receipt.
 ${sessions.length > 1 ? `This debrief covers ${sessions.length} workouts since the last one — the newest is the headline; older ones get a brief word each.` : "This debrief covers one workout."}
 
 == USER PROFILE ==
@@ -4392,10 +4519,14 @@ function formatRelativeDate(isoDate) {
    exactly. Caps reps at 12 (D-087): Epley loses accuracy past ~12 reps, so
    higher-rep burnout sets would otherwise inflate into an effectively
    unbeatable phantom anchor. Past the cap, only added load moves the e1RM —
-   extra reps don't. Cap value is the one tunable knob (10 = stricter). */
+   extra reps don't. Cap value is the one tunable knob (10 = stricter).
+   S90: the cap has a NAME — E1RM_REP_CAP, declared at the debrief ledger
+   engine (its direction rule needs to know where e1rm goes blind; the
+   ledger block sits earlier in the file, so the const precedes both
+   uses — GATE A order). */
 function e1rm(weight, reps) {
   if (!weight || !reps) return 0;
-  const r = Math.min(reps, 12);
+  const r = Math.min(reps, E1RM_REP_CAP);
   return weight * (1 + r / 30);
 }
 
@@ -6878,7 +7009,7 @@ const IS_REAL_DEVICE = (() => {
 // Deploy cache-verification marker (owner's V.23 convention, formalized:
 // bump this one constant per push to confirm the phone isn't serving
 // stale cached code; rendered only on real devices, top-right).
-const BUILD_TAG = "V.45";
+const BUILD_TAG = "V.47";
 
 /* ── Visual-viewport pin (S77 — the "composer slides past the keyboard" bug) ──
    iOS (Safari tab and standalone PWA alike) never shrinks the LAYOUT
@@ -9886,8 +10017,41 @@ function ActiveLogger({
     }));
   };
 
+  /* S90 (D-292): switching variant re-seeds the GHOSTS. The old behavior
+     swapped only the label, so a card built for Dumbbells kept 60×8 gray
+     placeholders after the user switched to Barbell (owner bug #7) — the
+     add-set path already re-derived from the new variant, which is why it
+     felt half-fixed. Per-field and conservative: anything the user typed
+     (userEdited) or logged (done) is untouched; only still-placeholder
+     fields re-seed from the NEW variant's history — or clear to blank
+     when the new variant has none (a blank slate is the truth there).
+     In-session values are NOT carried across: they belong to the old
+     variant. */
   const setVariant = (uid, variant) => {
-    setExercises((prev) => prev.map((ex) => (ex.uid === uid ? { ...ex, variant } : ex)));
+    setExercises((prev) => prev.map((ex) => {
+      if (ex.uid !== uid) return ex;
+      const hist = getVariantHistory(ex.exerciseId, variantKey(variant), workoutHistory, customExercises);
+      const lastSession = hist[hist.length - 1] || null;
+      const sets = ex.sets.map((set, idx) => {
+        if (set.done) return set;
+        const prevSet = lastSession
+          ? lastSession.sets[Math.min(idx, lastSession.sets.length - 1)]
+          : null;
+        const next = { ...set };
+        if (!set.weightUserEdited) {
+          const w = prevSet != null && prevSet.weight !== "" && prevSet.weight != null ? prevSet.weight : "";
+          next.placeholderWeight = w;
+          next.weightIsPlaceholder = w !== "";
+        }
+        if (!set.repsUserEdited) {
+          const r = prevSet != null && prevSet.reps !== "" && prevSet.reps != null ? prevSet.reps : "";
+          next.placeholderReps = r;
+          next.repsIsPlaceholder = r !== "";
+        }
+        return next;
+      });
+      return { ...ex, variant, sets };
+    }));
     setVariantMenuFor(null);
   };
 
@@ -10279,8 +10443,14 @@ function ActiveLogger({
               whiteSpace: "nowrap",
               opacity: sessionSlotOpacity,
               pointerEvents: "none",
+              /* S90 (D-291): the slot swap is SEQUENCED, not cross-faded.
+                 The old simultaneous 0.3s fades left a ~300ms window where
+                 both texts sat half-visible — the "Time! over the clock"
+                 flash (owner bug #3). Now the outgoing layer drops in
+                 150ms with no delay and the incoming waits 160ms, so the
+                 slot never shows two truths. Total swap ≈ the ruled 0.3s. */
               transition: dragMinRef.current.dragging ? "none"
-                : "left 0.25s ease, top 0.25s ease, font-size 0.25s ease, opacity 0.3s ease",
+                : `left 0.25s ease, top 0.25s ease, font-size 0.25s ease, opacity 150ms ease ${restInHeader ? "0ms" : "160ms"}`,
             }}>
               {formatDuration(elapsed)}
               <span style={{
@@ -10326,8 +10496,9 @@ function ActiveLogger({
                     opacity: restLayerOpacity,
                     pointerEvents: restInHeader && d <= 0.4 ? "auto" : "none",
                     animation: restAlertActive ? "mygTimePulse 1.05s ease-in-out 3" : "none",
+                    /* D-291 mirror: incoming delayed, outgoing immediate. */
                     transition: dragMinRef.current.dragging ? "none"
-                      : "opacity 0.3s ease",
+                      : `opacity 150ms ease ${restInHeader ? "160ms" : "0ms"}`,
                   }}
                 >
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -13380,17 +13551,30 @@ const COACH_GREETINGS = [
   { id: "goal_hit", tier: "context",
     when: (c) => c.hitGoal && !c.trainedToday,
     lines: [`You hit your number this week. Here for extra?`, `Week's done on paper. Anything extra?`] },
+  // S90 (D-290): the round-two and twice-in-a-day lines died — they
+  // CLAIMED a second workout when the user had trained once and simply
+  // opened the tab (owner: "this is not a smart coach"). trainedToday
+  // now reads as what it is — the work is done — never a visit count.
   { id: "returning_today", tier: "context",
     when: (c) => c.trainedToday,
-    lines: [`You're back. What's up?`, `Round two?`, (c) => `Twice in a day, ${c.name}. What's on your mind?`] },
+    lines: [`You're back. What's up?`, `Good work today.`, (c) => `Session's in the books, ${c.name}.`] },
 
   // ── generic — warm, curious baseline (frequent) ──
   { id: "warm", tier: "generic",
     when: () => true,
     lines: [
-      `Good to see you.`, `What's the plan?`, `Where do you want to start?`,
-      `Ready when you are.`, `What are we hitting today?`, `What's on your mind?`,
-      (c) => `Good to see you, ${c.name}.`, `Let's get to work.`,
+      `Good to see you.`, `Where do you want to start?`,
+      `What's on your mind?`,
+      (c) => `Good to see you, ${c.name}.`,
+    ] },
+  // S90 (D-290): the workout-facing warm lines split out and gate on
+  // !trainedToday — "What are we hitting today?" after today's session
+  // is the same dumb-coach read as the debrief backdrop bug.
+  { id: "warm_fresh", tier: "generic",
+    when: (c) => !c.trainedToday,
+    lines: [
+      `What's the plan?`, `Ready when you are.`,
+      `What are we hitting today?`, `Let's get to work.`,
     ] },
   { id: "time_morning", tier: "generic",
     when: (c) => c.hour < 11,
@@ -13650,7 +13834,12 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
   // First-run: render the cold-start nudge as Coach's first message (visible
   // before send). Not-first-run empty: render the bare greeting.
   const showFirstRunNudge = currentIsEmpty && neverMessagedCoach;
-  const showGreeting = currentIsEmpty && !neverMessagedCoach;
+  // S90 (D-290): a debrief room NEVER wears the workout-facing greeting
+  // ("What are we hitting today?" behind a loading debrief — owner bug).
+  // Empty debrief chats fall through to THE DEBRIEF header block, which
+  // renders the title + date before a single token streams: the user sees
+  // their debrief loading, not a coach who forgot they just trained.
+  const showGreeting = currentIsEmpty && !neverMessagedCoach && !(chat && chat.kind === "debrief");
   const messages = (chat && chat.messages.length > 0)
     ? chat.messages
     : (showFirstRunNudge ? [{ role: "coach", text: coldStart }] : []);
@@ -14471,6 +14660,88 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
           ) : (
             <div style={{ padding: "6px 0 16px", borderBottom: "1px solid #262626", marginBottom: 18 }}>
               {Inner}
+            </div>
+          );
+        })()}
+        {/* ── S90 (D-294): THE LEDGER — the debrief's receipts, rendered
+            deterministically from the frozen report the chat carries.
+            Bare arrows (owner lock): gold ▲ / gray ▼ ONLY on significant
+            change per the ledger engine's band; held rows carry NO mark —
+            silence is the held state. Session order preserved (the ledger
+            is the path of the session, never re-sorted). No was-line: the
+            arrow answers "which way"; "how much" lives one tap away in
+            the recap sheet / detail history and in the read when the size
+            of the move is the story. Old-format debrief chats (no stored
+            report) render exactly as before — reports are frozen
+            receipts, never backfilled. Renders BEFORE the first token
+            streams: the numbers land instantly, the read follows. */}
+        {chat && chat.kind === "debrief" && chat.debriefReport && (() => {
+          const rep = chat.debriefReport;
+          const reports = rep.reports || [];
+          if (reports.length === 0 && (rep.watching || []).length === 0) return null;
+          const head = {
+            color: COLORS.gold, fontSize: 10, fontWeight: 700,
+            letterSpacing: 2.5, textTransform: "uppercase",
+          };
+          const metaLine = { color: COLORS.textSecondary, fontSize: 12.5, marginTop: 7, lineHeight: 1.4 };
+          const many = reports.length > 1;
+          return (
+            <div style={{ borderBottom: "1px solid #262626", marginBottom: 18, paddingBottom: 14 }}>
+              {reports.map((r) => (
+                <div key={r.sessionId} style={{ marginBottom: 14 }}>
+                  {many && (
+                    <div style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 15, color: COLORS.text, marginBottom: 8 }}>{r.title}</div>
+                  )}
+                  {(r.numbers || []).length > 0 && (
+                    <>
+                      <div style={head}>Numbers</div>
+                      {r.numbers.map((n, i) => (
+                        <div key={i} style={{ display: "flex", alignItems: "center", marginTop: i === 0 ? 8 : 7, fontSize: 13.5 }}>
+                          <span style={{
+                            width: 18, flexShrink: 0, fontSize: 11,
+                            color: n.dir === "up" ? COLORS.gold : COLORS.textSecondary,
+                          }}>{n.dir === "up" ? "▲" : n.dir === "down" ? "▼" : ""}</span>
+                          <span style={{
+                            fontFamily: "Georgia, 'Times New Roman', serif", color: COLORS.text,
+                            flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                            paddingRight: 10,
+                          }}>{n.name}</span>
+                          <span style={{ color: COLORS.text, fontVariantNumeric: "tabular-nums", flexShrink: 0 }}>
+                            {n.top.w > 0 ? `${n.top.w} × ${n.top.r}` : `× ${n.top.r}`}
+                          </span>
+                        </div>
+                      ))}
+                    </>
+                  )}
+                  {r.card && (
+                    <div style={{ marginTop: 12 }}>
+                      <div style={head}>
+                        The Card
+                        {r.card.label ? (
+                          <span style={{ color: COLORS.textSecondary, letterSpacing: 0.3, textTransform: "none", fontWeight: 400 }}> · {r.card.label}</span>
+                        ) : null}
+                      </div>
+                      {r.card.label === "went your own way" && r.card.kept.length > 0 && (
+                        <div style={metaLine}>Kept · {r.card.kept.join(", ")}</div>
+                      )}
+                      {r.card.added.length > 0 && (
+                        <div style={metaLine}>Added · {r.card.added.join(", ")}</div>
+                      )}
+                      {r.card.skipped.length > 0 && (
+                        <div style={metaLine}>Skipped · {r.card.skipped.join(", ")}</div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              ))}
+              {(rep.watching || []).length > 0 && (
+                <div>
+                  <div style={head}>Watching</div>
+                  {rep.watching.map((w, i) => (
+                    <div key={i} style={metaLine}>{w}</div>
+                  ))}
+                </div>
+              )}
             </div>
           );
         })()}
@@ -17617,7 +17888,11 @@ function ProfileTab({
       </div>
 
       {/* Scrollable body */}
-      <div ref={profileScrollRef} style={{ flex: 1, padding: "0 24px 24px", overflowY: "auto", overscrollBehavior: "contain", minHeight: 0 }}>
+      <div ref={profileScrollRef} style={{ flex: 1, padding: "0 24px 24px", overflowY: "auto", overscrollBehavior: "contain", minHeight: 0, position: "relative" }}>
+        {/* S90 (D-293): Profile was the one long page without ScrollHint —
+            with the native indicator dead, it joins the app's one scroll
+            language like Workout/Coach/Exercises. */}
+        <ScrollHint scrollRef={profileScrollRef} />
 
         {/* Identity / intake block — Variant D (this session). The bare
             "Tyler" name from v27 was rewritten as a clipboard-style intake
@@ -20639,6 +20914,14 @@ export default function MYGFitness() {
   // a "next"-sourced Coach workout start.
   const [coachRotation, setCoachRotation] = useState(validateStoredRotation(h.coachRotation));
   const [rotationCursor, setRotationCursor] = useState(Number.isInteger(h.rotationCursor) ? h.rotationCursor : 0);
+  // S90 (D-289): commit double-fire latch. A double-tapped Finish/Done ran
+  // commitFinishedSessionCore twice in one tick: the history write is an
+  // absolute value from a stale closure (idempotent), but the cursor's
+  // functional (c)=>c+1 accumulates — cursor +2, history +1, no dupes
+  // (reproduced over the owner's real export). Refs cross closures, so the
+  // second synchronous fire sees the latched id and bails. Cleared when a
+  // new finish screen is staged (edit re-commits of the SAME id stay legal).
+  const commitLatchRef = useRef(null);
   // Rule engine (Session 69, D-084): hydration migration — free-text
   // rules gain their structured predicates (exact-text keyed) and
   // tracked rules silently backfill adherence by replaying the SAME
@@ -20985,10 +21268,17 @@ export default function MYGFitness() {
       { anchors: world.anchors || [], observations: world.observations || [], rules: world.rules || [] },
       history.length, Date.now(), world.denials || [], world.watchHolds || []);
     const card = selectDebriefQuestions(queue);
+    // S90 (D-294): the ledger — computed ONCE at creation from the same
+    // receipts, frozen on the chat (a report is a receipt; later edits
+    // and anchor moves never rewrite it). Renders instantly under the
+    // header while the read streams; the night weight sets the read
+    // budget the prompt enforces.
+    const debriefReport = buildDebriefReport(unanalyzed, history, world.observations || []);
+    const nightWeight = debriefNightWeight(debriefReport);
     const packet = buildDebriefTurn(
       { userName, fitnessLevel, planGoal,
         rules: world.rules || [], observations: world.observations || [], anchors: world.anchors || [] },
-      { sessions: unanalyzed, history, card, depth: debriefDepthPref, customs: customExercises });
+      { sessions: unanalyzed, history, card, depth: debriefDepthPref, customs: customExercises, nightWeight });
     const chatId = `c${Date.now()}`;
     // S82.1 (owner: "a pretty official experience — a title at the top"):
     // deterministic header meta, computed once at creation from the
@@ -21018,6 +21308,7 @@ export default function MYGFitness() {
       debriefPacket: packet,
       debriefSessionIds: unanalyzed.map((s) => s.id),
       debriefMeta,
+      debriefReport,
       messages: [],
     }, ...prev]);
     setCurrentCoachChatId(chatId);
@@ -21293,6 +21584,10 @@ export default function MYGFitness() {
   const commitActiveWorkoutSilently = () => {
     const session = buildSessionFromActiveWorkout(activeWorkout);
     if (!session || session.exercises.length === 0) return false;
+    // D-289 double-fire latch: a same-tick double fire builds the same
+    // s${Date.now()} id; across ticks activeWorkout is already null.
+    if (commitLatchRef.current === session.id) return false;
+    commitLatchRef.current = session.id;
     // Correction commit (Session 70): the id collision IS the edit
     // signal — the builder preserved the original id. Replace in place,
     // re-fold everything, NO ceremony: no rotation advance (count-based
@@ -21501,6 +21796,7 @@ export default function MYGFitness() {
   const finishActiveWorkout = () => {
     const session = buildSessionFromActiveWorkout(activeWorkout);
     if (!session) return;
+    commitLatchRef.current = null; // D-289: fresh finish screen, fresh latch
     setFinishedSession(session);
     setActiveWorkout(null);
     setWorkoutMinimized(false);
@@ -21538,6 +21834,9 @@ export default function MYGFitness() {
       setFinishedSession(null);
       return null;
     }
+    // D-289 double-fire latch (see declaration at the ref).
+    if (commitLatchRef.current === finishedSession.id) return null;
+    commitLatchRef.current = finishedSession.id;
     // Correction commit (Session 70): id collision = edit (the builder
     // preserved the original id). Replace in place and re-fold every
     // derived store from the corrected history. Ceremony — PR payoff,
@@ -22500,8 +22799,13 @@ Deliver your reaction to these answers now, per THE REACTION TURN section of you
            drain line and the SessionBar's alert line. */
         @keyframes mygTimePulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
         input::placeholder { color: #555; }
-        * { box-sizing: border-box; }
-        ::-webkit-scrollbar { width: 0; }
+        /* S90 (D-293): scrollbar-width kills Firefox bars; the webkit rule
+           gains display:none because iOS ignores bare width:0 for its
+           overlay indicators — the fat white edge bars in the owner's
+           screenshots were the SYSTEM indicator stacking on ScrollHint.
+           ScrollHint (S47) is the app's one scroll language. */
+        * { box-sizing: border-box; scrollbar-width: none; }
+        ::-webkit-scrollbar { width: 0; height: 0; display: none; }
       `}</style>
       <PhoneFrame>
         {pIdx >= 0 && <ProgressBar current={pIdx + 1} total={progressScreens.length} />}
