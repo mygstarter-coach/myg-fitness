@@ -3185,8 +3185,7 @@ You generate ONE workout from the user's profile, the focus they want (infer it 
       "sets": [
         { "setType": "warmup",  "targetReps": 10 },
         { "setType": "working", "targetReps": 8 }
-      ],
-      "repRangeLabel": "8"
+      ]
     }
   ],
   "programmingNotes": "2-4 sentences on why this shape/volume/selection.",
@@ -3229,7 +3228,7 @@ slot order: primary compound(s) first, then accessories, then isolation/finisher
 - NEVER pad to hit a number. If quality movements run out, do fewer quality sets — never add low-value filler to fill slots.
 
 == Rep ranges & effort ==
-Hypertrophy occurs across a WIDE rep range (roughly 5-30 reps) when sets are taken close to failure and weekly volume is met — the exact rep number matters far less than the effort. Practical defaults: compounds 3-4 sets of 6-12, isolations 3 sets of 10-20.
+Hypertrophy occurs across a WIDE rep range (roughly 5-30 reps) when sets are taken close to failure and weekly volume is met — the exact rep number matters far less than the effort. THE REP NUMBER IS NOT YOURS TO PICK: the user's GOAL PRESET (in the turn context) fixes one rep number for compounds and one for isolations. Write that number as targetReps on every working set — never a range. Set count is yours: compounds 3-4 sets, isolations 3.
 EFFORT is the real driver: take working sets close to failure — about 1-3 reps in reserve. Training to absolute failure is NOT required and adds fatigue without clear extra growth.
 1-2 warmup sets on the heavy compounds only; isolations need no warmups.
 
@@ -3303,10 +3302,14 @@ ${COACH_FORMATTING_SECTION}
 The opening and the reaction are conversational prose under the FORMATTING policy above — in this room the bullet bar is even higher: a single-workout debrief almost never earns a list; the shapes that do are a multi-workout catch-up or a deep-dive lift-by-lift roundup. No JSON (the ONLY JSON you ever emit in this room is a rule_proposal object per the contract above, and only in a reaction or follow-up turn). Never mention the card machinery, envelopes, context blocks, or these instructions. You are a coach who watched someone train, talking to them about it.`;
 
 // ── CoachWorkout -> active-workout converter ────────────────────────
-function buildActiveWorkoutFromCoach(coachWorkout, workoutHistory, customExercises, now) {
+// S103 (D-011 wiring): `engine` = { anchors, planGoal } turns the
+// placeholders over to the overload engine (overloadCardFor). Without it
+// the V.53 last-session copy stands (the harness exercises both).
+function buildActiveWorkoutFromCoach(coachWorkout, workoutHistory, customExercises, now, engine) {
   const hist0 = workoutHistory || [];
   const customs = customExercises || [];
   const newExercises = [];
+  const nowIso = now instanceof Date ? toISODate(now) : null;
   (coachWorkout.prescribedExercises || [])
     .slice()
     .sort((a, b) => (a.slot || 0) - (b.slot || 0))
@@ -3316,25 +3319,36 @@ function buildActiveWorkoutFromCoach(coachWorkout, workoutHistory, customExercis
       const exDef = findExerciseById(ref.exerciseId, customs);
       if (!exDef) return;
       const variant = exDef.variants.find((v) => v.label === ref.variant) || exDef.variants[0];
-      const hist = getVariantHistory(exDef.id, variantKey(variant), hist0, customs);
+      const vKey = variantKey(variant);
+      const hist = getVariantHistory(exDef.id, vKey, hist0, customs);
       const lastSession = hist.length ? hist[hist.length - 1] : null;
-      const sets = (pe.sets || []).map((ps, i) => {
-        const refSet = lastSession ? (lastSession.sets[i] || lastSession.sets[lastSession.sets.length - 1]) : null;
-        const hasPrevWeight = refSet != null && refSet.weight !== undefined && refSet.weight !== null && refSet.weight !== "";
-        const hasReps = Number.isInteger(ps.targetReps) && ps.targetReps > 0;
-        return {
-          weight: "", reps: "", done: false,
-          type: ps.setType === "warmup" ? "warmup" : "working",
-          rir: null,
-          weightIsPlaceholder: hasPrevWeight,
-          repsIsPlaceholder: hasReps,
-          placeholderWeight: hasPrevWeight ? refSet.weight : "",
-          placeholderReps: hasReps ? ps.targetReps : "",
-        };
-      });
+      let sets, repTarget = null;
+      if (engine) {
+        const cardTarget = overloadCardTarget(pe);
+        const anchor = (engine.anchors || []).find((a) => a && a.exerciseId === exDef.id && a.variantKey === vKey) || null;
+        const resolved = overloadCardFor({ exDef, variant, sets: (pe.sets || []).length, target: cardTarget, history: hist, anchor, planGoal: engine.planGoal, nowIso });
+        sets = overloadSeedSets(resolved, lastSession, pe.sets || []);
+        if (resolved) repTarget = resolved.target;
+      } else {
+        sets = (pe.sets || []).map((ps, i) => {
+          const refSet = lastSession ? (lastSession.sets[i] || lastSession.sets[lastSession.sets.length - 1]) : null;
+          const hasPrevWeight = refSet != null && refSet.weight !== undefined && refSet.weight !== null && refSet.weight !== "";
+          const hasReps = Number.isInteger(ps.targetReps) && ps.targetReps > 0;
+          return {
+            weight: "", reps: "", done: false,
+            type: ps.setType === "warmup" ? "warmup" : "working",
+            rir: null,
+            weightIsPlaceholder: hasPrevWeight,
+            repsIsPlaceholder: hasReps,
+            placeholderWeight: hasPrevWeight ? refSet.weight : "",
+            placeholderReps: hasReps ? ps.targetReps : "",
+          };
+        });
+      }
       newExercises.push({
         uid: `e${Date.now()}_${Math.random().toString(36).slice(2, 6)}_${newExercises.length}`,
         exerciseId: exDef.id, name: exDef.name, primary: exDef.primary, variant, sets, collapsed: false,
+        ...(repTarget != null ? { repTarget } : {}),
       });
     });
   if (newExercises.length === 0) return null;
@@ -3363,11 +3377,22 @@ function buildActiveWorkoutFromCoach(coachWorkout, workoutHistory, customExercis
 }
 
 // ── Chat-side helpers (CoachWorkout -> bubble; generation gate) ──────
-function deriveScheme(pe) {
+// S103: the card's rep number — the working sets' uniform targetReps
+// (repRangeLabel is dead: presets fix one number, so a stray "8-12" from
+// the model never reaches the bubble or the engine).
+function overloadCardTarget(pe) {
+  const working = (pe.sets || []).filter((s) => s.setType === "working");
+  const reps = (working.length ? working : (pe.sets || [])).map((s) => s.targetReps).filter((r) => Number.isInteger(r) && r > 0);
+  if (!reps.length) return null;
+  const uniform = reps.every((r) => r === reps[0]);
+  return uniform ? reps[0] : reps[0];
+}
+function deriveScheme(pe, engineReps) {
   const working = (pe.sets || []).filter((s) => s.setType === "working");
   const n = working.length || (pe.sets || []).length;
-  let rep = pe.repRangeLabel;
-  if (!rep) {
+  let rep;
+  if (Number.isInteger(engineReps) && engineReps > 0) rep = String(engineReps);   // S103: the engine overwrites the card's number on rep-first lifts (§2)
+  else {
     const reps = working.map((s) => s.targetReps);
     const uniform = reps.length && reps.every((r) => r === reps[0]);
     rep = uniform ? String(reps[0]) : (reps.join("/") || "?");
@@ -3385,12 +3410,12 @@ function deriveScheme(pe) {
 // via the renderer's newline fallback.
 const WORKOUT_STREAM_DELIM = "\u001F";
 
-function coachWorkoutToBubble(cw, resolveName) {
+function coachWorkoutToBubble(cw, resolveName, resolveEngineReps) {   // S103: resolveEngineReps(pe) → the engine's rep number or null
   const pres = cw.prescribedExercises || [];
   const exercises = pres.slice().sort((a, b) => (a.slot || 0) - (b.slot || 0)).map((pe) => {
     const ref = pe.ref || {};
     const name = ref.kind === "library" ? (resolveName(ref.exerciseId) || ref.exerciseId) : ref.name;
-    return { name, scheme: deriveScheme(pe) };
+    return { name, scheme: deriveScheme(pe, typeof resolveEngineReps === "function" ? resolveEngineReps(pe) : null) };
   });
   const workingTotal = pres.reduce((n, pe) => n + (pe.sets || []).filter((s) => s.setType === "working").length, 0);
   const title = (cw.workoutName || "Workout").trim();
@@ -3444,6 +3469,7 @@ function buildCoachTurn(state, ctx) {
 Name: ${state.userName || "there"}
 Fitness level: ${coachTitleCase(state.fitnessLevel) || "Intermediate"}
 Goal: ${goalLabel}
+GOAL PRESET (D-011 §3): ${overloadPresetPromptLine(state.planGoal)}
 Days/week: ${state.planDaysPerWeek}
 
 == ACTIVE RULES (obey absolutely) ==
@@ -3648,6 +3674,28 @@ function buildDebriefTurn(state, ctx) {
     .map((o) => `- ${obsText(o)} (seen ${(o.occurrences || []).length}× — a fact of the receipts; what it MEANS is not yet established)`)
     .join("\n") || "(nothing accumulating)";
   const cardLines = (ctx.card || []).map((q, qi) => `${qi + 1}. ${q.stemCanned}`).join("\n");
+  // S103 (D-011 §8 / D-319 rule 2, RULED #17/#18): the overload engine's
+  // verdicts on the newest session — raises with the size, holds with
+  // the reason — budgeted to the two most notable. Coach voices them;
+  // they are facts about NEXT session, not receipts (the ledger's law
+  // is untouched: this is what the ledger cannot say).
+  const engineLines = (() => {
+    const s0 = sessions[0];
+    if (!s0) return [];
+    const customs = ctx.customs || [];
+    const anchorsNow = state.anchors || [];
+    try {
+      return overloadDebriefLines({
+        session: s0,
+        histFor: (exerciseId, vKey) => getVariantHistory(exerciseId, vKey, history, customs),
+        anchorFor: (exerciseId, vKey) => anchorsNow.find((a) => a && a.exerciseId === exerciseId && a.variantKey === vKey) || null,
+        planGoal: state.planGoal, customs, max: 2,
+      });
+    } catch (e) { return []; }
+  })();
+  const engineBlock = engineLines.length
+    ? `\n\n== NEXT SESSION (the app's load engine already decided these from tonight's log — say them in your own words, once, as what's coming; never as advice to change them) ==\n${engineLines.map((l) => "- " + l).join("\n")}`
+    : "";
   return `== DEBRIEF MODE ==
 Depth setting: ${ctx.depth || "standard"}
 READ BUDGET: ${ctx.nightWeight || "notable"} night — see your budget rules; the ledger above your message already carries every receipt.
@@ -3674,7 +3722,7 @@ ${receiptBlocks}${olderLines ? `\n\n== OLDER UN-ANALYZED (one line each — a si
 ${contextLines}
 
 == WATCHING (engine tallies — conversation fuel, NEVER facts to assert as meaning) ==
-${watching}
+${watching}${engineBlock}
 
 == CARD TOPICS (the question card asks these AFTER your opening — do NOT discuss them in prose; one short hand-off line only) ==
 ${cardLines || "(no card tonight — close the opening cleanly: nothing to ask)"}`;
@@ -4409,7 +4457,8 @@ function getVariantHistory(exerciseId, vKey, workoutHistory = [], customs = []) 
         // (warmups are kept; sessionTopSet filters them out where needed).
         out.push({
           date: session.date,
-          sets: ex.sets.map((s) => ({ weight: s.weight, reps: s.reps, type: s.type })),
+          ...(ex.repTarget != null ? { repTarget: ex.repTarget } : {}),   // S103 (PO-4): the track key rides out with the sets
+          sets: ex.sets.map((s) => ({ weight: s.weight, reps: s.reps, type: s.type, rir: s.rir == null ? null : s.rir, ...(s.askReps != null ? { askReps: s.askReps } : {}) })),
         });
       }
     }
@@ -4628,6 +4677,11 @@ function sessionVolume(sets) {
        stale: null | { firedAt, surveyPending },  // D-134 slot; step 3 consumes
        closedLoopPending: false,         // fires once on stale→confirmed (D-070)
        bodyweightMode: null | "reps_only",
+       confirmedValue: null | { weightLb, reps },  // D-318: the value held at the most recent confirmed
+                                         // write (transition in, nudge, survey "still right"); the floor
+                                         // a provisional miss can never re-base below. Cleared on the
+                                         // stale-exit down-moves (D-135 auto-resolve, survey rebuild).
+                                         // Missing on legacy records reads as null (schema stays v1).
        lastEditedBy: "engine",           // "engine" | "coach" | "user"
        history: [                        // bounded audit trail, newest first
          { sessionId, date, weight, reps,
@@ -4643,7 +4697,8 @@ function sessionVolume(sets) {
    formula output would rot). Weight/reps/result/transition is the full
    audit trail; anything numeric derives on demand. */
 
-const ANCHOR_DEAD_BAND = 0.03;     // ±3% on rep-capped Epley (D-070)
+const ANCHOR_DEAD_BAND = 0.03;     // ±3% on rep-capped Epley (D-070); the MISS band, and the BEAT floor
+const ANCHOR_STEP_EPS = 1e-9;      // D-317: "more than one step" is a strict `>` — this absorbs IEEE noise at exactly one step
 const ANCHOR_STALE_MISSES = 3;     // confirmed-miss debounce → STALE
 const ANCHOR_HISTORY_LIMIT = 10;   // bounded per-record audit trail
 
@@ -4671,6 +4726,7 @@ function anchorResolveExercise(sessionEx, customs = []) {
     variantKey: variantKey(variant),
     variantLabel: variant.label,
     variantIsBodyweight: !!variant.bodyweight,
+    exDef, variant, // S100 (D-317): the fold reads the D-011 step table for this pair
   };
 }
 
@@ -4710,17 +4766,28 @@ function anchorBestWorkingSet(sets, repsOnly) {
 }
 
 /* HIT / MISS / BEAT against the stored anchor value (D-070, unified via
-   cap-12 e1RM; reps-only lifts compare reps directly per the S66 lock:
-   same = hit, more = beat, fewer = miss). */
-function anchorClassify(record, best) {
+   cap-12 e1RM). D-317 (S100, the D-070 addendum A-1): the BEAT band is
+   STEP-AWARE. One earned step above the anchor is a HIT (the D-136
+   nudge carries the value up, status unchanged); MORE than one step is
+   a BEAT. `step` is the D-011 Section 5 step for this lift/variant
+   (overloadStepFor): positive = lb per step, negative = assisted
+   machine (magnitude used), 0 = reps-only/bands, null = excluded lift.
+   With no usable step the flat ±3% band applies as before. The MISS
+   band is unchanged at −3%.
+   Reps-only anchors (S66 lock, amended by D-317): one step = 1 rep.
+   same = hit, +1 = hit (nudged), +2 or more = beat, fewer = miss. */
+function anchorClassify(record, best, step) {
   if (record.bodyweightMode === "reps_only") {
-    if (best.reps === record.reps) return "hit";
-    return best.reps > record.reps ? "beat" : "miss";
+    if (best.reps > record.reps + 1) return "beat";
+    return best.reps >= record.reps ? "hit" : "miss";
   }
   const anchorScore = e1rm(record.weightLb, record.reps);
   if (!anchorScore) return "beat"; // degenerate stored value — treat as replaceable
   const delta = (e1rm(best.weight, best.reps) - anchorScore) / anchorScore;
-  if (delta > ANCHOR_DEAD_BAND) return "beat";
+  const stepLb = step == null ? 0 : Math.abs(Number(step)) || 0;
+  const stepFraction = stepLb > 0 && record.weightLb > 0 ? stepLb / record.weightLb : 0;
+  const beatBand = Math.max(ANCHOR_DEAD_BAND, stepFraction);
+  if (delta > beatBand + ANCHOR_STEP_EPS) return "beat";
   if (delta < -ANCHOR_DEAD_BAND) return "miss";
   return "hit";
 }
@@ -4730,7 +4797,10 @@ function anchorClassify(record, best) {
    an in-band-lower set is noise and the stored value holds. Down moves
    happen ONLY via the out-of-band miss → debounce → STALE path. */
 function anchorNudgedValue(record, best) {
-  if (record.bodyweightMode === "reps_only") return null; // hit = same reps, nothing to nudge
+  if (record.bodyweightMode === "reps_only") {
+    // D-317: a +1-rep HIT carries the value up (was: hit = same reps, nothing to nudge)
+    return best.reps > record.reps ? { weightLb: 0, reps: best.reps } : null;
+  }
   if (anchorRawScore(best.weight, best.reps) > anchorRawScore(record.weightLb, record.reps)) {
     return { weightLb: best.weight, reps: best.reps };
   }
@@ -4741,14 +4811,20 @@ function anchorPushHistory(record, entry) {
   return [entry, ...(record.history || [])].slice(0, ANCHOR_HISTORY_LIMIT);
 }
 
+/* D-318: stamp confirmedValue from the record's own value. Called on
+   every write that leaves the record CONFIRMED. Facts only (D-087). */
+function anchorStampConfirmed(record) {
+  return { ...record, confirmedValue: { weightLb: record.weightLb, reps: record.reps } };
+}
+
 /* One evaluation: fold today's best working set into one anchor record.
    Returns the NEW record (never mutates). meta = { sessionId, date }.
    This is the D-070 transition table verbatim, with two later locks
    composed in: D-135 replaces the old "STALE + MISS → counter++" row
    (behavior auto-resolves an unanswered STALE on the first re-work),
    and D-136 governs the value on every HIT. */
-function evaluateAnchor(record, best, meta) {
-  const result = anchorClassify(record, best);
+function evaluateAnchor(record, best, meta, step) {
+  const result = anchorClassify(record, best, step);
   const base = { ...record, lastEvaluatedAt: meta.date, lastEditedBy: "engine" };
   const entry = { sessionId: meta.sessionId, date: meta.date, weight: best.weight, reps: best.reps, result, transition: null };
 
@@ -4759,7 +4835,7 @@ function evaluateAnchor(record, best, meta) {
       // once. Value follows the D-136 nudge rule.
       entry.transition = "recovered";
       const nudged = anchorNudgedValue(record, best);
-      return {
+      return anchorStampConfirmed({
         ...base,
         ...(nudged ? { ...nudged, establishedAt: meta.date } : {}),
         status: "confirmed",
@@ -4768,7 +4844,7 @@ function evaluateAnchor(record, best, meta) {
         closedLoopPending: true,
         lastHitAt: meta.date,
         history: anchorPushHistory(record, entry),
-      };
+      });
     }
     if (result === "beat") {
       entry.transition = "reanchored_up";
@@ -4789,6 +4865,7 @@ function evaluateAnchor(record, best, meta) {
       weightLb: best.weight, reps: best.reps,
       status: "provisional", consecutiveMisses: 0, stale: null,
       establishedAt: meta.date,
+      confirmedValue: null, // D-318: the old level is gone by behavior — no floor survives a stale exit
       history: anchorPushHistory(record, entry),
     };
   }
@@ -4797,16 +4874,33 @@ function evaluateAnchor(record, best, meta) {
     if (result === "hit") {
       entry.transition = "confirmed";
       const nudged = anchorNudgedValue(record, best);
-      return {
+      return anchorStampConfirmed({
         ...base,
         ...(nudged ? { ...nudged, establishedAt: meta.date } : {}),
         status: "confirmed", consecutiveMisses: 0,
         lastHitAt: meta.date,
         history: anchorPushHistory(record, entry),
+      });
+    }
+    // Provisional motion is silent self-correction in both directions —
+    // except that D-318 floors a MISS at the last confirmed value: the
+    // unproven bump is discarded and the record returns to exactly what
+    // it was before the beat, a CONFIRMED anchor that just took a miss
+    // (counted, so the 3-strike watch stays alive — S100 ruling). Above
+    // the floor, or with no floor (cold start, stale exit), today wins.
+    entry.transition = result === "beat" ? "reanchored_up" : "reanchored_down";
+    const floor = result === "miss" ? record.confirmedValue || null : null;
+    const floorScore = floor ? e1rm(floor.weightLb, floor.reps) : 0;
+    const todayScore = e1rm(best.weight, best.reps);
+    if (floor && (floorScore > todayScore || (record.bodyweightMode === "reps_only" && floor.reps > best.reps))) {
+      return {
+        ...base,
+        weightLb: floor.weightLb, reps: floor.reps,
+        status: "confirmed", consecutiveMisses: 1,
+        establishedAt: meta.date,
+        history: anchorPushHistory(record, entry),
       };
     }
-    // Provisional motion is silent self-correction in both directions.
-    entry.transition = result === "beat" ? "reanchored_up" : "reanchored_down";
     return {
       ...base,
       weightLb: best.weight, reps: best.reps,
@@ -4819,13 +4913,13 @@ function evaluateAnchor(record, best, meta) {
   // CONFIRMED
   if (result === "hit") {
     const nudged = anchorNudgedValue(record, best);
-    return {
+    return anchorStampConfirmed({
       ...base,
       ...(nudged ? { ...nudged, establishedAt: meta.date } : {}),
       consecutiveMisses: 0, // a hit breaks any miss streak
       lastHitAt: meta.date,
       history: anchorPushHistory(record, entry),
-    };
+    });
   }
   if (result === "beat") {
     entry.transition = "reanchored_up";
@@ -4877,6 +4971,7 @@ function createAnchor(resolved, best, meta, repsOnly) {
     stale: null,
     closedLoopPending: false,
     bodyweightMode: repsOnly ? "reps_only" : null,
+    confirmedValue: null, // D-318: no floor until first confirmed
     lastEditedBy: "engine",
     history: [{ sessionId: meta.sessionId, date: meta.date, weight: best.weight, reps: best.reps, result: "cold_start", transition: "created" }],
   };
@@ -4909,7 +5004,9 @@ function applySessionToAnchors(anchors, session, customs = []) {
     if (existing) {
       const best = anchorBestWorkingSet(sets, existing.bodyweightMode === "reps_only");
       if (!best) continue; // no comparable working set for this anchor's mode
-      out[idx] = evaluateAnchor(existing, best, meta);
+      // D-317: the anchor engine reads the D-011 Section 5 step table so
+      // "one step" means the same thing to both engines.
+      out[idx] = evaluateAnchor(existing, best, meta, overloadStepFor(resolved.exDef, resolved.variant));
     } else {
       // Mode is decided at creation: a bodyweight-flagged variant whose
       // best set carries no load seeds reps-only; added load (weighted
@@ -6796,6 +6893,7 @@ function surveyExecuteAnswer(stores, ev, commitIndex) {
         reps: recent ? recent.reps : a.reps,
         status: "provisional", consecutiveMisses: 0,
         establishedAt: dateISO, stale: null,
+        confirmedValue: null, // D-318: the user said the old level is gone — no floor survives
         lastEditedBy: "user",
         history: anchorPushHistory(a, entry),
         survey: stampAnswered(a.survey),
@@ -6812,11 +6910,11 @@ function surveyExecuteAnswer(stores, ev, commitIndex) {
         weight: a.weightLb, reps: a.reps,
         result: "user_answer", transition: "confirmed",
       };
-      na = {
+      na = anchorStampConfirmed({
         ...a, status: "confirmed", consecutiveMisses: 0, stale: null,
         lastEditedBy: "user", history: anchorPushHistory(a, entry),
         survey: stampAnswered(a.survey),
-      };
+      });
     }
     return { stores: { ...stores, anchors: stores.anchors.map((x) => (x === a ? na : x)) }, result: "applied" };
   }
@@ -7032,7 +7130,7 @@ const IS_REAL_DEVICE = (() => {
 // Deploy cache-verification marker (owner's V.23 convention, formalized:
 // bump this one constant per push to confirm the phone isn't serving
 // stale cached code; rendered only on real devices, top-right).
-const BUILD_TAG = "V.50";
+const BUILD_TAG = "V.54";
 
 /* ── Visual-viewport pin (S77 — the "composer slides past the keyboard" bug) ──
    iOS (Safari tab and standalone PWA alike) never shrinks the LAYOUT
@@ -9013,6 +9111,7 @@ function WorkoutTab({
   userEquipment, workout, minimized, history, openHistoryId, setOpenHistoryId,
   finishedSession, customExercises = [],
   anchors = [], // S85 (D-257): rides through to the detail sheet's BENCHMARK strip
+  planGoal = "build_muscle", // S103 (D-011 wiring): the preset every placeholder writer reads
   restTimerMode, restCountdownTarget, onChangeRestTimerMode, onChangeRestCountdownTarget,
   onStartEmpty, onAskCoach, onUpdateWorkout, onMinimize, onCancel, onFinish,
   onCommitFinished, onCommitFinishedAnalyze, analyzeEnabled, onDiscardFinished, onUpdateFinished,
@@ -9214,10 +9313,32 @@ function WorkoutTab({
           onTabChange={onTabChange}
           containerRef={containerRef}
           anchors={anchors}
+          planGoal={planGoal}
           restAlertActive={restAlertActive}
         />
       )}
     </div>
+  );
+}
+
+/* ── D-319: THE RAISED-SET MARK (SIGNED S102, built S103) ─────────────
+   The ghosted ask with a gold suffix — `230 ▲5` reads as one phrase the
+   way Prev's `225 × 8` does. One flex row, baseline-aligned, uniform
+   gap; the number keeps the field's ghost style, the caret is 8px gold,
+   the digit is Prev's size (13px, row sans — RULED S103 #12: match
+   Prev as it is) in gold. Not a button (tap-to-revert is dead); the
+   caller only renders it on an unchecked, untyped placeholder, so it
+   vanishes the moment the set is typed into or checked (rules 3–4).
+   Absent on holds by construction (the engine emits no mark). */
+function AskMarkedGhost({ value, delta }) {
+  return (
+    <span style={{ display: "inline-flex", alignItems: "baseline", justifyContent: "center", whiteSpace: "nowrap" }}>
+      <span>{value}</span>
+      <span aria-label={`up ${delta}`} style={{ display: "inline-flex", alignItems: "baseline", marginLeft: 4 }}>
+        <span style={{ fontSize: 8, lineHeight: 1, color: COLORS.gold, marginRight: 2, transform: "translateY(-1px)" }}>▲</span>
+        <span style={{ fontSize: 13, fontWeight: 500, color: COLORS.gold, fontVariantNumeric: "tabular-nums" }}>{delta}</span>
+      </span>
+    </span>
   );
 }
 
@@ -9230,6 +9351,7 @@ function WorkoutTab({
 function ActiveLogger({
   workout, onUpdateWorkout, userEquipment, customExercises = [], workoutHistory = [], onMinimize, onCancel, onFinish,
   anchors = [], // S85 (D-257): rides through to the detail sheet's BENCHMARK strip
+  planGoal = "build_muscle", // S103 (D-011 wiring): the preset every placeholder writer reads
   onTabChange,
   restTimerMode, restCountdownTarget, onChangeRestTimerMode, onChangeRestCountdownTarget,
   containerRef,
@@ -9690,29 +9812,29 @@ function ActiveLogger({
   // drift from the add path's behavior. New uid every time so activeField,
   // restTimer, and reorderDrag (all uid-keyed) cleanly detach from any
   // prior incarnation.
+  // S103 (D-011 wiring, RULED "everywhere"): the overload engine writes
+  // the ghosts here too. No Coach card → the goal preset is the card
+  // (target + band); the engine reads this variant's log and the anchor.
+  // Excluded lifts (Section 5 null step) keep the V.53 last-session copy.
+  const engineSeed = (exDef, variant, cardSets, target) => {
+    const vKey = variantKey(variant);
+    const hist = getVariantHistory(exDef.id, vKey, workoutHistory, customExercises);
+    const lastSession = hist.length ? hist[hist.length - 1] : null;
+    const anchor = (anchors || []).find((a) => a && a.exerciseId === exDef.id && a.variantKey === vKey) || null;
+    const resolved = overloadCardFor({ exDef, variant, sets: cardSets.length, target: target != null ? target : null, history: hist, anchor, planGoal, nowIso: toISODate(new Date()) });
+    return { resolved, sets: overloadSeedSets(resolved, lastSession, cardSets), repTarget: resolved ? resolved.target : null };
+  };
   const buildExerciseEntry = (libraryEx, variant) => {
-    const hist = getVariantHistory(libraryEx.id, variantKey(variant), workoutHistory, customExercises);
-    const lastSession = hist[hist.length - 1];
-    const prevFirstSet = lastSession && lastSession.sets[0];
-    const hasPrev = prevFirstSet != null;
+    const seeded = engineSeed(libraryEx, variant, [{}], null);
     return {
       uid: `e${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
       exerciseId: libraryEx.id,
       name: libraryEx.name,
       primary: libraryEx.primary,
       variant,
-      sets: [
-        {
-          weight: "", reps: "", done: false, type: "working", rir: null,
-          weightIsPlaceholder: hasPrev,
-          repsIsPlaceholder: hasPrev,
-          weightUserEdited: false,
-          repsUserEdited: false,
-          placeholderWeight: hasPrev ? prevFirstSet.weight : "",
-          placeholderReps: hasPrev ? prevFirstSet.reps : "",
-        },
-      ],
+      sets: seeded.sets,
       collapsed: false,
+      ...(seeded.repTarget != null ? { repTarget: seeded.repTarget } : {}),
     };
   };
 
@@ -10014,14 +10136,29 @@ function ActiveLogger({
       let phReps = seedField("reps");
 
       // History fallback — only for fields with no in-session source.
+      // S103: the fallback is the ENGINE's ask at this index (PO-21: an
+      // extra set inherits the last working group's verdict), with the
+      // V.53 last-session copy underneath for excluded lifts. The user's
+      // in-session values above still win (downward propagation SIGNED).
+      let askReps = null, askWeight = null, askMark = null;
       if (phWeight === "" || phReps === "") {
-        const hist = getVariantHistory(ex.exerciseId, variantKey(ex.variant), workoutHistory, customExercises);
-        const lastSession = hist[hist.length - 1];
-        if (lastSession) {
-          const prevSet = lastSession.sets[Math.min(newIdx, lastSession.sets.length - 1)];
-          if (prevSet) {
-            if (phWeight === "") phWeight = prevSet.weight;
-            if (phReps === "") phReps = prevSet.reps;
+        const exDef = findExerciseById(ex.exerciseId, customExercises);
+        const seeded = exDef ? engineSeed(exDef, ex.variant, ex.sets.map((s) => ({ setType: s.type })).concat([{}]), ex.repTarget) : null;
+        const fromEngine = seeded && seeded.resolved ? seeded.sets[newIdx] : null;
+        if (fromEngine) {
+          if (phWeight === "" && fromEngine.weightIsPlaceholder) phWeight = fromEngine.placeholderWeight;
+          if (phReps === "" && fromEngine.repsIsPlaceholder) phReps = fromEngine.placeholderReps;
+          askReps = fromEngine.askReps; askWeight = fromEngine.askWeight;
+          askMark = (phWeight === fromEngine.placeholderWeight && phReps === fromEngine.placeholderReps) ? fromEngine.askMark : null;
+        } else {
+          const hist = getVariantHistory(ex.exerciseId, variantKey(ex.variant), workoutHistory, customExercises);
+          const lastSession = hist[hist.length - 1];
+          if (lastSession) {
+            const prevSet = lastSession.sets[Math.min(newIdx, lastSession.sets.length - 1)];
+            if (prevSet) {
+              if (phWeight === "") phWeight = prevSet.weight;
+              if (phReps === "") phReps = prevSet.reps;
+            }
           }
         }
       }
@@ -10037,6 +10174,7 @@ function ActiveLogger({
           weightUserEdited: false,
           repsUserEdited: false,
           placeholderWeight: phWeight, placeholderReps: phReps,
+          ...(askReps != null ? { askReps, askWeight, askMark } : {}),
         }],
         collapsed: false,
       };
@@ -10056,27 +10194,31 @@ function ActiveLogger({
   const setVariant = (uid, variant) => {
     setExercises((prev) => prev.map((ex) => {
       if (ex.uid !== uid) return ex;
-      const hist = getVariantHistory(ex.exerciseId, variantKey(variant), workoutHistory, customExercises);
-      const lastSession = hist[hist.length - 1] || null;
+      // S103: the NEW variant's engine ask re-seeds the ghosts (its own
+      // log, its own anchor — PO-20 per-variant tracks); V.53 copy for
+      // excluded lifts. Same per-field conservatism as D-292.
+      const exDef = findExerciseById(ex.exerciseId, customExercises);
+      const seeded = exDef ? engineSeed(exDef, variant, ex.sets.map((s) => ({ setType: s.type })), ex.repTarget) : null;
       const sets = ex.sets.map((set, idx) => {
         if (set.done) return set;
-        const prevSet = lastSession
-          ? lastSession.sets[Math.min(idx, lastSession.sets.length - 1)]
-          : null;
+        const src = seeded ? seeded.sets[idx] : null;
         const next = { ...set };
         if (!set.weightUserEdited) {
-          const w = prevSet != null && prevSet.weight !== "" && prevSet.weight != null ? prevSet.weight : "";
+          const w = src && src.weightIsPlaceholder ? src.placeholderWeight : "";
           next.placeholderWeight = w;
           next.weightIsPlaceholder = w !== "";
+          next.askWeight = src && src.askWeight != null ? src.askWeight : null;
         }
         if (!set.repsUserEdited) {
-          const r = prevSet != null && prevSet.reps !== "" && prevSet.reps != null ? prevSet.reps : "";
+          const r = src && src.repsIsPlaceholder ? src.placeholderReps : "";
           next.placeholderReps = r;
           next.repsIsPlaceholder = r !== "";
+          next.askReps = src && src.askReps != null ? src.askReps : null;
         }
+        next.askMark = (!set.weightUserEdited && !set.repsUserEdited && src) ? (src.askMark || null) : null;
         return next;
       });
-      return { ...ex, variant, sets };
+      return { ...ex, variant, sets, ...(seeded && seeded.repTarget != null && ex.repTarget == null ? { repTarget: seeded.repTarget } : {}) };
     }));
     setVariantMenuFor(null);
   };
@@ -11877,7 +12019,9 @@ function ExerciseCard({
                             animation: shakeFields[`${idx}:weight`] ? "shakeField 0.5s" : "none",
                           }}
                         >
-                          {displayWeight}
+                          {!weightIsRealValue && set.weightIsPlaceholder && !set.done && set.askMark && set.askMark.field === "weight"
+                            ? <AskMarkedGhost value={displayWeight} delta={set.askMark.delta} />
+                            : displayWeight}
                           {weightActive && caretPos !== -1 && (() => {
                             // Pixel-based caret positioning. Box is 68px
                             // wide (Moderate logger pass). Tabular-nums at
@@ -11958,7 +12102,9 @@ function ExerciseCard({
                             animation: shakeFields[`${idx}:reps`] ? "shakeField 0.5s" : "none",
                           }}
                         >
-                          {displayReps}
+                          {!repsIsRealValue && set.repsIsPlaceholder && !set.done && set.askMark && set.askMark.field === "reps"
+                            ? <AskMarkedGhost value={displayReps} delta={set.askMark.delta} />
+                            : displayReps}
                           {repsActive && caretPos !== -1 && (() => {
                             const charWidth = 11;
                             const buttonWidth = 68;
@@ -13669,7 +13815,7 @@ function buildCoachGreeting({ userName, now, workoutHistory, coachRotation, rota
   return pool.length ? pick(pool) : `What's the plan?`;
 }
 
-function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFocused, onAppendMessage, onUpdateMessage, onRemoveMessage, genChatId, onGenStart, onGenEnd, onGenIsCurrent, onRespondAsCoach, onStartCoachWorkout, onBuildDebug, onNewChat, onSwitchChat, onDeleteChat, onRenameChat, pendingSeed, onSeedConsumed, workoutHistory, coachRotation, rotationCursor, planDaysPerWeek, planGoal, selectedEquipment, onRespondAsDebrief, onSubmitDebriefCard, onDebriefOpened, onRepeatWorkout, onEditWorkout, onDeleteWorkout, onSaveRule, onCancelRuleCard, onSupersedeRuleCards }) {
+function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFocused, onAppendMessage, onUpdateMessage, onRemoveMessage, genChatId, onGenStart, onGenEnd, onGenIsCurrent, onRespondAsCoach, onStartCoachWorkout, onBuildDebug, onNewChat, onSwitchChat, onDeleteChat, onRenameChat, pendingSeed, onSeedConsumed, workoutHistory, coachRotation, rotationCursor, planDaysPerWeek, planGoal, selectedEquipment, onRespondAsDebrief, onSubmitDebriefCard, onDebriefOpened, onRepeatWorkout, onEditWorkout, onDeleteWorkout, onSaveRule, onCancelRuleCard, onSupersedeRuleCards, onResolveCardReps }) {
   // Bible §4.7: hard cap on user message length. Keeps one chat message
   // within a single API call's budget and prevents runaway prompts. The
   // counter only appears in the last 100 chars so it doesn't distract
@@ -14076,7 +14222,7 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
     }
     onGenEnd(reqChatId);
     if (res && res.kind === "workout") {
-      const b = coachWorkoutToBubble(res.coachWorkout, (id) => (COACH_LIB_INDEX[id] ? COACH_LIB_INDEX[id].name : id));
+      const b = coachWorkoutToBubble(res.coachWorkout, (id) => (COACH_LIB_INDEX[id] ? COACH_LIB_INDEX[id].name : id), onResolveCardReps);   // S103: the engine's rep number on the chat card (§2)
       // S78 intro-first: the coaching paragraph Coach wrote before the JSON
       // is the intro the user already watched stream. Keep it — never
       // retract streamed words. Fallback to the auto one-liner only when
@@ -17623,6 +17769,414 @@ function migrateBodyStats(bs) {
   return next;
 }
 
+/* ── D-011 PROGRESSIVE OVERLOAD ENGINE (S99, Draft 6 · wired S103) ────
+   Pure functions. Reads: a track (this variant's logged sessions at
+   today's rep target, oldest first), the card, the step, the anchor
+   record (READ-ONLY — as a floor, never as the ask), and optionally the
+   other rep-target track. Writes: nothing. Same inputs → same asks.
+   The lock doc (D-011 Draft 5) is the spec; engine_tests.js PART 24 is
+   the contract (Section 7 battery + fuzz invariants).
+
+   Rule map: PO-1 log-only · PO-2 strict groups · PO-3 warmup (tag OR
+   70%) · PO-5/6 hit→raise / miss→hold · PO-8 cap (earned raises only)
+   · PO-9 rep-first at 8% · PO-10/11 translation + fences · PO-12
+   cross-track lift · PO-13 brake · PO-14 accelerator (confirmed only;
+   D-316 A: sized by the weakest set's RIR-credited e1RM, 1..2 steps)
+   · PO-15 RIR never rescues · PO-16 dash · PO-17 provisional HOLDS
+   (D-316 B: only confirmed anchors that get hit raise) ·
+   PO-19 stale freeze · PO-21 set counts · PO-22 light days · PO-23 the
+   anchor floor. */
+const OVERLOAD = {
+  REP_FIRST_CUTOFF: 0.08,     // step ÷ weight ≥ this → reps climb before weight
+  WARMUP_LINE: 0.70,          // below this × top untagged weight = warmup
+  PROGRESSION_CAP_STEPS: 2,   // max EARNED steps above last weight
+  ACCEL_RIR_MIN: 2,           // every set RIR ≥ this OPENS the accelerator gate (D-316: the size is earned, not flat)
+  ACCEL_SURPLUS: 2,           // every set beating the ask by this opens the gate too
+  RIR_CREDIT_CAP: 2,          // RIR credited in translation only
+  FENCE_CONFIRMED: 1.15,      // translation / floor ceiling vs heaviest-ever
+  FENCE_PROVISIONAL: 1.10,
+  TRACK_MEMORY_WEEKS: 8,
+  STEP_UPPER_BAR: 5, STEP_LOWER_BAR: 10, STEP_DEFAULT: 5, STEP_ASSISTED: -10,
+};
+
+/* Section 5 step table. 0 = reps only (bodyweight/bands). null = excluded
+   (conditioning / olympic). Negative = assisted machine (less assistance). */
+function overloadStepFor(exercise, variant) {
+  if (!exercise || !variant) return null;
+  if (exercise.pattern === "olympic" || exercise.pattern === "cardio_steady" || exercise.pattern === "conditioning"
+      || exercise.pattern === "carry" || exercise.primary === "Cardio" || exercise.type === "Olympic") return null;
+  const eq = variant.equipment || [];
+  if (variant.bodyweight || eq.length === 0 || eq.includes("resistance_bands")) return 0;
+  if (eq.some((e) => /assisted/.test(e))) return OVERLOAD.STEP_ASSISTED;
+  const bar = eq.some((e) => e === "barbell" || e === "smith_machine" || e === "hex_bar");
+  const lowerFamily = eq.some((e) => /leg_press|hack_squat|hip_thrust_machine/.test(e));
+  if (exercise.primary === "Legs" && (bar || lowerFamily)) return OVERLOAD.STEP_LOWER_BAR;
+  if (bar) return OVERLOAD.STEP_UPPER_BAR;
+  return OVERLOAD.STEP_DEFAULT;
+}
+
+/* PO-4: the track for a rep target. A session carries `repTarget` when it
+   was logged from a card; legacy sessions without one belong to
+   `legacyTarget` (the wiring passes the preset's target for the lift
+   class; default = the target asked for). Sessions older than
+   TRACK_MEMORY_WEEKS before `nowIso` fall out. Oldest first. */
+function overloadTrackFor(history, target, nowIso, legacyTarget) {
+  const cutoff = nowIso ? new Date(nowIso + "T12:00:00").getTime() - OVERLOAD.TRACK_MEMORY_WEEKS * 7 * 86400000 : null;
+  const home = legacyTarget == null ? target : legacyTarget;   // untagged (pre-track) sessions live at the preset's target
+  return (history || []).filter((s) => {
+    const t = s.repTarget != null ? s.repTarget : home;
+    if (t !== target) return false;
+    if (cutoff != null && s.date && new Date(s.date + "T12:00:00").getTime() < cutoff) return false;
+    return Array.isArray(s.sets) && s.sets.length > 0;
+  });
+}
+
+/* PO-3: tagged warmup OR below 70% of the heaviest UNTAGGED weight. */
+function overloadIsWarmup(set, sets) {
+  if (set.type === "warmup") return true;
+  const untagged = sets.filter((s) => s.type !== "warmup");
+  const top = untagged.length ? Math.max(...untagged.map((s) => Number(s.weight) || 0)) : 0;
+  return top > 0 && (Number(set.weight) || 0) < OVERLOAD.WARMUP_LINE * top;
+}
+
+function overloadE1rm(w, r, rir) {
+  const credit = rir == null ? 0 : Math.min(Number(rir) || 0, OVERLOAD.RIR_CREDIT_CAP);
+  return e1rm(w, r + credit); // e1rm caps effective reps at E1RM_REP_CAP
+}
+function overloadRoundDown(w, step) {
+  const s = Math.abs(step); if (!s) return w;
+  return Math.floor((w + 1e-9) / s) * s;
+}
+function overloadWeightFor(targetE1rm, reps, step) {
+  return overloadRoundDown(targetE1rm / (1 + Math.min(reps, E1RM_REP_CAP) / 30), step);
+}
+function overloadMode(w, step) {
+  if (step === 0) return "reps_only";
+  if (step < 0) return "weight_first";   // assisted machines: the "weight" is assistance, the 8% ratio is meaningless
+  return w === 0 || step / w >= OVERLOAD.REP_FIRST_CUTOFF ? "rep_first" : "weight_first";
+}
+function overloadHeaviestEver(...tracks) {
+  let m = 0;
+  for (const t of tracks) for (const s of t || []) for (const x of s.sets || []) m = Math.max(m, Number(x.weight) || 0);
+  return m;
+}
+function overloadFence(anchor, heaviest) {
+  return (anchor && anchor.status === "provisional" ? OVERLOAD.FENCE_PROVISIONAL : OVERLOAD.FENCE_CONFIRMED) * heaviest;
+}
+/* D-316 A (S101): how many steps an open accelerator gate has EARNED.
+   The weakest set of the group (lowest RIR-credited e1RM, credit capped
+   at RIR_CREDIT_CAP, reps capped at E1RM_REP_CAP) is translated to
+   today's target and rounded down to a step; the raise is that many
+   steps above the group's weight, clamped to [1, PROGRESSION_CAP_STEPS].
+   225×8 @ RIR 2 → 235 (+10); 135×8 @ RIR 2 → 140 (+5); 315×5 @ RIR 2 →
+   +10 (cap). Positive steps only — assistance weight has no e1RM meaning. */
+function overloadEarnedSteps(sets, w, target, step) {
+  let weakest = Infinity;
+  for (const s of sets) weakest = Math.min(weakest, overloadE1rm(w, s.reps, s.rir));
+  if (!isFinite(weakest) || !(step > 0)) return 1;
+  const cand = overloadWeightFor(weakest, target, step);
+  const earned = Math.floor((cand - w + 1e-9) / step);
+  return Math.max(1, Math.min(OVERLOAD.PROGRESSION_CAP_STEPS, earned));
+}
+/* Best working set of a session by RIR-credited e1RM (translation / PO-12). */
+function overloadBestE1rm(session) {
+  const sets = session.sets || [];
+  let best = 0;
+  for (const s of sets) if (!overloadIsWarmup(s, sets)) best = Math.max(best, overloadE1rm(Number(s.weight) || 0, Number(s.reps) || 0, s.rir));
+  return best;
+}
+
+/* PO-23: the floor. The anchor's e1RM translated to today's rep target and
+   rounded down to a step, fenced at FENCE_* × heaviest-ever. Returns a
+   weight, or null when there is no floor (no record, stale, reps-only). */
+function overloadFloor(anchor, target, step, track, otherTrack, opts) {
+  if (!anchor || anchor.status === "stale" || anchor.bodyweightMode === "reps_only") return null;
+  const aw = Number(anchor.weightLb) || 0, ar = Number(anchor.reps) || 0;
+  if (!aw || !ar || step === 0) return null;
+  // O-9 (ruled S99): the anchor is an e1RM record — translate it to today's
+  // target in BOTH directions (the same Epley as PO-10, RIR-free, rep-capped).
+  let floor = overloadRoundDown(overloadWeightFor(e1rm(aw, ar), target, step), step);
+  const heaviest = Math.max(overloadHeaviestEver(track, otherTrack), (opts && Number(opts.heaviestEver)) || 0);
+  if (heaviest > 0) floor = Math.min(floor, overloadRoundDown(overloadFence(anchor, heaviest), step));
+  return floor > 0 ? floor : null;
+}
+
+/* Reps to land at when the weight moves to `w` (PO-9 landing rule). */
+function overloadLandReps(w, step, card) {
+  return overloadMode(w, step) === "weight_first" ? card.target : card.band[0];
+}
+
+/* THE ENGINE. Returns { asks: [{weight, reps, warmup, raised, source}], notes }.
+   weight null = dash (PO-16). Assisted machines pass a negative step: a
+   "raise" is less assistance, so all comparisons run on signed steps.
+   opts.heaviestEver (optional): the variant's heaviest-ever logged weight
+   across FULL history — the wiring passes it so fences (PO-11, PO-23)
+   don't shrink when the heavy sessions have aged out of the 8-week
+   track. Without it, fences use the tracks given. */
+function overloadAsk(track, card, step, anchor, otherTrack, opts) {
+  const target = card.target, lo = card.band[0], hi = card.band[1], n = card.sets;
+  const notes = [];
+  const status = anchor ? anchor.status : "none";
+  const stale = status === "stale";
+  const confirmed = status === "confirmed";
+  const dash = () => ({ asks: Array.from({ length: n }, () => ({ weight: null, reps: target, warmup: false, raised: false, source: "dash" })), notes: ["no history: dash (PO-16)"] });
+  track = track || []; otherTrack = otherTrack || null;
+
+  if (track.length === 0) {
+    if (otherTrack && otherTrack.length && step !== 0) {              // PO-10 translation
+      const last = otherTrack[otherTrack.length - 1];
+      const best = overloadBestE1rm(last);
+      if (!best) return dash();
+      const fence = overloadFence(anchor, Math.max(overloadHeaviestEver(otherTrack), (opts && Number(opts.heaviestEver)) || 0));
+      let w = Math.min(overloadWeightFor(best, target, step), overloadRoundDown(fence, step)); // PO-11
+      const floor = stale ? null : overloadFloor(anchor, target, step, track, otherTrack, opts);
+      if (floor != null && floor > w) { w = floor; notes.push(`floor ${floor} above translation`); }
+      notes.push(`translated from e1RM ${Math.round(best)}, fence ${Math.round(fence)}`);
+      return { asks: Array.from({ length: n }, () => ({ weight: w, reps: target, warmup: false, raised: false, source: "translation" })), notes };
+    }
+    return dash();
+  }
+
+  const last = track[track.length - 1].sets.map((s) => ({ ...s, weight: Number(s.weight) || 0, reps: Number(s.reps) || 0 }));
+  const warm = last.map((s) => overloadIsWarmup(s, last));
+  const working = last.filter((_, i) => !warm[i]);
+  const topW = working.length ? Math.max(...working.map((s) => s.weight)) : null;
+  const floor = overloadFloor(anchor, target, step, track, otherTrack, opts);   // PO-23 (null when stale)
+  const groups = new Map();
+  last.forEach((s, i) => { const k = warm[i] ? "wu:" + i : "w:" + s.weight; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(i); });
+  const result = new Array(last.length);
+  const signedStep = step; // may be negative (assisted)
+  const above = (a, b) => signedStep < 0 ? a < b : a > b;   // "a is a heavier ask than b"
+
+  for (const [k, idxs] of groups) {
+    const ss = idxs.map((i) => last[i]);
+    if (k.startsWith("wu:")) {                                    // PO-3: verbatim
+      result[idxs[0]] = { weight: ss[0].weight, reps: ss[0].reps, warmup: true, raised: false, source: "warmup", prevWeight: ss[0].weight, prevReps: ss[0].reps };
+      continue;
+    }
+    const w = ss[0].weight;
+    const askR = ss[0].askReps != null ? Number(ss[0].askReps) : target;
+    const hit = ss.every((s) => s.reps >= askR);                 // PO-2 strict, PO-15
+    const mode = overloadMode(w, step);
+    const ceiling = mode === "weight_first" ? target : hi;
+    let nw = w, nr = askR, raised = false, source = "hold";
+    if (stale) { source = "stale"; notes.push(`${w}: hold (stale)`); }              // PO-19
+    else if (!hit) { source = "miss"; notes.push(`${w}: hold (miss)`); }           // PO-6
+    else if (status === "provisional") {                                             // PO-17 (D-316 B): prove it before you build on it
+      source = "provisional"; notes.push(`${w}: hold (provisional — repeat to confirm)`);
+    }
+    else {
+      const brake = ss[ss.length - 1].rir === 0;                                    // PO-13
+      const accel = confirmed && (                                                  // PO-14 gate (PO-17: confirmed only)
+        ss.every((s) => s.rir != null && Number(s.rir) >= OVERLOAD.ACCEL_RIR_MIN) ||
+        ss.every((s) => s.reps >= askR + OVERLOAD.ACCEL_SURPLUS));
+      const k2 = accel ? 2 : 1;                                                     // rep-first / reps-only accelerator stays +2 reps (D-316 Q3)
+      if (brake) { source = "brake"; notes.push(`${w}: hold (brake)`); }
+      else if (mode === "reps_only") { nr = askR + k2; raised = true; source = "reps"; notes.push(`${w}: reps-only +${k2}`); }   // PO-9 bw
+      else if (askR < ceiling) { nr = Math.min(askR + k2, ceiling); raised = true; source = "reps"; notes.push(`${w}: +rep → ${nr}`); } // PO-9 climb
+      else {                                                                        // PO-5 / PO-8
+        let steps = 1;
+        if (accel) steps = signedStep > 0 ? overloadEarnedSteps(ss, w, target, step) : OVERLOAD.PROGRESSION_CAP_STEPS; // D-316 A; assisted keeps flat
+        nw = w + signedStep * steps; nr = mode === "weight_first" ? target : lo; raised = true; source = accel ? "raise_accel" : "raise"; // PO-9: land by the SOURCE mode
+        notes.push(`${w}: raise → ${nw}${accel ? ` (accel, ${steps} step${steps > 1 ? "s" : ""} earned)` : ""}`);
+      }
+    }
+    if (otherTrack && otherTrack.length && confirmed && hit && step !== 0) {       // PO-12 cross-track lift
+      const ob = overloadBestE1rm(otherTrack[otherTrack.length - 1]);
+      if (ob) {
+        const cand = signedStep > 0
+          ? Math.min(overloadWeightFor(ob, target, step), w + OVERLOAD.PROGRESSION_CAP_STEPS * signedStep)
+          : Math.max(overloadWeightFor(ob, target, step), w + OVERLOAD.PROGRESSION_CAP_STEPS * signedStep);
+        if (above(cand, nw)) { nw = cand; nr = overloadLandReps(nw, step, card); raised = true; source = "cross_track"; notes.push(`${w}: lifted by other track → ${cand}`); }
+      }
+    }
+    if (floor != null && w === topW && above(floor, nw)) {                         // PO-23 top group only
+      nw = floor; nr = overloadLandReps(nw, step, card); raised = above(nw, w); source = "floor"; notes.push(`${w}: floor → ${floor}`);
+    }
+    if (!stale && anchor && anchor.bodyweightMode === "reps_only" && step === 0 && w === topW && nr < (Number(anchor.reps) || 0)) { // reps-only floor
+      nr = Number(anchor.reps); raised = true; source = "floor"; notes.push(`reps floor → ${nr}`);
+    }
+    for (const i of idxs) result[i] = { weight: nw, reps: nr, warmup: false, raised, source, prevWeight: w, prevReps: askR };   // S103: prev* = last session's group (the D-319 delta reads it)
+  }
+  let out = result.slice();
+  if (n > out.length) {                                                                                         // PO-21 inherit
+    let fill = out[out.length - 1];
+    for (let i = out.length - 1; i >= 0; i--) if (!out[i].warmup) { fill = out[i]; break; }   // the last WORKING group, not a trailing warmup
+    while (out.length < n) out.push({ ...fill });
+  }
+  if (n < out.length) out = out.slice(0, n);                                                                    // PO-21 feeler survives
+  return { asks: out, notes };
+}
+
+
+/* ── D-011 WIRING (S103) ──────────────────────────────────────────────
+   Everything below is the seam between the pure engine above and the
+   screens: presets (§3), the card resolver every placeholder writer
+   calls, the D-319 mark, the seed/commit shapes, and the debrief lines.
+   All pure; engine_tests.js PART 26 is the contract. Rulings S103:
+   Get Lean = the General Fitness row; Core + Bench Dip / Push-Up /
+   Inverted Row / Step-Up are small lifts; every Isolation stays small;
+   the engine writes EVERY placeholder (Coach card, add, swap, add-set,
+   variant switch, Repeat) — Repeat already read most-recent history,
+   not the source session, so the engine is its natural writer. */
+const OVERLOAD_PRESETS = {   // D-011 §3 (SIGNED S98) — target (band) per lift class, rest default
+  gain_strength: { big: { target: 5,  band: [3, 6] },  small: { target: 8,  band: [6, 10] },  restSec: 180 },
+  build_muscle:  { big: { target: 8,  band: [6, 10] }, small: { target: 12, band: [10, 15] }, restSec: 90 },
+  lose_weight:   { big: { target: 10, band: [8, 12] }, small: { target: 15, band: [12, 20] }, restSec: 60 },
+  get_lean:      { big: { target: 8,  band: [6, 10] }, small: { target: 12, band: [10, 15] }, restSec: 90 },   // = General Fitness (RULED S103)
+};
+const OVERLOAD_SMALL_LIFTS = new Set(["Bench Dip", "Push-Up", "Inverted Row", "Step-Up"]);   // Compound by tag, high-rep by ruling (S103)
+function overloadLiftClass(exDef) {
+  if (!exDef) return "big";
+  if (exDef.type === "Isolation" || exDef.primary === "Core" || OVERLOAD_SMALL_LIFTS.has(exDef.name)) return "small";
+  return "big";
+}
+function overloadPresetFor(planGoal, exDef) {
+  const p = OVERLOAD_PRESETS[planGoal] || OVERLOAD_PRESETS.build_muscle;
+  const liftClass = overloadLiftClass(exDef);
+  return { target: p[liftClass].target, band: p[liftClass].band.slice(), restSec: p.restSec, liftClass };
+}
+function overloadRestFor(planGoal) { return (OVERLOAD_PRESETS[planGoal] || OVERLOAD_PRESETS.build_muscle).restSec; }
+/* The band around a card target. The preset's own target → its band; a
+   deliberate deviation (PO-10: a 5-rep day on a muscle preset) borrows
+   the band of whichever preset row has that target for this lift class;
+   an off-table number gets ±2, floored at 1. */
+function overloadBandFor(planGoal, exDef, target) {
+  const liftClass = overloadLiftClass(exDef);
+  const own = overloadPresetFor(planGoal, exDef);
+  if (target == null || target === own.target) return own.band;
+  for (const k of Object.keys(OVERLOAD_PRESETS)) {
+    const row = OVERLOAD_PRESETS[k][liftClass];
+    if (row.target === target) return row.band.slice();
+  }
+  return [Math.max(1, target - 2), target + 2];
+}
+/* The sentence Coach reads instead of "compounds 6-12, isolations 10-20". */
+function overloadPresetPromptLine(planGoal) {
+  const p = OVERLOAD_PRESETS[planGoal] || OVERLOAD_PRESETS.build_muscle;
+  return `This user's goal preset fixes the rep number: compounds ${p.big.target} reps per working set, isolations ${p.small.target}. Write that one number on every working set (targetReps) — never a range; the app decides the load and adjusts reps on light lifts itself. Deviate deliberately only for a reason you state in programmingNotes.`;
+}
+/* The D-319 mark: gold caret + the TRUE delta vs last session. Weight
+   delta wins (a band-top step moves both; the weight is the story);
+   a pure rep climb marks the reps field. Null on holds, warmups, dash
+   and translation (no "last" to be up from — RULED S103 #14), and on a
+   raised flag with no real movement (never a phantom ▲0). */
+function overloadMarkFor(ask) {
+  if (!ask || !ask.raised || ask.warmup) return null;
+  if (ask.weight == null || ask.prevWeight == null) return null;
+  const dw = Math.abs(Number(ask.weight) - Number(ask.prevWeight));
+  if (dw > 1e-9) return { field: "weight", text: "▲" + String(+dw.toFixed(2)), delta: +dw.toFixed(2) };
+  const dr = (Number(ask.reps) || 0) - (Number(ask.prevReps) || 0);
+  if (dr > 0) return { field: "reps", text: "▲" + dr, delta: dr };
+  return null;
+}
+/* THE CARD RESOLVER. One call per exercise per placeholder writer:
+   { exDef, variant, sets (count on the card), target (card's rep number
+   or null → preset), history (this variant's sessions, any order, as
+   getVariantHistory returns them), anchor (record or null), planGoal,
+   nowIso }. Returns null when the engine excludes the lift (Section 5
+   null step) — the caller keeps V.53's last-session copy. Otherwise
+   { target, band, step, asks, notes } with prevWeight/prevReps + mark on every ask. */
+function overloadCardFor({ exDef, variant, sets, target, history, anchor, planGoal, nowIso }) {
+  const step = overloadStepFor(exDef, variant);
+  if (step == null) return null;
+  const preset = overloadPresetFor(planGoal, exDef);
+  const t = target != null && Number.isInteger(Number(target)) && Number(target) > 0 ? Number(target) : preset.target;
+  const band = overloadBandFor(planGoal, exDef, t);
+  const hist = (history || []).filter((h) => h && Array.isArray(h.sets) && h.sets.length).slice().sort((a, b) => String(a.date || "").localeCompare(String(b.date || "")));
+  const track = overloadTrackFor(hist, t, nowIso, preset.target);
+  // the other track: the most recently worked rep target that isn't today's
+  let otherTarget = null, otherDate = "";
+  for (const h of hist) {
+    const ht = h.repTarget != null ? h.repTarget : preset.target;
+    if (ht === t) continue;
+    if (String(h.date || "") >= otherDate) { otherDate = String(h.date || ""); otherTarget = ht; }
+  }
+  const otherTrack = otherTarget != null ? overloadTrackFor(hist, otherTarget, nowIso, preset.target) : null;
+  const heaviestEver = hist.reduce((m, h) => Math.max(m, ...h.sets.map((x) => Number(x.weight) || 0)), 0);
+  const n = Math.max(1, Number(sets) || 1);
+  const out = overloadAsk(track, { target: t, band, sets: n }, step, anchor || null, otherTrack, { heaviestEver });
+  const asks = out.asks.map((a) => ({ ...a, mark: overloadMarkFor(a) }));
+  return { target: t, band, step, asks, notes: out.notes };
+}
+/* Seed the in-workout set objects from a resolved card. `cardSets` gives
+   the count and the set type per row ({ setType, targetReps }). With no
+   resolver result (excluded lift) the V.53 rule applies: last session's
+   matching set, the last set repeating, card reps as the reps ghost. */
+function overloadSeedSets(resolved, lastSession, cardSets) {
+  const rows = Array.isArray(cardSets) && cardSets.length ? cardSets : [{}];
+  return rows.map((cs, i) => {
+    const type = cs && cs.setType === "warmup" ? "warmup" : "working";
+    const base = { weight: "", reps: "", done: false, type, rir: null, weightUserEdited: false, repsUserEdited: false };
+    if (resolved && resolved.asks[i]) {
+      const a = resolved.asks[i];
+      const hasW = a.weight != null;
+      return { ...base,
+        weightIsPlaceholder: hasW, repsIsPlaceholder: true,
+        placeholderWeight: hasW ? a.weight : "", placeholderReps: a.reps,
+        askWeight: hasW ? a.weight : null, askReps: a.reps, askMark: a.mark || null };
+    }
+    const refSet = lastSession && lastSession.sets && lastSession.sets.length ? (lastSession.sets[i] || lastSession.sets[lastSession.sets.length - 1]) : null;
+    const hasPrevW = refSet != null && refSet.weight !== undefined && refSet.weight !== null && refSet.weight !== "";
+    const cardReps = cs && Number.isInteger(cs.targetReps) && cs.targetReps > 0 ? cs.targetReps : null;
+    const prevR = refSet != null && refSet.reps !== "" && refSet.reps != null ? refSet.reps : null;
+    const reps = cardReps != null ? cardReps : prevR;
+    return { ...base,
+      weightIsPlaceholder: hasPrevW, repsIsPlaceholder: reps != null,
+      placeholderWeight: hasPrevW ? refSet.weight : "", placeholderReps: reps != null ? reps : "" };
+  });
+}
+/* The commit shape for one exercise: done sets only, the log fields
+   exactly as before, plus askReps on sets that carried an ask and
+   repTarget on the exercise (PO-4). Nothing else about the ask is
+   stored (PO-1). */
+function overloadCommitExercise(ex) {
+  const sets = (ex.sets || []).filter((s) => s.done).map((s) => ({
+    weight: s.weight, reps: s.reps, type: s.type, rir: s.rir,
+    ...(s.askReps != null ? { askReps: s.askReps } : {}),
+  }));
+  return ex.repTarget != null ? { repTarget: ex.repTarget, sets } : { sets };
+}
+/* The debrief's engine lines (RULED S103 #17/#18: Coach's voice, raises
+   AND hold reasons, budget `max`). histFor(exerciseId, vKey) returns the
+   variant's full history INCLUDING tonight; anchorFor the post-fold
+   record. Raises rank first (bigger step first), then holds. */
+function overloadDebriefLines({ session, histFor, anchorFor, planGoal, customs, max }) {
+  const events = [];
+  for (const ex of (session && session.exercises) || []) {
+    const exDef = (ex.exerciseId != null ? findExerciseById(ex.exerciseId, customs || []) : null) || findExerciseByName(ex.name, customs || []);
+    if (!exDef) continue;
+    const variant = exDef.variants.find((v) => v.label === ex.variantLabel) || exDef.variants[0];
+    const vKey = variantKey(variant);
+    const r = overloadCardFor({ exDef, variant, sets: (ex.sets || []).length || 1, target: ex.repTarget, history: histFor(exDef.id, vKey), anchor: anchorFor(exDef.id, vKey), planGoal, nowIso: session.date });
+    if (!r) continue;
+    const working = r.asks.filter((a) => !a.warmup && a.weight != null);
+    if (!working.length) continue;
+    const top = working.reduce((m, a) => (Math.abs(Number(a.weight)) >= Math.abs(Number(m.weight)) ? a : m), working[0]);
+    const name = exDef.name;
+    const unit = (w) => (r.step === 0 ? `${w}` : `${w} lb`);
+    if (top.mark && top.source === "floor") {                                           // PO-22: a light day never walks the ask down
+      events.push({ rank: 0, size: -(top.mark.delta || 0), line: `${name}: back to ${unit(top.weight)} × ${top.reps} next session — a lighter day never lowers the ask; the benchmark still says ${unit(top.weight)}.` });
+    } else if (top.mark) {
+      const accel = top.source === "raise_accel";
+      const line = top.mark.field === "weight"
+        ? `${name}: clean sets — weight goes up next session to ${unit(top.weight)} × ${top.reps} (+${top.mark.delta}${accel ? ", two steps earned by the reps left in the tank" : ""}).`
+        : `${name}: clean sets — reps go up next session to ${top.reps}${r.step === 0 ? "" : ` at ${unit(top.weight)}`} (+${top.mark.delta}${accel ? ", earned" : ""}).`;
+      events.push({ rank: 0, size: -(top.mark.delta || 0), line });
+    } else {
+      const why = top.source === "miss" ? "a set came up short — same weight next session, chase the number"
+        : top.source === "brake" ? "the last set was RIR 0 — it cost everything; same weight one more session"
+        : top.source === "provisional" ? "that number is new — repeat it once to confirm it before building on it"
+        : top.source === "stale" ? "the benchmark is in question — holding until it's settled"
+        : null;
+      if (!why) continue;
+      events.push({ rank: 1, size: 0, line: `${name}: holds at ${unit(top.weight)} × ${top.reps} — ${why}.` });
+    }
+  }
+  events.sort((a, b) => a.rank - b.rank || a.size - b.size);
+  return events.slice(0, max == null ? 2 : max).map((e) => e.line);
+}
+
 /* ── S85 (D-257): BENCHMARKS derives from the anchor store ─────────
    The old progressPRs letterbox had NO in-app writer — only snapshot
    import and reset touched it, so a real user's PRs never reached the
@@ -21128,21 +21682,16 @@ export default function MYGFitness() {
         exDef.variants[0];
       // Pull placeholder values from the most-recent log of this variant
       // (NOT from the source session being repeated).
-      const hist = getVariantHistory(exDef.id, variantKey(variant), workoutHistory, customExercises);
-      const lastSession = hist[hist.length - 1];
-      const setCount = sessionEx.sets.length;
-      const sets = [];
-      for (let i = 0; i < setCount; i++) {
-        const refSet = lastSession ? (lastSession.sets[i] || lastSession.sets[lastSession.sets.length - 1]) : null;
-        const hasPrev = refSet != null;
-        sets.push({
-          weight: "", reps: "", done: false, type: "working", rir: null,
-          weightIsPlaceholder: hasPrev,
-          repsIsPlaceholder: hasPrev,
-          placeholderWeight: hasPrev ? refSet.weight : "",
-          placeholderReps: hasPrev ? refSet.reps : "",
-        });
-      }
+      // S103 (RULED "everywhere"): Repeat already read the most-recent log,
+      // not the source session — so the engine is its writer now. Set
+      // count and warmup tags come from the source; the ask from the log.
+      const vKey = variantKey(variant);
+      const hist = getVariantHistory(exDef.id, vKey, workoutHistory, customExercises);
+      const lastSession = hist.length ? hist[hist.length - 1] : null;
+      const anchor = (anchors || []).find((a) => a && a.exerciseId === exDef.id && a.variantKey === vKey) || null;
+      const cardSets = sessionEx.sets.map((s) => ({ setType: s.type === "warmup" ? "warmup" : "working" }));
+      const resolved = overloadCardFor({ exDef, variant, sets: cardSets.length, target: sessionEx.repTarget != null ? sessionEx.repTarget : null, history: hist, anchor, planGoal, nowIso: toISODate(now) });
+      const sets = overloadSeedSets(resolved, lastSession, cardSets);
       newExercises.push({
         uid: `e${Date.now()}_${Math.random().toString(36).slice(2, 6)}_${newExercises.length}`,
         exerciseId: exDef.id,
@@ -21150,6 +21699,7 @@ export default function MYGFitness() {
         primary: exDef.primary,
         variant,
         sets,
+        ...(resolved ? { repTarget: resolved.target } : {}),
         collapsed: false,
       });
     }
@@ -21423,9 +21973,26 @@ export default function MYGFitness() {
   // longer advances here on START — it advances when the session actually
   // COMMITS (see commitFinishedSession / commitActiveWorkoutSilently), so
   // start-then-cancel no longer nudges "my next workout" a step early.
+  // S103 (D-011 §2): the chat card shows the ENGINE's rep number — the
+  // preset's number on weight-first lifts, the climbed number on rep-first
+  // lifts — computed fresh from the log (nothing stored; Start recomputes
+  // from the same log, so card and ghosts agree — RULED S103 #2).
+  const resolveCardReps = (pe) => {
+    const ref = pe && pe.ref;
+    if (!ref || ref.kind !== "library") return null;
+    const exDef = findExerciseById(ref.exerciseId, customExercises);
+    if (!exDef) return null;
+    const variant = exDef.variants.find((v) => v.label === ref.variant) || exDef.variants[0];
+    const vKey = variantKey(variant);
+    const anchor = (anchors || []).find((a) => a && a.exerciseId === exDef.id && a.variantKey === vKey) || null;
+    const resolved = overloadCardFor({ exDef, variant, sets: (pe.sets || []).length, target: overloadCardTarget(pe), history: getVariantHistory(exDef.id, vKey, workoutHistory, customExercises), anchor, planGoal, nowIso: toISODate(new Date()) });
+    if (!resolved) return null;
+    const working = resolved.asks.find((a) => !a.warmup);
+    return working ? working.reps : null;
+  };
   const startWorkoutFromCoach = (coachWorkout) => {
     const now = new Date();
-    const aw = buildActiveWorkoutFromCoach(coachWorkout, workoutHistory, customExercises, now);
+    const aw = buildActiveWorkoutFromCoach(coachWorkout, workoutHistory, customExercises, now, { anchors, planGoal });   // S103: the engine writes the ghosts
     if (!aw) return false;
     setActiveWorkout(aw);
     setWorkoutMinimized(false);
@@ -21569,9 +22136,7 @@ export default function MYGFitness() {
         exerciseId: ex.exerciseId || null,
         name: ex.name,
         variantLabel: ex.variant.label,
-        sets: ex.sets
-          .filter((s) => s.done)
-          .map((s) => ({ weight: s.weight, reps: s.reps, type: s.type, rir: s.rir })),
+        ...overloadCommitExercise(ex),   // S103 (PO-4): done sets as before + askReps per asked set + repTarget on the exercise
       })).filter((ex) => ex.sets.length > 0),
     };
     // Deviation diff engine (Session 67, D-032): the receipt is written
@@ -21748,8 +22313,10 @@ export default function MYGFitness() {
           repsUserEdited: s.reps !== "" && s.reps != null,
           weightIsPlaceholder: false, repsIsPlaceholder: false,
           placeholderWeight: "", placeholderReps: "",
+          ...(s.askReps != null ? { askReps: s.askReps } : {}),   // S103: a correction keeps the ask stamp (RULED #11)
         })),
         collapsed: false,
+        ...(sessionEx.repTarget != null ? { repTarget: sessionEx.repTarget } : {}),
       });
     }
     setActiveWorkout({
@@ -22239,6 +22806,7 @@ Deliver your reaction to these answers now, per THE REACTION TURN section of you
           onChangeRestTimerMode={setRestTimerModePref}
           onChangeRestCountdownTarget={setRestCountdownTargetPref}
           anchors={anchors}
+          planGoal={planGoal}
           onStartEmpty={requestStartEmptyWorkout}
           onAskCoach={askCoachToBuildWorkout}
           onUpdateWorkout={updateActiveWorkout}
@@ -22286,6 +22854,7 @@ Deliver your reaction to these answers now, per THE REACTION TURN section of you
           rotationCursor={rotationCursor}
           planDaysPerWeek={planDaysPerWeek}
           planGoal={planGoal}
+          onResolveCardReps={resolveCardReps}
           selectedEquipment={selectedEquipment}
           onRespondAsDebrief={respondAsDebrief}
           onSubmitDebriefCard={submitDebriefCard}
@@ -22462,7 +23031,7 @@ Deliver your reaction to these answers now, per THE REACTION TURN section of you
           fitnessLevel={fitnessLevel}
           timeAway={timeAway}
           planDaysPerWeek={planDaysPerWeek}
-          onChangeGoal={(v) => { setPlanGoal(v); stamp(); }}
+          onChangeGoal={(v) => { setPlanGoal(v); setRestCountdownTargetPref(overloadRestFor(v)); stamp(); }}   // S103 (RULED #6): the goal sets the rest default; still editable anytime
           onChangeLevel={(v) => { setFitnessLevel(v); stamp(); }}
           onChangeTimeAway={(v) => { setTimeAway(v); stamp(); }}
           onChangeDaysPerWeek={(v) => { setPlanDaysPerWeek(v); stamp(); }}
@@ -22668,7 +23237,7 @@ Deliver your reaction to these answers now, per THE REACTION TURN section of you
           <GoalsScreen
             value={onbGoalDraft}
             onChange={setOnbGoalDraft}
-            onNext={() => { setPlanGoal(onbGoalDraft); goTo("level"); }}
+            onNext={() => { setPlanGoal(onbGoalDraft); setRestCountdownTargetPref(overloadRestFor(onbGoalDraft)); goTo("level"); }}   // S103 (RULED #6)
             onBack={() => goTo("welcome")}
           />
         );
