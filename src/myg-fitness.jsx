@@ -265,35 +265,6 @@ function sanitizeSnapshotEntries(parsed) {
   return p;
 }
 
-/* S104 ONE-OFF DATA REPAIR (owner's device; recorded in Bible §13/§15).
-   V.54's seeder inherited warmup-row asks onto working rows, so the
-   9/21 Machine Shoulder Press committed askReps 10, 10, 8 against a
-   repTarget of 8 — the engine then read a miss at 10 and asked
-   "110 × 10" (IMG_0041 chain). Any working set whose askReps is ABOVE
-   its exercise's repTarget on a session committed before V.55 is
-   re-stamped to the repTarget. Idempotent; V.55 can no longer produce
-   such a row (PART 27 A9/D1), so this is legacy-only by construction. */
-const S104_REPAIR_BEFORE = "2026-09-22";
-function repairS104AskStamps(history) {
-  let touched = 0;
-  const out = history.map((s) => {
-    if (!s || !Array.isArray(s.exercises) || !(String(s.date || "") < S104_REPAIR_BEFORE)) return s;
-    let changed = false;
-    const exercises = s.exercises.map((ex) => {
-      if (!ex || !Number.isInteger(ex.repTarget) || !Array.isArray(ex.sets)) return ex;
-      const sets = ex.sets.map((x) => {
-        if (!x || x.type === "warmup" || x.askReps == null || !(Number(x.askReps) > ex.repTarget)) return x;
-        changed = true; touched++;
-        return { ...x, askReps: ex.repTarget };
-      });
-      return changed ? { ...ex, sets } : ex;
-    });
-    return changed ? { ...s, exercises } : s;
-  });
-  if (touched) console.warn(`[myg] S104 repair: re-stamped ${touched} working set(s) whose askReps exceeded the exercise repTarget`);
-  return out;
-}
-
 function loadSnapshot() {
   if (!storageAvailable()) return null;
   try {
@@ -311,7 +282,7 @@ function loadSnapshot() {
       activeWorkout: hydrateActiveWorkout(parsed.activeWorkout),
       coachChats: Array.isArray(parsed.coachChats) ? parsed.coachChats : null,
       currentCoachChatId: parsed.currentCoachChatId || null,
-      workoutHistory: Array.isArray(parsed.workoutHistory) ? repairS104AskStamps(parsed.workoutHistory) : null,
+      workoutHistory: Array.isArray(parsed.workoutHistory) ? parsed.workoutHistory : null,
       customExercises: Array.isArray(parsed.customExercises) ? parsed.customExercises : [],
       exerciseSort: parsed.exerciseSort && typeof parsed.exerciseSort === "object"
         ? parsed.exerciseSort
@@ -3292,7 +3263,7 @@ You see receipts — prescribed vs. logged, weights, reps, sets, dates. You do N
 You may say a number "stands" or "your numbers are your numbers" ONLY for lifts the engine has NOT flagged. Any benchmark marked FLAGGED in your context is on the question card — never reassure about it, never pre-judge it; the user rules on it below.
 
 == WHAT THE OPENING COVERS ==
-- The headline first — a PR, a real trend, or (on a clean night) the consistency itself. Find meaning in the absence of events: a card run three times as written means the numbers are trustworthy, and say why that matters.
+- The headline first — a PR, a real trend, or (on a clean night) the consistency itself. Order: PRs lead, one sentence each; then MATCHED holds, one sentence each — say once, in your own words, why a different weight × reps can be the same lift (never print an e1RM number); then the night's other business. Find meaning in the absence of events: a card run three times as written means the numbers are trustworthy, and say why that matters.
 - Trends across sessions beat recitation of tonight. Compare against the RECENT CONTEXT sessions; name the smallest real trend you can find and, where earned, one concrete hypothesis stated as a reading, not a fact.
 - Multi-session debriefs: the NEWEST session is ALWAYS the headline and ALWAYS leads — even when an older session is more eventful (PRs included). Older un-analyzed sessions follow with one or two sentences each, and anything beyond the fully-detailed ones gets a single collective line. Never open on an older session.
 - CARD TOPICS ARE OFF-LIMITS IN PROSE. The context lists what the card will ask. Do not discuss, preview, or lean on those topics — the card carries its own evidence. End the opening with ONE short hand-off line ("a couple of things below" / "one question below"). If the card is empty, close cleanly instead ("nothing to ask tonight").
@@ -3301,7 +3272,7 @@ You may say a number "stands" or "your numbers are your numbers" ONLY for lifts 
 - Length matches material — this is credibility. A boring night reads SHORT (a few sentences and out). An eventful night earns its length. Never pad.
 
 == THE LEDGER CARRIES THE RECEIPTS (S90, D-294) ==
-The app renders tonight's numbers, the card diff, and the watch list as a deterministic ledger ABOVE your message — with direction arrows on lifts that moved significantly. The user is looking at every set, weight, and rep before you say a word. Therefore:
+The app renders tonight's numbers, the card diff, and the watch list as a deterministic ledger ABOVE your message — each lift marked PR (beat their best), matched (the same lift by e1RM as their best — a hold, never a drop; e.g. 210×8 against 200×10), or unmarked. The user is looking at every set, weight, and rep before you say a word. Therefore:
 - NEVER recite the receipts in prose: no set counts, no lift-by-lift roll calls, no kept/added/skipped lists, no volume totals. The ledger already said it.
 - You may NAME a specific number only when its size IS the story (the 225 double against a 205 benchmark) — one number per point, never an inventory.
 - Your job is what the ledger cannot say: what the numbers mean, what changes because of them, what you want to see next.
@@ -3336,9 +3307,9 @@ ${COACH_FORMATTING_SECTION}
 The opening and the reaction are conversational prose under the FORMATTING policy above — in this room the bullet bar is even higher: a single-workout debrief almost never earns a list; the shapes that do are a multi-workout catch-up or a deep-dive lift-by-lift roundup. No JSON (the ONLY JSON you ever emit in this room is a rule_proposal object per the contract above, and only in a reaction or follow-up turn). Never mention the card machinery, envelopes, context blocks, or these instructions. You are a coach who watched someone train, talking to them about it.`;
 
 // ── CoachWorkout -> active-workout converter ────────────────────────
-// S103 (D-011 wiring): `engine` = { anchors, planGoal } turns the
-// placeholders over to the overload engine (overloadCardFor). Without it
-// the V.53 last-session copy stands (the harness exercises both).
+// D-322: `engine` = { planGoal, warmupSetsOff } carries Settings' warmup
+// toggle and the preset for the rep number; placeholders are the V.53
+// last-session copy either way (S93 carry-forward).
 function buildActiveWorkoutFromCoach(coachWorkout, workoutHistory, customExercises, now, engine) {
   const hist0 = workoutHistory || [];
   const customs = customExercises || [];
@@ -3359,11 +3330,9 @@ function buildActiveWorkoutFromCoach(coachWorkout, workoutHistory, customExercis
       let sets, repTarget = null;
       if (engine) {
         const cardTarget = overloadCardTarget(pe);
-        const anchor = (engine.anchors || []).find((a) => a && a.exerciseId === exDef.id && a.variantKey === vKey) || null;
         const cardRows = (pe.sets || []).filter((ps) => !(engine.warmupSetsOff && ps.setType === "warmup"));   // S104: toggle Off → Coach's warmup rows never reach the card
-        const resolved = overloadCardFor({ exDef, variant, sets: cardRows.filter((ps) => ps.setType !== "warmup").length, target: cardTarget, history: hist, anchor, planGoal: engine.planGoal, nowIso });
-        sets = overloadSeedSets(resolved, lastSession, cardRows.length ? cardRows : [{ setType: "working", targetReps: cardTarget }]);
-        if (resolved) repTarget = resolved.target;
+        sets = overloadSeedSets(lastSession, cardRows.length ? cardRows : [{ setType: "working", targetReps: cardTarget }]);   // D-322 P-1: carry-forward
+        repTarget = cardTarget != null ? cardTarget : overloadPresetFor(engine.planGoal, exDef).target;
       } else {
         sets = (pe.sets || []).map((ps, i) => {
           const refSet = lastSession ? (lastSession.sets[i] || lastSession.sets[lastSession.sets.length - 1]) : null;
@@ -3554,8 +3523,11 @@ function debriefSessionReceipt(s, priorHistory, customs) {
   const lines = [];
   const dur = formatDurationMin(s.durationSec);
   lines.push(`${s.name || "Workout"} — ${s.date}${dur ? ` — ${dur}` : ""}${s.fromCoach ? " — from a Coach card" : " — user-built, no prescription"}`);
-  const prs = detectSessionPRs(s, priorHistory || []);
-  if (prs.length) lines.push(`PRs: ${prs.map((p) => `${p.name}${p.variantLabel ? ` (${p.variantLabel})` : ""} ${formatSetSummary(p.set, "×")}`).join("; ")}`);
+  const verdicts = detectSessionVerdicts(s, priorHistory || [], customs || []);   // D-322 R-2: one judge
+  const vLine = (v) => `${v.name}${v.variantLabel ? ` (${v.variantLabel})` : ""} ${v.repsOnly ? `${v.set.reps} reps` : formatSetSummary({ weight: v.set.weight, reps: v.set.reps }, "×")}`;
+  const prs = verdicts.filter((v) => v.verdict === "pr"), matched = verdicts.filter((v) => v.verdict === "matched");
+  if (prs.length) lines.push(`PRs: ${prs.map(vLine).join("; ")}`);
+  if (matched.length) lines.push(`Matched (same lift by e1RM as their best — a hold, not a drop): ${matched.map((v) => `${vLine(v)} vs ${v.repsOnly ? `${v.prevBest.reps} reps` : formatSetSummary({ weight: v.prevBest.weight, reps: v.prevBest.reps }, "×")}`).join("; ")}`);
   for (const ex of s.exercises || []) {
     const top = sessionTopSet(ex.sets || []);
     const working = (ex.sets || []).filter((t) => t.type !== "warmup").length;
@@ -3577,21 +3549,13 @@ function debriefSessionReceipt(s, priorHistory, customs) {
    from reciting them — see the prompt's ledger law); this block computes
    the frozen report stored on the chat at creation.
 
-   DIRECTION (the owner's rule: an arrow fires only on a SIGNIFICANT
-   change by the 1RM calculator; session order is never re-sorted; held
-   rows get NO mark — silence is the held state):
-   - different weights → capped e1rm (D-087) delta ≥ DEBRIEF_DIR_BAND.
-   - same weight with reps beyond the D-087 cap → the cap blinds e1rm,
-     so raw rep delta ≥ DEBRIEF_DIR_REPS carries it (25×15 → 25×12 is a
-     real drop; 15 → 14 is a Tuesday).
-   - bodyweight (no load either night) → raw rep delta ≥ DEBRIEF_DIR_REPS.
-   - no earlier session with this exercise+variant → no mark (a first
-     night has no direction; the read may call it a baseline).
-   The previous reference is the receipts contract: the most recent
-   EARLIER session (id ≠, date ≤) carrying the same exerciseId+variant. */
+   THE ROW'S WORD (D-322 R-1, S105 — replaces the S90 direction arrow):
+   each lift is judged by judgeBest against the variant's all-time best
+   BEFORE this night (bestFor, B-1): "pr", "matched", or nothing. Held
+   rows get NO mark — silence is the held state. A first night has no
+   best to judge against; the row carries isNew instead. */
 const E1RM_REP_CAP = 12;         // the D-087 cap, named — e1rm (below) reads it; direction falls back to raw reps past it
-const DEBRIEF_DIR_BAND = 0.015;  // capped-e1rm fraction — 1.5% clears a 5 lb plate move at a 235 bench, holds a microload
-const DEBRIEF_DIR_REPS = 2;      // raw-rep fallback where e1rm is blind
+// DEBRIEF_DIR_BAND / DEBRIEF_DIR_REPS retired S105 (D-322 R-1): the row's word is judgeBest's.
 function debriefBestWorkingSet(ex) {
   let best = null;
   for (const t of (ex.sets || [])) {
@@ -3608,36 +3572,21 @@ function debriefBestWorkingSet(ex) {
   }
   return best;
 }
-function debriefDirection(top, prev) {
-  if (!top || !prev) return null;
-  const stepFromReps = (d) => (Math.abs(d) >= DEBRIEF_DIR_REPS ? (d > 0 ? "up" : "down") : null);
-  if (top.w <= 0 && prev.w <= 0) return stepFromReps(top.r - prev.r);
-  if (top.w === prev.w && (top.r > E1RM_REP_CAP || prev.r > E1RM_REP_CAP)) return stepFromReps(top.r - prev.r);
-  const b = e1rm(prev.w, prev.r);
-  if (!b) return null;
-  const delta = (e1rm(top.w, top.r) - b) / b;
-  return Math.abs(delta) >= DEBRIEF_DIR_BAND ? (delta > 0 ? "up" : "down") : null;
-}
-function buildDebriefReport(sessions, history, observations) {
+function buildDebriefReport(sessions, history, observations, customs = []) {
   const modeLabel = (m) => (m === "A" ? "followed" : m === "B" ? "adjusted" : m === "C" ? "went your own way" : null);
   const reports = (sessions || []).map((s) => {
     const earlier = (history || []).filter((h) => h && h.id !== s.id && h.date <= s.date); // newest-first, receipts contract
+    // D-322 R-1: the row's word is the judge's — "pr" | "matched" | null —
+    // against the variant's all-time best BEFORE this night (B-1), not
+    // last time's top set. The direction arrow is gone; absence is the signal.
+    const verdicts = detectSessionVerdicts(s, earlier, customs);
     const numbers = (s.exercises || []).map((ex) => {
       const top = debriefBestWorkingSet(ex);
-      let prev = null;
-      if (top) {
-        for (const h of earlier) {
-          const match = (h.exercises || []).find((e2) => e2 && e2.exerciseId === ex.exerciseId && e2.variantLabel === ex.variantLabel);
-          if (match) {
-            prev = debriefBestWorkingSet(match);
-            if (prev) break;
-          }
-        }
-      }
+      const hadPrev = top && earlier.some((h) => (h.exercises || []).some((e2) => e2 && e2.exerciseId === ex.exerciseId && e2.variantLabel === ex.variantLabel && debriefBestWorkingSet(e2)));
+      const v = verdicts.find((x) => x.name === ex.name && (x.variantLabel || "") === (ex.variantLabel || ""));
       // S90 owner round 2: isNew disambiguates the unmarked row — "held"
-      // (has a reference, insignificant move) vs "first time ever" (no
-      // reference; a direction is impossible). Renders as a quiet tag.
-      return { name: ex.name, variant: ex.variantLabel || null, top, dir: debriefDirection(top, prev), isNew: !prev };
+      // vs "first time ever". Renders as a quiet tag.
+      return { name: ex.name, variant: ex.variantLabel || null, top, verdict: v ? v.verdict : null, isNew: !hadPrev };
     }).filter((row) => row.top); // session order preserved — the ledger is the path of the session
     const dev = s.deviation;
     const card = dev ? {
@@ -3661,7 +3610,7 @@ function buildDebriefReport(sessions, history, observations) {
 function debriefNightWeight(report) {
   let score = 0;
   for (const r of ((report && report.reports) || [])) {
-    score += (r.numbers || []).filter((n) => n.dir).length;
+    score += (r.numbers || []).filter((n) => n.verdict === "pr").length;   // D-322: PRs weigh the night; a match is quiet
     if (r.card && r.card.label === "went your own way") score += 1;
   }
   return score >= 3 ? "big" : score >= 1 ? "notable" : "quiet";
@@ -3710,28 +3659,6 @@ function buildDebriefTurn(state, ctx) {
     .map((o) => `- ${obsText(o)} (seen ${(o.occurrences || []).length}× — a fact of the receipts; what it MEANS is not yet established)`)
     .join("\n") || "(nothing accumulating)";
   const cardLines = (ctx.card || []).map((q, qi) => `${qi + 1}. ${q.stemCanned}`).join("\n");
-  // S103 (D-011 §8 / D-319 rule 2, RULED #17/#18): the overload engine's
-  // verdicts on the newest session — raises with the size, holds with
-  // the reason — budgeted to the two most notable. Coach voices them;
-  // they are facts about NEXT session, not receipts (the ledger's law
-  // is untouched: this is what the ledger cannot say).
-  const engineLines = (() => {
-    const s0 = sessions[0];
-    if (!s0) return [];
-    const customs = ctx.customs || [];
-    const anchorsNow = state.anchors || [];
-    try {
-      return overloadDebriefLines({
-        session: s0,
-        histFor: (exerciseId, vKey) => getVariantHistory(exerciseId, vKey, history, customs),
-        anchorFor: (exerciseId, vKey) => anchorsNow.find((a) => a && a.exerciseId === exerciseId && a.variantKey === vKey) || null,
-        planGoal: state.planGoal, customs, max: 2,
-      });
-    } catch (e) { return []; }
-  })();
-  const engineBlock = engineLines.length
-    ? `\n\n== NEXT SESSION (the app's load engine already decided these from tonight's log — say them in your own words, once, as what's coming; never as advice to change them) ==\n${engineLines.map((l) => "- " + l).join("\n")}`
-    : "";
   return `== DEBRIEF MODE ==
 Depth setting: ${ctx.depth || "standard"}
 READ BUDGET: ${ctx.nightWeight || "notable"} night — see your budget rules; the ledger above your message already carries every receipt.
@@ -3758,7 +3685,7 @@ ${receiptBlocks}${olderLines ? `\n\n== OLDER UN-ANALYZED (one line each — a si
 ${contextLines}
 
 == WATCHING (engine tallies — conversation fuel, NEVER facts to assert as meaning) ==
-${watching}${engineBlock}
+${watching}
 
 == CARD TOPICS (the question card asks these AFTER your opening — do NOT discuss them in prose; one short hand-off line only) ==
 ${cardLines || "(no card tonight — close the opening cleanly: nothing to ask)"}`;
@@ -4511,8 +4438,8 @@ function getVariantHistory(exerciseId, vKey, workoutHistory = [], customs = []) 
         // (warmups are kept; sessionTopSet filters them out where needed).
         out.push({
           date: session.date,
-          ...(ex.repTarget != null ? { repTarget: ex.repTarget } : {}),   // S103 (PO-4): the track key rides out with the sets
-          sets: ex.sets.map((s) => ({ weight: s.weight, reps: s.reps, type: s.type, rir: s.rir == null ? null : s.rir, ...(s.askReps != null ? { askReps: s.askReps } : {}) })),
+          ...(ex.repTarget != null ? { repTarget: ex.repTarget } : {}),   // Coach's rep number for the session (kept as a fact)
+          sets: ex.sets.map((s) => ({ weight: s.weight, reps: s.reps, type: s.type, rir: s.rir == null ? null : s.rir })),
         });
       }
     }
@@ -4817,6 +4744,93 @@ function anchorBestWorkingSet(sets, repsOnly) {
     else if (cap === 0 && anchorRawScore(Number(s.weight), Number(s.reps)) > anchorRawScore(Number(best.weight), Number(best.reps))) best = s;
   }
   return { weight: Number(best.weight), reps: Number(best.reps) };
+}
+
+/* ── D-322 (S105): THE JUDGE AND THE BEST ─────────────────────────────
+   One judge, three callers (the Best line on the workout screen, the
+   debrief's Numbers row, the debrief packet's PR/Matched lines).
+   J-1 currency: rep-capped Epley — the existing e1rm (D-087, cap 12).
+   J-2 tie-breaker: same weight, strictly more reps → PR regardless of
+       score (the cap would otherwise hide 100×16 beating 100×15).
+   J-3 PR: score(set) > score(best) by any margin. No step-awareness —
+       that band belongs to the anchor RECORD (D-317), not to what the
+       lifter is told. One more pound is a PR to a human.
+   J-4 matched: not a PR, and score(set) ≥ score(best) × (1 − 3%).
+   J-5 below: null. The word is never rendered; absence is the signal.
+   J-6 reps-only: score is reps; PR = more, matched = equal, no band.
+   Assisted machines (RULED 10/4): the logged (negative) weight scores
+   as-is — a smaller assist is a heavier lift, and e1rm's sign follows.
+   Returns "pr" | "matched" | null. Pure. */
+function judgeBest(best, set, repsOnly) {
+  if (!best || !set) return null;
+  const bw = Number(best.weight) || 0, br = Number(best.reps) || 0;
+  const sw = Number(set.weight) || 0, sr = Number(set.reps) || 0;
+  if (!sr) return null;
+  if (repsOnly) {
+    if (sr > br) return "pr";
+    return sr === br ? "matched" : null;
+  }
+  if (sw === bw && sr > br) return "pr";                      // J-2
+  const bs = e1rm(bw, br), ss = e1rm(sw, sr);
+  if (!bs) return ss ? "pr" : null;                           // degenerate stored best
+  if (ss > bs) return "pr";                                   // J-3
+  if (ss >= bs * (1 - ANCHOR_DEAD_BAND)) return "matched";    // J-4
+  return null;                                                // J-5
+}
+
+/* B-1: the Best is the all-time best top set for a variant, computed
+   from the log — never from the anchor record (which re-bases DOWN on a
+   provisional miss and would have called a 140×10 press "Best 110×8").
+   `variantSessions` is getVariantHistory's output (oldest first);
+   `excludeDate` lets the debrief judge a night against everything
+   BEFORE it (R-1). Top set per session via anchorBestWorkingSet (J-8:
+   warmups excluded, lower ramp steps never judged); sessions ordered
+   by judgeBest so J-2 ties resolve the same way the line will.
+   Returns { weight, reps, date } or null when there is no history. */
+function bestFor(variantSessions, repsOnly, excludeDate) {
+  let best = null;
+  for (const s of variantSessions || []) {
+    if (excludeDate && s.date === excludeDate) continue;
+    const top = anchorBestWorkingSet(s.sets || [], repsOnly);
+    if (!top) continue;
+    if (!best || judgeBest(best, top, repsOnly) === "pr") best = { weight: top.weight, reps: top.reps, date: s.date };
+  }
+  return best;
+}
+
+/* L-3/L-4: the live state of the Best line. `checkedSets` are the
+   block's done rows (the user may uncheck; the state re-derives).
+   `bestAtStart` is fixed when the block mounts (B-2) — the number the
+   line SHOWS moves to the new set on a PR, the number it COMPARES
+   against does not. Returns { state, show } where state is "none" |
+   "gray" | "matched" | "pr" and show is the set to print. Pure. */
+function bestLineState(bestAtStart, checkedSets, repsOnly) {
+  if (!bestAtStart) return { state: "none", show: null };
+  const top = anchorBestWorkingSet(checkedSets || [], repsOnly);
+  if (!top) return { state: "gray", show: bestAtStart };
+  const v = judgeBest(bestAtStart, top, repsOnly);
+  if (v === "pr") return { state: "pr", show: top };
+  if (v === "matched") return { state: "matched", show: bestAtStart };
+  return { state: "gray", show: bestAtStart };
+}
+
+/* The Best for a variant as the line reads it: weighted first; a
+   bodyweight-flagged variant with no loaded set on record is reps-only
+   (the same creation-time rule the anchor fold uses). `variantSessions`
+   is getVariantHistory's output. Returns { best, repsOnly }. */
+function bestLineFor(variant, variantSessions, excludeDate) {
+  const weighted = bestFor(variantSessions, false, excludeDate);
+  if (weighted) return { best: weighted, repsOnly: false };
+  if (variant && variant.bodyweight) return { best: bestFor(variantSessions, true, excludeDate), repsOnly: true };
+  return { best: null, repsOnly: false };
+}
+
+/* L-2 copy: "Best 200 × 10", "Best 7 reps", "Best −40 × 8" (assisted,
+   RULED 10/4 — the minus sign as logged). */
+function bestLineText(show, repsOnly, state) {
+  if (!show) return "";
+  const num = repsOnly ? `${show.reps} reps` : `${String(show.weight).replace(/^-/, "−")} × ${show.reps}`;
+  return state === "pr" ? `Best ${num} · PR` : state === "matched" ? `Best ${num} · matched` : `Best ${num}`;
 }
 
 /* HIT / MISS / BEAT against the stored anchor value (D-070, unified via
@@ -5253,45 +5267,41 @@ function formatDurationMin(sec) {
    Returns [{ name, variantLabel, set: {weight, reps}, prevBest }] —
    one entry per exercise, the best new set wins. Bodyweight/blank-weight
    sets are skipped (no e1RM without a load). */
-function detectSessionPRs(session, history) {
+/* D-322 (S105): PRs and matches are decided by the ONE judge (judgeBest,
+   §2) against the variant's all-time best BEFORE this session (bestFor,
+   B-1). Per-(exercise, variant) as before (S69 fix). A first-ever log is
+   a baseline, not a PR (D-070 semantics kept). Warmups never count;
+   the top working set is the candidate (J-8). `history` may include the
+   session itself — it is excluded by id/date. */
+function detectSessionVerdicts(session, history, customs = []) {
   if (!session || !session.exercises || session.exercises.length === 0) return [];
-  // Per-VARIANT keying (Session 69 fix, live-export bug: "PR" fired on a
-  // first-ever Smith-variant Bent-Over Row against Barbell history).
-  // PRs are per (exercise, variant) — the Bible's PR ≠ Anchor lock and
-  // the anchor store both already key this way; different variants are
-  // different lifts, never compared (D-085 discriminator, D-130 sin).
-  const prKey = (ex) => `${ex.name}::${ex.variantLabel || ""}`;
-  const maxByEx = new Map();
-  for (const w of (history || [])) {
-    for (const ex of (w.exercises || [])) {
-      if (!ex.name) continue;
-      for (const s of (ex.sets || [])) {
-        const w_lb = Number(s.weight);
-        const reps = Number(s.reps);
-        if (!Number.isFinite(w_lb) || !Number.isFinite(reps) || w_lb <= 0 || reps <= 0) continue;
-        const e1 = e1rm(w_lb, reps);
-        if (e1 > (maxByEx.get(prKey(ex)) || 0)) maxByEx.set(prKey(ex), e1);
-      }
-    }
-  }
-  const prs = [];
+  const out = [];
   for (const ex of session.exercises) {
-    if (!ex.name) continue;
-    let best = null;
-    let bestE1 = maxByEx.get(prKey(ex)) || 0;
-    const prior = maxByEx.get(prKey(ex)) || 0;
-    for (const s of (ex.sets || [])) {
-      const w_lb = Number(s.weight);
-      const reps = Number(s.reps);
-      if (!Number.isFinite(w_lb) || !Number.isFinite(reps) || w_lb <= 0 || reps <= 0) continue;
-      const e1 = e1rm(w_lb, reps);
-      if (e1 > bestE1) { bestE1 = e1; best = { weight: w_lb, reps }; }
+    if (!ex || !ex.name) continue;
+    const key = (e2) => (e2.exerciseId && ex.exerciseId ? e2.exerciseId === ex.exerciseId : e2.name === ex.name) && (e2.variantLabel || "") === (ex.variantLabel || "");
+    const prior = [];
+    for (const w of (history || [])) {
+      if (!w || w.id === session.id) continue;
+      if (session.date && w.date > session.date) continue;
+      for (const e2 of (w.exercises || [])) if (e2 && key(e2)) prior.push({ date: w.date, sets: e2.sets || [] });
     }
-    // Only a PR if the lift had prior history to beat — a first-ever log
-    // is a baseline, not a PR (matches anchor-seeding semantics, D-070).
-    if (best && prior > 0) prs.push({ name: ex.name, variantLabel: ex.variantLabel, set: best, prevBest: prior });
+    prior.sort((x, y) => String(x.date).localeCompare(String(y.date)));
+    const exDef = (ex.exerciseId != null ? findExerciseById(ex.exerciseId, customs) : null) || findExerciseByName(ex.name, customs);
+    const variant = exDef ? (exDef.variants.find((v) => v.label === ex.variantLabel) || exDef.variants[0]) : null;
+    const { best, repsOnly } = bestLineFor(variant, prior);
+    if (!best) continue;                                   // first-ever log: baseline, not a PR
+    const top = anchorBestWorkingSet(ex.sets || [], repsOnly);
+    if (!top) continue;
+    const verdict = judgeBest(best, top, repsOnly);
+    if (!verdict) continue;
+    out.push({ name: ex.name, variantLabel: ex.variantLabel, verdict, set: top, prevBest: best, repsOnly });
   }
-  return prs;
+  return out;
+}
+/* Kept name, kept shape (name / variantLabel / set / prevBest) for the
+   session-detail PR chips and the packet's PRs line. */
+function detectSessionPRs(session, history, customs = []) {
+  return detectSessionVerdicts(session, history, customs).filter((v) => v.verdict === "pr");
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -9377,27 +9387,6 @@ function WorkoutTab({
   );
 }
 
-/* ── D-319: THE RAISED-SET MARK (SIGNED S102, built S103) ─────────────
-   The ghosted ask with a gold suffix — `230 ▲5` reads as one phrase the
-   way Prev's `225 × 8` does. One flex row, baseline-aligned, uniform
-   gap; the number keeps the field's ghost style, the caret is 8px gold,
-   the digit is Prev's size (13px, row sans — RULED S103 #12: match
-   Prev as it is) in gold. Not a button (tap-to-revert is dead); the
-   caller only renders it on an unchecked, untyped placeholder, so it
-   vanishes the moment the set is typed into or checked (rules 3–4).
-   Absent on holds by construction (the engine emits no mark). */
-function AskMarkedGhost({ value, delta }) {
-  return (
-    <span style={{ display: "inline-flex", alignItems: "baseline", justifyContent: "center", whiteSpace: "nowrap" }}>
-      <span>{value}</span>
-      <span aria-label={`up ${delta}`} style={{ display: "inline-flex", alignItems: "baseline", marginLeft: 4 }}>
-        <span style={{ fontSize: 8, lineHeight: 1, color: COLORS.gold, marginRight: 2, transform: "translateY(-1px)" }}>▲</span>
-        <span style={{ fontSize: 13, fontWeight: 500, color: COLORS.gold, fontVariantNumeric: "tabular-nums" }}>{delta}</span>
-      </span>
-    </span>
-  );
-}
-
 /* ── Active Logger ────────────────────────────────────────────────
    The execution surface. Sticky header (name + live timer + finish),
    scrollable list of exercise cards, floating + Add Exercise button.
@@ -9876,10 +9865,7 @@ function ActiveLogger({
     const vKey = variantKey(variant);
     const hist = getVariantHistory(exDef.id, vKey, workoutHistory, customExercises);
     const lastSession = hist.length ? hist[hist.length - 1] : null;
-    const anchor = (anchors || []).find((a) => a && a.exerciseId === exDef.id && a.variantKey === vKey) || null;
-    const nWorking = cardSets.filter((c) => !(c && c.setType === "warmup")).length;   // S104: the engine counts working rows only
-    const resolved = overloadCardFor({ exDef, variant, sets: nWorking, target: target != null ? target : null, history: hist, anchor, planGoal, nowIso: toISODate(new Date()) });
-    return { resolved, sets: overloadSeedSets(resolved, lastSession, cardSets), repTarget: resolved ? resolved.target : null };
+    return { sets: overloadSeedSets(lastSession, cardSets), repTarget: target != null ? target : overloadPresetFor(planGoal, exDef).target };   // D-322 P-1: carry-forward; Coach's/preset rep number rides along
   };
   const buildExerciseEntry = (libraryEx, variant) => {
     const seeded = engineSeed(libraryEx, variant, [{}], null);
@@ -9987,9 +9973,6 @@ function ActiveLogger({
       const sets = ex.sets.map((s, i) => {
         if (i !== setIdx) return s;
         const next = { ...s, ...patch };
-        // S104 (RULED): a row turned into a warmup is no longer the
-        // engine's — the ask, its stamp and its mark come off with the W.
-        if (patch.type === "warmup" && s.type !== "warmup") { next.askMark = null; next.askReps = null; next.askWeight = null; }
         // Track userEdited per field. A value-bearing patch on a field
         // marks it userEdited=true; clearing it to "" marks it
         // userEdited=false (typed-cleared → eligible again). Callers can
@@ -10039,25 +10022,14 @@ function ActiveLogger({
         const value = filling ? src[field] : "";
         const phKey = field === "weight" ? "placeholderWeight" : "placeholderReps";
         const flagKey = field === "weight" ? "weightIsPlaceholder" : "repsIsPlaceholder";
-        // S104 (RULED A, IMG_0041): the cascade stops at a RAMP STEP — a row
-        // whose engine ask differs from the previous working row's ask
-        // keeps its own number, so a typed 110 never papers over the
-        // 145 the engine asked for. And any placeholder the cascade
-        // rewrites loses its ▲ mark: the mark belongs to the ask, not to
-        // whatever number is standing in its place.
-        const askKey = field === "weight" ? "askWeight" : "askReps";
-        let prevAsk = src[askKey];
         for (let i = setIdx + 1; i < sets.length; i++) {
           const s = sets[i];
           if (s.type === "warmup") continue;
-          if (s[askKey] != null && prevAsk != null && s[askKey] !== prevAsk) break;
-          if (s[askKey] != null) prevAsk = s[askKey];
           if (isWall(s, field)) break;
           if (!isEligible(s, field)) continue;
-          const markDies = s.askMark && s.askMark.field === field;
           sets[i] = filling
-            ? { ...s, [phKey]: value, [flagKey]: true, ...(markDies ? { askMark: null } : {}) }
-            : { ...s, [phKey]: "", [flagKey]: false, ...(markDies ? { askMark: null } : {}) };
+            ? { ...s, [phKey]: value, [flagKey]: true }
+            : { ...s, [phKey]: "", [flagKey]: false };
         }
       };
       cascade("weight");
@@ -10211,17 +10183,8 @@ function ActiveLogger({
       // extra set inherits the last working group's verdict), with the
       // V.53 last-session copy underneath for excluded lifts. The user's
       // in-session values above still win (downward propagation SIGNED).
-      let askReps = null, askWeight = null, askMark = null;
       if (phWeight === "" || phReps === "") {
-        const exDef = findExerciseById(ex.exerciseId, customExercises);
-        const seeded = exDef ? engineSeed(exDef, ex.variant, ex.sets.map((s) => ({ setType: s.type })).concat([{}]), ex.repTarget) : null;
-        const fromEngine = seeded && seeded.resolved ? seeded.sets[newIdx] : null;
-        if (fromEngine) {
-          if (phWeight === "" && fromEngine.weightIsPlaceholder) phWeight = fromEngine.placeholderWeight;
-          if (phReps === "" && fromEngine.repsIsPlaceholder) phReps = fromEngine.placeholderReps;
-          askReps = fromEngine.askReps; askWeight = fromEngine.askWeight;
-          askMark = (phWeight === fromEngine.placeholderWeight && phReps === fromEngine.placeholderReps) ? fromEngine.askMark : null;
-        } else {
+        {
           const hist = getVariantHistory(ex.exerciseId, variantKey(ex.variant), workoutHistory, customExercises);
           const lastSession = hist[hist.length - 1];
           if (lastSession) {
@@ -10245,7 +10208,6 @@ function ActiveLogger({
           weightUserEdited: false,
           repsUserEdited: false,
           placeholderWeight: phWeight, placeholderReps: phReps,
-          ...(askReps != null ? { askReps, askWeight, askMark } : {}),
         }],
         collapsed: false,
       };
@@ -10278,15 +10240,12 @@ function ActiveLogger({
           const w = src && src.weightIsPlaceholder ? src.placeholderWeight : "";
           next.placeholderWeight = w;
           next.weightIsPlaceholder = w !== "";
-          next.askWeight = src && src.askWeight != null ? src.askWeight : null;
         }
         if (!set.repsUserEdited) {
           const r = src && src.repsIsPlaceholder ? src.placeholderReps : "";
           next.placeholderReps = r;
           next.repsIsPlaceholder = r !== "";
-          next.askReps = src && src.askReps != null ? src.askReps : null;
         }
-        next.askMark = (!set.weightUserEdited && !set.repsUserEdited && src) ? (src.askMark || null) : null;
         return next;
       });
       return { ...ex, variant, sets, ...(seeded && seeded.repTarget != null && ex.repTarget == null ? { repTarget: seeded.repTarget } : {}) };
@@ -11624,6 +11583,18 @@ function ExerciseCard({
   const variantHist = getVariantHistory(exercise.exerciseId, variantKey(exercise.variant), workoutHistory, customExercises);
   const lastSession = variantHist[variantHist.length - 1];
 
+  // D-322 (S105): the Best line. bestAtStart is fixed when this block
+  // mounts for this variant (B-2); the state re-derives from the checked
+  // rows on every render (L-3/L-4) — display only, nothing is written
+  // until Finish (L-5).
+  const bestRef = useRef({ key: null, best: null, repsOnly: false });
+  const vKeyNow = variantKey(exercise.variant);
+  if (bestRef.current.key !== `${exercise.exerciseId}|${vKeyNow}`) {
+    const b = bestLineFor(exercise.variant, variantHist);
+    bestRef.current = { key: `${exercise.exerciseId}|${vKeyNow}`, best: b.best, repsOnly: b.repsOnly };
+  }
+  const bestLine = bestLineState(bestRef.current.best, exercise.sets.filter((s) => s.done), bestRef.current.repsOnly);
+
   const setNumberDisplay = (set, workingIndexCounter) => {
     const t = SET_TYPES.find((x) => x.id === set.type);
     if (t && t.short) return t.short;
@@ -11842,21 +11813,37 @@ function ExerciseCard({
               </svg>
             </button>
           </div>
-          {!isCollapsed && hasMultipleVariants && (
-            <button
-              onClick={(e) => { e.stopPropagation(); onOpenVariantMenu(); }}
-              onPointerDown={(e) => e.stopPropagation()}
-              style={{
-                background: "none", border: "none", padding: "3px 0 0",
-                cursor: "pointer", color: COLORS.textSecondary,
-                fontSize: 12, display: "flex", alignItems: "center", gap: 4,
-              }}
-            >
-              <span>{exercise.variant.label}</span>
-              <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.8">
-                <polyline points="6 9 12 15 18 9" />
-              </svg>
-            </button>
+          {!isCollapsed && (hasMultipleVariants || bestLine.state !== "none") && (
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+              {hasMultipleVariants ? (
+                <button
+                  onClick={(e) => { e.stopPropagation(); onOpenVariantMenu(); }}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  style={{
+                    background: "none", border: "none", padding: "3px 0 0",
+                    cursor: "pointer", color: COLORS.textSecondary,
+                    fontSize: 12, display: "flex", alignItems: "center", gap: 4,
+                  }}
+                >
+                  <span>{exercise.variant.label}</span>
+                  <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.8">
+                    <polyline points="6 9 12 15 18 9" />
+                  </svg>
+                </button>
+              ) : <span />}
+              {/* D-322 L-1/L-2: the Best line — 12px, right of the variant row;
+                  gray until a checked set earns gold. Never a mark, never a delta. */}
+              {bestLine.state !== "none" && (
+                <span data-bestline={bestLine.state} style={{
+                  paddingTop: 3, fontSize: 12, whiteSpace: "nowrap", flexShrink: 0,
+                  color: bestLine.state === "gray" ? COLORS.textSecondary : COLORS.gold,
+                  fontWeight: bestLine.state === "pr" ? 600 : 500,
+                  fontVariantNumeric: "tabular-nums",
+                }}>
+                  {bestLineText(bestLine.show, bestRef.current.repsOnly, bestLine.state)}
+                </span>
+              )}
+            </div>
           )}
           {/* Collapsed summary line */}
           {isCollapsed && (
@@ -12090,9 +12077,7 @@ function ExerciseCard({
                             animation: shakeFields[`${idx}:weight`] ? "shakeField 0.5s" : "none",
                           }}
                         >
-                          {!weightIsRealValue && set.weightIsPlaceholder && !set.done && set.askMark && set.askMark.field === "weight"
-                            ? <AskMarkedGhost value={displayWeight} delta={set.askMark.delta} />
-                            : displayWeight}
+                          {displayWeight}
                           {weightActive && caretPos !== -1 && (() => {
                             // Pixel-based caret positioning. Box is 68px
                             // wide (Moderate logger pass). Tabular-nums at
@@ -12173,9 +12158,7 @@ function ExerciseCard({
                             animation: shakeFields[`${idx}:reps`] ? "shakeField 0.5s" : "none",
                           }}
                         >
-                          {!repsIsRealValue && set.repsIsPlaceholder && !set.done && set.askMark && set.askMark.field === "reps"
-                            ? <AskMarkedGhost value={displayReps} delta={set.askMark.delta} />
-                            : displayReps}
+                          {displayReps}
                           {repsActive && caretPos !== -1 && (() => {
                             const charWidth = 11;
                             const buttonWidth = 68;
@@ -14908,11 +14891,11 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
         })()}
         {/* ── S90 (D-294): THE LEDGER — the debrief's receipts, rendered
             deterministically from the frozen report the chat carries.
-            Bare arrows (owner lock): gold ▲ / gray ▼ ONLY on significant
-            change per the ledger engine's band; held rows carry NO mark —
-            silence is the held state. Session order preserved (the ledger
-            is the path of the session, never re-sorted). No was-line: the
-            arrow answers "which way"; "how much" lives one tap away in
+            D-322 R-1 (S105): each row carries the judge's word — gold PR,
+            gold matched, or nothing; held rows carry NO mark — silence is
+            the held state. Session order preserved (the ledger is the
+            path of the session, never re-sorted). No was-line: the word
+            answers "did it count"; "how much" lives one tap away in
             the recap sheet / detail history and in the read when the size
             of the move is the story. Old-format debrief chats (no stored
             report) render exactly as before — reports are frozen
@@ -14957,10 +14940,11 @@ function CoachTab({ userName, chat, chats, isOnline, inputFocused, onSetInputFoc
                       <div style={head}>Numbers</div>
                       {r.numbers.map((n, i) => (
                         <div key={i} style={{ display: "flex", alignItems: "center", marginTop: i === 0 ? 10 : 8, fontSize: 13.5 }}>
+                          {/* D-322 R-1: the judge's word, same vocabulary as the Best line */}
                           <span style={{
-                            width: 18, flexShrink: 0, fontSize: 11,
-                            color: n.dir === "up" ? COLORS.gold : COLORS.textSecondary,
-                          }}>{n.dir === "up" ? "▲" : n.dir === "down" ? "▼" : ""}</span>
+                            width: 56, flexShrink: 0, fontSize: 11, fontWeight: n.verdict === "pr" ? 700 : 500,
+                            color: n.verdict ? COLORS.gold : COLORS.textSecondary, letterSpacing: n.verdict === "pr" ? 0.6 : 0,
+                          }}>{n.verdict === "pr" ? "PR" : n.verdict === "matched" ? "matched" : ""}</span>
                           <span style={{
                             fontFamily: "Georgia, 'Times New Roman', serif", color: COLORS.text,
                             flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
@@ -17840,34 +17824,19 @@ function migrateBodyStats(bs) {
   return next;
 }
 
-/* ── D-011 PROGRESSIVE OVERLOAD ENGINE (S99, Draft 6 · wired S103) ────
-   Pure functions. Reads: a track (this variant's logged sessions at
-   today's rep target, oldest first), the card, the step, the anchor
-   record (READ-ONLY — as a floor, never as the ask), and optionally the
-   other rep-target track. Writes: nothing. Same inputs → same asks.
-   The lock doc (D-011 Draft 5) is the spec; engine_tests.js PART 24 is
-   the contract (Section 7 battery + fuzz invariants).
-
-   Rule map: PO-1 log-only · PO-2 strict groups · PO-3 warmup (tag OR
-   70%) · PO-5/6 hit→raise / miss→hold · PO-8 cap (earned raises only)
-   · PO-9 rep-first at 8% · PO-10/11 translation + fences · PO-12
-   cross-track lift · PO-13 brake · PO-14 accelerator (confirmed only;
-   D-316 A: sized by the weakest set's RIR-credited e1RM, 1..2 steps)
-   · PO-15 RIR never rescues · PO-16 dash · PO-17 provisional HOLDS
-   (D-316 B: only confirmed anchors that get hit raise) ·
-   PO-19 stale freeze · PO-21 set counts · PO-22 light days · PO-23 the
-   anchor floor. */
+/* ── D-322 (S105): WHAT SURVIVES OF D-011 ──────────────────────────
+   The per-set ask engine is GONE (D-322 §7 — PO-2/5/6/8–15/21–23 and
+   the D-319 mark). Placeholders are S93 carry-forward again (P-1):
+   last session's set by index, the last row repeating, the card's rep
+   number as the reps ghost when the card has one. The Prev column is
+   the receipt; the placeholder is the pencil mark. Nothing is "asked."
+   What stays here: the Section 5 step table (the anchor RECORD's
+   step-aware beat band, D-317, still needs it), the goal presets
+   (Coach's rep number and the rest default — the Coach card is
+   unchanged), the seeder and the commit shape. The Best line and its
+   judge live beside anchorBestWorkingSet (judgeBest / bestFor /
+   bestLineState). engine_tests.js PART 28 is the contract. */
 const OVERLOAD = {
-  REP_FIRST_CUTOFF: 0.08,     // step ÷ weight ≥ this → reps climb before weight
-  WARMUP_LINE: 0.70,          // below this × top untagged weight = warmup
-  WARMUP_BASE_PCT: 0.50,      // S104: a W row with no prior warmup ghosts this × the first working ask (⚙ placeholder)
-  PROGRESSION_CAP_STEPS: 2,   // max EARNED steps above last weight
-  ACCEL_RIR_MIN: 2,           // every set RIR ≥ this OPENS the accelerator gate (D-316: the size is earned, not flat)
-  ACCEL_SURPLUS: 2,           // every set beating the ask by this opens the gate too
-  RIR_CREDIT_CAP: 2,          // RIR credited in translation only
-  FENCE_CONFIRMED: 1.15,      // translation / floor ceiling vs heaviest-ever
-  FENCE_PROVISIONAL: 1.10,
-  TRACK_MEMORY_WEEKS: 8,
   STEP_UPPER_BAR: 5, STEP_LOWER_BAR: 10, STEP_DEFAULT: 5, STEP_ASSISTED: -10,
 };
 
@@ -17892,225 +17861,7 @@ function overloadStepFor(exercise, variant) {
    `legacyTarget` (the wiring passes the preset's target for the lift
    class; default = the target asked for). Sessions older than
    TRACK_MEMORY_WEEKS before `nowIso` fall out. Oldest first. */
-function overloadTrackFor(history, target, nowIso, legacyTarget) {
-  const cutoff = nowIso ? new Date(nowIso + "T12:00:00").getTime() - OVERLOAD.TRACK_MEMORY_WEEKS * 7 * 86400000 : null;
-  const home = legacyTarget == null ? target : legacyTarget;   // untagged (pre-track) sessions live at the preset's target
-  return (history || []).filter((s) => {
-    const t = s.repTarget != null ? s.repTarget : home;
-    if (t !== target) return false;
-    if (cutoff != null && s.date && new Date(s.date + "T12:00:00").getTime() < cutoff) return false;
-    // S104 (RULED): a session that is all warmups holds no working data — off the track.
-    return Array.isArray(s.sets) && s.sets.length > 0 && s.sets.some((x) => !overloadIsWarmup(x, s.sets));
-  });
-}
 
-/* PO-3: tagged warmup OR below 70% of the heaviest UNTAGGED weight. */
-function overloadIsWarmup(set, sets) {
-  if (set.type === "warmup") return true;
-  const untagged = sets.filter((s) => s.type !== "warmup");
-  const top = untagged.length ? Math.max(...untagged.map((s) => Number(s.weight) || 0)) : 0;
-  return top > 0 && (Number(set.weight) || 0) < OVERLOAD.WARMUP_LINE * top;
-}
-
-function overloadE1rm(w, r, rir) {
-  const credit = rir == null ? 0 : Math.min(Number(rir) || 0, OVERLOAD.RIR_CREDIT_CAP);
-  return e1rm(w, r + credit); // e1rm caps effective reps at E1RM_REP_CAP
-}
-function overloadRoundDown(w, step) {
-  const s = Math.abs(step); if (!s) return w;
-  return Math.floor((w + 1e-9) / s) * s;
-}
-function overloadWeightFor(targetE1rm, reps, step) {
-  return overloadRoundDown(targetE1rm / (1 + Math.min(reps, E1RM_REP_CAP) / 30), step);
-}
-function overloadMode(w, step) {
-  if (step === 0) return "reps_only";
-  if (step < 0) return "weight_first";   // assisted machines: the "weight" is assistance, the 8% ratio is meaningless
-  return w === 0 || step / w >= OVERLOAD.REP_FIRST_CUTOFF ? "rep_first" : "weight_first";
-}
-function overloadHeaviestEver(...tracks) {
-  let m = 0;
-  for (const t of tracks) for (const s of t || []) for (const x of s.sets || []) m = Math.max(m, Number(x.weight) || 0);
-  return m;
-}
-function overloadFence(anchor, heaviest) {
-  return (anchor && anchor.status === "provisional" ? OVERLOAD.FENCE_PROVISIONAL : OVERLOAD.FENCE_CONFIRMED) * heaviest;
-}
-/* D-316 A (S101): how many steps an open accelerator gate has EARNED.
-   The weakest set of the group (lowest RIR-credited e1RM, credit capped
-   at RIR_CREDIT_CAP, reps capped at E1RM_REP_CAP) is translated to
-   today's target and rounded down to a step; the raise is that many
-   steps above the group's weight, clamped to [1, PROGRESSION_CAP_STEPS].
-   225×8 @ RIR 2 → 235 (+10); 135×8 @ RIR 2 → 140 (+5); 315×5 @ RIR 2 →
-   +10 (cap). Positive steps only — assistance weight has no e1RM meaning. */
-function overloadEarnedSteps(sets, w, target, step) {
-  let weakest = Infinity;
-  for (const s of sets) weakest = Math.min(weakest, overloadE1rm(w, s.reps, s.rir));
-  if (!isFinite(weakest) || !(step > 0)) return 1;
-  const cand = overloadWeightFor(weakest, target, step);
-  const earned = Math.floor((cand - w + 1e-9) / step);
-  return Math.max(1, Math.min(OVERLOAD.PROGRESSION_CAP_STEPS, earned));
-}
-/* Best working set of a session by RIR-credited e1RM (translation / PO-12). */
-function overloadBestE1rm(session) {
-  const sets = session.sets || [];
-  let best = 0;
-  for (const s of sets) if (!overloadIsWarmup(s, sets)) best = Math.max(best, overloadE1rm(Number(s.weight) || 0, Number(s.reps) || 0, s.rir));
-  return best;
-}
-
-/* PO-23 (REWRITTEN S104, RULED off IMG_0060): the floor is TRANSLATION-FREE
-   and CONFIRMED-ONLY. "A conversion is not a bump up in weight." The
-   anchor's weight is a floor at today's target only when the anchor was
-   set at AT LEAST today's reps (you already did ≥ target reps at that
-   weight, so no Epley is needed to say you can). An anchor with fewer
-   reps than today's target would need a downward translation — no floor.
-   A provisional anchor never floors (PO-17: prove it before building on
-   it). Fenced at FENCE_CONFIRMED × heaviest-ever as before. Returns a
-   weight, or null when there is no floor. */
-function overloadFloor(anchor, target, step, track, otherTrack, opts) {
-  if (!anchor || anchor.status !== "confirmed" || anchor.bodyweightMode === "reps_only") return null;
-  const aw = Number(anchor.weightLb) || 0, ar = Number(anchor.reps) || 0;
-  if (!aw || !ar || step === 0) return null;
-  if (ar < target) return null;                                   // would need a conversion → no floor
-  let floor = overloadRoundDown(aw, step);
-  const heaviest = Math.max(overloadHeaviestEver(track, otherTrack), (opts && Number(opts.heaviestEver)) || 0);
-  if (heaviest > 0) floor = Math.min(floor, overloadRoundDown(overloadFence(anchor, heaviest), step));
-  return floor > 0 ? floor : null;
-}
-
-/* Reps to land at when the weight moves to `w` (PO-9 landing rule). */
-function overloadLandReps(w, step, card) {
-  return overloadMode(w, step) === "weight_first" ? card.target : card.band[0];
-}
-
-/* THE ENGINE. Returns { asks: [{weight, reps, warmup:false, raised, source}], notes }
-   for the card's WORKING sets only (S104: warmups never enter or leave
-   the engine). weight null = dash (PO-16). Assisted machines pass a negative step: a
-   "raise" is less assistance, so all comparisons run on signed steps.
-   opts.heaviestEver (optional): the variant's heaviest-ever logged weight
-   across FULL history — the wiring passes it so fences (PO-11, PO-23)
-   don't shrink when the heavy sessions have aged out of the 8-week
-   track. Without it, fences use the tracks given. */
-function overloadAsk(track, card, step, anchor, otherTrack, opts) {
-  const target = card.target, lo = card.band[0], hi = card.band[1], n = card.sets;
-  const notes = [];
-  const status = anchor ? anchor.status : "none";
-  const stale = status === "stale";
-  const confirmed = status === "confirmed";
-  const dash = () => ({ asks: Array.from({ length: n }, () => ({ weight: null, reps: target, warmup: false, raised: false, source: "dash" })), notes: ["no history: dash (PO-16)"] });
-  track = track || []; otherTrack = otherTrack || null;
-
-  if (track.length === 0) {
-    if (otherTrack && otherTrack.length && step !== 0) {              // PO-10 translation
-      const last = otherTrack[otherTrack.length - 1];
-      const best = overloadBestE1rm(last);
-      if (!best) return dash();
-      const fence = overloadFence(anchor, Math.max(overloadHeaviestEver(otherTrack), (opts && Number(opts.heaviestEver)) || 0));
-      let w = Math.min(overloadWeightFor(best, target, step), overloadRoundDown(fence, step)); // PO-11
-      const floor = stale ? null : overloadFloor(anchor, target, step, track, otherTrack, opts);
-      if (floor != null && floor > w) { w = floor; notes.push(`floor ${floor} above translation`); }
-      notes.push(`translated from e1RM ${Math.round(best)}, fence ${Math.round(fence)}`);
-      return { asks: Array.from({ length: n }, () => ({ weight: w, reps: target, warmup: false, raised: false, source: "translation" })), notes };
-    }
-    return dash();
-  }
-
-  // S104 (RULED): the engine sees WORKING sets only. Warmups (tagged or
-  // under the 70% line) are dropped here — a W row's placeholder is the
-  // seeder's business (last warmup verbatim, or a base %), never an ask.
-  const lastAll = track[track.length - 1].sets.map((s) => ({ ...s, weight: Number(s.weight) || 0, reps: Number(s.reps) || 0 }));
-  const last = lastAll.filter((s) => !overloadIsWarmup(s, lastAll));
-  if (!last.length) return dash();
-  const working = last;
-  const topW = Math.max(...working.map((s) => s.weight));
-  const floor = overloadFloor(anchor, target, step, track, otherTrack, opts);   // PO-23 (confirmed, translation-free)
-  const groups = new Map();
-  last.forEach((s, i) => { const k = "w:" + s.weight; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(i); });
-  const result = new Array(last.length);
-  const signedStep = step; // may be negative (assisted)
-  const above = (a, b) => signedStep < 0 ? a < b : a > b;   // "a is a heavier ask than b"
-  let topAsk = null;   // the top group's computed ask (the floor measures against it)
-
-  for (const [, idxs] of groups) {
-    const ss = idxs.map((i) => last[i]);
-    const w = ss[0].weight;
-    const askR = ss[0].askReps != null ? Number(ss[0].askReps) : target;
-    const hit = ss.every((s) => s.reps >= askR);                 // PO-2 strict, PO-15
-    const mode = overloadMode(w, step);
-    const ceiling = mode === "weight_first" ? target : hi;
-    let nw = w, nr = askR, raised = false, source = "hold";
-    if (stale) { source = "stale"; notes.push(`${w}: hold (stale)`); }              // PO-19
-    else if (!hit) { source = "miss"; notes.push(`${w}: hold (miss)`); }           // PO-6
-    else if (status === "provisional") {                                             // PO-17 (D-316 B): prove it before you build on it
-      source = "provisional"; notes.push(`${w}: hold (provisional — repeat to confirm)`);
-    }
-    else {
-      const brake = ss[ss.length - 1].rir === 0;                                    // PO-13
-      const accel = confirmed && (                                                  // PO-14 gate (PO-17: confirmed only)
-        ss.every((s) => s.rir != null && Number(s.rir) >= OVERLOAD.ACCEL_RIR_MIN) ||
-        ss.every((s) => s.reps >= askR + OVERLOAD.ACCEL_SURPLUS));
-      const k2 = accel ? 2 : 1;                                                     // rep-first / reps-only accelerator stays +2 reps (D-316 Q3)
-      if (brake) { source = "brake"; notes.push(`${w}: hold (brake)`); }
-      else if (mode === "reps_only") { nr = askR + k2; raised = true; source = "reps"; notes.push(`${w}: reps-only +${k2}`); }   // PO-9 bw
-      else if (askR < ceiling) { nr = Math.min(askR + k2, ceiling); raised = true; source = "reps"; notes.push(`${w}: +rep → ${nr}`); } // PO-9 climb
-      else {                                                                        // PO-5 / PO-8
-        let steps = 1;
-        if (accel) steps = signedStep > 0 ? overloadEarnedSteps(ss, w, target, step) : OVERLOAD.PROGRESSION_CAP_STEPS; // D-316 A; assisted keeps flat
-        nw = w + signedStep * steps; nr = mode === "weight_first" ? target : lo; raised = true; source = accel ? "raise_accel" : "raise"; // PO-9: land by the SOURCE mode
-        notes.push(`${w}: raise → ${nw}${accel ? ` (accel, ${steps} step${steps > 1 ? "s" : ""} earned)` : ""}`);
-      }
-    }
-    if (otherTrack && otherTrack.length && confirmed && hit && step !== 0) {       // PO-12 cross-track lift
-      const ob = overloadBestE1rm(otherTrack[otherTrack.length - 1]);
-      if (ob) {
-        const cand = signedStep > 0
-          ? Math.min(overloadWeightFor(ob, target, step), w + OVERLOAD.PROGRESSION_CAP_STEPS * signedStep)
-          : Math.max(overloadWeightFor(ob, target, step), w + OVERLOAD.PROGRESSION_CAP_STEPS * signedStep);
-        if (above(cand, nw)) { nw = cand; nr = overloadLandReps(nw, step, card); raised = true; source = "cross_track"; notes.push(`${w}: lifted by other track → ${cand}`); }
-      }
-    }
-    if (w === topW) topAsk = nw;
-    if (confirmed && anchor && anchor.bodyweightMode === "reps_only" && step === 0 && w === topW && nr < (Number(anchor.reps) || 0)) { // reps-only floor (confirmed only, S104)
-      nr = Number(anchor.reps); raised = true; source = "floor"; notes.push(`reps floor → ${nr}`);
-    }
-    for (const i of idxs) result[i] = { weight: nw, reps: nr, warmup: false, raised, source, prevWeight: w, prevReps: askR };   // S103: prev* = last session's group (the D-319 delta reads it)
-  }
-  // PO-23 block floor (RULED S104 off IMG_0039): when the floor sits above
-  // the top group's ask, the WHOLE working block moves up by the same
-  // delta — the shape you ran (flat, ramp, feeler) climbs intact and no
-  // set straggles. Never "60 | 135 | 60" again.
-  if (floor != null && topAsk != null && above(floor, topAsk)) {
-    const delta = floor - topAsk;
-    for (const r of result) {
-      r.weight = r.weight + delta; r.reps = overloadLandReps(r.weight, step, card);
-      r.raised = above(r.weight, r.prevWeight); r.source = "floor";
-    }
-    notes.push(`floor ${floor}: block +${Math.abs(delta)}`);
-  }
-  let out = result.slice();
-  if (n > out.length) {                                                                                         // PO-21 inherit: the last working group
-    const fill = out[out.length - 1];
-    while (out.length < n) out.push({ ...fill });
-  }
-  if (n < out.length) {                                                                                         // PO-21 (RULED S104): fewer rows keep the TOP of the ramp — the n HEAVIEST groups, in their logged order
-    const keep = out.map((a, i) => i).sort((i, j) => (signedStep < 0 ? out[i].prevWeight - out[j].prevWeight : out[j].prevWeight - out[i].prevWeight) || j - i).slice(0, n).sort((a, b) => a - b);
-    out = keep.map((i) => out[i]);
-  }
-  return { asks: out, notes };
-}
-
-
-/* ── D-011 WIRING (S103) ──────────────────────────────────────────────
-   Everything below is the seam between the pure engine above and the
-   screens: presets (§3), the card resolver every placeholder writer
-   calls, the D-319 mark, the seed/commit shapes, and the debrief lines.
-   All pure; engine_tests.js PART 26 is the contract. Rulings S103:
-   Get Lean = the General Fitness row; Core + Bench Dip / Push-Up /
-   Inverted Row / Step-Up are small lifts; every Isolation stays small;
-   the engine writes EVERY placeholder (Coach card, add, swap, add-set,
-   variant switch, Repeat) — Repeat already read most-recent history,
-   not the source session, so the engine is its natural writer. */
 const OVERLOAD_PRESETS = {   // D-011 §3 (SIGNED S98) — target (band) per lift class, rest default
   gain_strength: { big: { target: 5,  band: [3, 6] },  small: { target: 8,  band: [6, 10] },  restSec: 180 },
   build_muscle:  { big: { target: 8,  band: [6, 10] }, small: { target: 12, band: [10, 15] }, restSec: 90 },
@@ -18148,88 +17899,21 @@ function overloadPresetPromptLine(planGoal) {
   const p = OVERLOAD_PRESETS[planGoal] || OVERLOAD_PRESETS.build_muscle;
   return `This user's goal preset fixes the rep number: compounds ${p.big.target} reps per working set, isolations ${p.small.target}. Write that one number on every working set (targetReps) — never a range; the app decides the load and adjusts reps on light lifts itself. Deviate deliberately only for a reason you state in programmingNotes.`;
 }
-/* The D-319 mark: gold caret + the TRUE delta vs last session. Weight
-   delta wins (a band-top step moves both; the weight is the story);
-   a pure rep climb marks the reps field. Null on holds, warmups, dash
-   and translation (no "last" to be up from — RULED S103 #14), and on a
-   raised flag with no real movement (never a phantom ▲0). */
-function overloadMarkFor(ask) {
-  if (!ask || !ask.raised || ask.warmup) return null;
-  if (ask.weight == null || ask.prevWeight == null) return null;
-  const dw = Math.abs(Number(ask.weight) - Number(ask.prevWeight));
-  if (dw > 1e-9) return { field: "weight", text: "▲" + String(+dw.toFixed(2)), delta: +dw.toFixed(2) };
-  const dr = (Number(ask.reps) || 0) - (Number(ask.prevReps) || 0);
-  if (dr > 0) return { field: "reps", text: "▲" + dr, delta: dr };
-  return null;
-}
-/* THE CARD RESOLVER. One call per exercise per placeholder writer:
-   { exDef, variant, sets (WORKING count on the card), target (card's rep number
-   or null → preset), history (this variant's sessions, any order, as
-   getVariantHistory returns them), anchor (record or null), planGoal,
-   nowIso }. Returns null when the engine excludes the lift (Section 5
-   null step) — the caller keeps V.53's last-session copy. Otherwise
-   { target, band, step, asks, notes } with prevWeight/prevReps + mark on every ask. */
-/* S104: `sets` is the card's WORKING row count — warmup rows are not the engine's. */
-function overloadCardFor({ exDef, variant, sets, target, history, anchor, planGoal, nowIso }) {
-  const step = overloadStepFor(exDef, variant);
-  if (step == null) return null;
-  const preset = overloadPresetFor(planGoal, exDef);
-  const t = target != null && Number.isInteger(Number(target)) && Number(target) > 0 ? Number(target) : preset.target;
-  const band = overloadBandFor(planGoal, exDef, t);
-  const hist = (history || []).filter((h) => h && Array.isArray(h.sets) && h.sets.length).slice().sort((a, b) => String(a.date || "").localeCompare(String(b.date || "")));
-  const track = overloadTrackFor(hist, t, nowIso, preset.target);
-  // the other track: the most recently worked rep target that isn't today's
-  let otherTarget = null, otherDate = "";
-  for (const h of hist) {
-    const ht = h.repTarget != null ? h.repTarget : preset.target;
-    if (ht === t) continue;
-    if (String(h.date || "") >= otherDate) { otherDate = String(h.date || ""); otherTarget = ht; }
-  }
-  const otherTrack = otherTarget != null ? overloadTrackFor(hist, otherTarget, nowIso, preset.target) : null;
-  const heaviestEver = hist.reduce((m, h) => Math.max(m, ...h.sets.map((x) => Number(x.weight) || 0)), 0);
-  const n = Math.max(1, Number(sets) || 1);
-  const out = overloadAsk(track, { target: t, band, sets: n }, step, anchor || null, otherTrack, { heaviestEver });
-  const asks = out.asks.map((a) => ({ ...a, mark: overloadMarkFor(a) }));
-  return { target: t, band, step, asks, notes: out.notes };
-}
-/* Seed the in-workout set objects from a resolved card. `cardSets` gives
-   the count and the set type per row ({ setType, targetReps }).
-   S104 (RULED): rows are seeded BY TYPE. Working rows take the engine's
-   asks in order (asks are working-only). A W row is never the engine's:
-   its ghost is last session's k-th TAGGED warmup verbatim, or, with none,
-   WARMUP_BASE_PCT × the first working ask rounded down to a step — no
-   askReps, no mark, ever. With no resolver result (excluded lift) the
-   V.53 rule applies: last session's matching set by index, the last set
-   repeating, card reps as the reps ghost. */
-function overloadSeedSets(resolved, lastSession, cardSets) {
+
+/* P-1 (D-322): carry-forward seeding. `lastSession` is the variant's
+   most recent logged session (getVariantHistory tail); `cardSets` the
+   rows to seed (Coach's card, a repeat's shape, or [{}] for a bare add).
+   Weight ghost = last session's set at the same index (last repeating);
+   reps ghost = the card's targetReps when it has one, else last
+   session's reps. No history → empty inputs. Warmup rows seed the same
+   way (PO-3 as built: the W tag is the user's, the toggle is Settings'). */
+function overloadSeedSets(lastSession, cardSets) {
   const rows = Array.isArray(cardSets) && cardSets.length ? cardSets : [{}];
   const lastSets = lastSession && Array.isArray(lastSession.sets) ? lastSession.sets : [];
-  const lastWarm = lastSets.filter((x) => x && x.type === "warmup");
-  const firstAsk = resolved ? resolved.asks.find((x) => x && x.weight != null) || null : null;
-  let wi = 0, ki = 0;
   return rows.map((cs, i) => {
     const type = cs && cs.setType === "warmup" ? "warmup" : "working";
     const base = { weight: "", reps: "", done: false, type, rir: null, weightUserEdited: false, repsUserEdited: false };
     const cardReps = cs && Number.isInteger(cs.targetReps) && cs.targetReps > 0 ? cs.targetReps : null;
-    if (resolved) {
-      if (type === "warmup") {
-        const src = lastWarm[ki++] || null;
-        let w = "", r = "";
-        if (src && src.weight !== "" && src.weight != null) { w = src.weight; r = src.reps !== "" && src.reps != null ? src.reps : (cardReps != null ? cardReps : ""); }
-        else if (firstAsk && resolved.step !== 0) {
-          w = overloadRoundDown(Number(firstAsk.weight) * OVERLOAD.WARMUP_BASE_PCT, resolved.step);
-          r = cardReps != null ? cardReps : firstAsk.reps;
-        } else if (firstAsk) { r = cardReps != null ? cardReps : firstAsk.reps; }
-        else { r = cardReps != null ? cardReps : ""; }
-        return { ...base, weightIsPlaceholder: w !== "", repsIsPlaceholder: r !== "", placeholderWeight: w, placeholderReps: r };
-      }
-      const a = resolved.asks[Math.min(wi++, resolved.asks.length - 1)];
-      const hasW = a.weight != null;
-      return { ...base,
-        weightIsPlaceholder: hasW, repsIsPlaceholder: true,
-        placeholderWeight: hasW ? a.weight : "", placeholderReps: a.reps,
-        askWeight: hasW ? a.weight : null, askReps: a.reps, askMark: a.mark || null };
-    }
     const refSet = lastSets.length ? (lastSets[i] || lastSets[lastSets.length - 1]) : null;
     const hasPrevW = refSet != null && refSet.weight !== undefined && refSet.weight !== null && refSet.weight !== "";
     const prevR = refSet != null && refSet.reps !== "" && refSet.reps != null ? refSet.reps : null;
@@ -18240,57 +17924,12 @@ function overloadSeedSets(resolved, lastSession, cardSets) {
   });
 }
 /* The commit shape for one exercise: done sets only, the log fields
-   exactly as before, plus askReps on sets that carried an ask and
-   repTarget on the exercise (PO-4). Nothing else about the ask is
-   stored (PO-1). */
+   exactly as before, plus repTarget on the exercise (Coach's rep
+   number — the card's plan, kept as a fact of the session). D-322: no
+   askReps — nothing was asked. */
 function overloadCommitExercise(ex) {
-  const sets = (ex.sets || []).filter((s) => s.done).map((s) => ({
-    weight: s.weight, reps: s.reps, type: s.type, rir: s.rir,
-    ...(s.askReps != null && s.type !== "warmup" ? { askReps: s.askReps } : {}),   // S104: a W row is never asked
-  }));
+  const sets = (ex.sets || []).filter((s) => s.done).map((s) => ({ weight: s.weight, reps: s.reps, type: s.type, rir: s.rir }));
   return ex.repTarget != null ? { repTarget: ex.repTarget, sets } : { sets };
-}
-/* The debrief's engine lines (RULED S103 #17/#18: Coach's voice, raises
-   AND hold reasons, budget `max`). histFor(exerciseId, vKey) returns the
-   variant's full history INCLUDING tonight; anchorFor the post-fold
-   record. Raises rank first (bigger step first), then holds. */
-function overloadDebriefLines({ session, histFor, anchorFor, planGoal, customs, max }) {
-  const events = [];
-  for (const ex of (session && session.exercises) || []) {
-    const exDef = (ex.exerciseId != null ? findExerciseById(ex.exerciseId, customs || []) : null) || findExerciseByName(ex.name, customs || []);
-    if (!exDef) continue;
-    const variant = exDef.variants.find((v) => v.label === ex.variantLabel) || exDef.variants[0];
-    const vKey = variantKey(variant);
-    const nWorking = (ex.sets || []).filter((x) => x && x.type !== "warmup").length || 1;
-    const r = overloadCardFor({ exDef, variant, sets: nWorking, target: ex.repTarget, history: histFor(exDef.id, vKey), anchor: anchorFor(exDef.id, vKey), planGoal, nowIso: session.date });
-    if (!r) continue;
-    const working = r.asks.filter((a) => !a.warmup && a.weight != null);
-    if (!working.length) continue;
-    const top = working.reduce((m, a) => (Math.abs(Number(a.weight)) >= Math.abs(Number(m.weight)) ? a : m), working[0]);
-    const name = exDef.name;
-    const unit = (w) => (r.step === 0 ? `${w}` : `${w} lb`);
-    if (top.mark && top.source === "floor" && top.mark.field === "reps") {             // S104: reps-only floor (bodyweight) — never print a weight of 0
-      events.push({ rank: 0, size: -(top.mark.delta || 0), line: `${name}: back to ${top.reps} reps next session — a lighter day never lowers the ask; the benchmark still says ${top.reps}.` });
-    } else if (top.mark && top.source === "floor") {                                    // PO-22: a light day never walks the ask down
-      events.push({ rank: 0, size: -(top.mark.delta || 0), line: `${name}: back to ${unit(top.weight)} × ${top.reps} next session — a lighter day never lowers the ask; the benchmark still says ${unit(top.weight)}.` });
-    } else if (top.mark) {
-      const accel = top.source === "raise_accel";
-      const line = top.mark.field === "weight"
-        ? `${name}: clean sets — weight goes up next session to ${unit(top.weight)} × ${top.reps} (+${top.mark.delta}${accel ? ", two steps earned by the reps left in the tank" : ""}).`
-        : `${name}: clean sets — reps go up next session to ${top.reps}${r.step === 0 ? "" : ` at ${unit(top.weight)}`} (+${top.mark.delta}${accel ? ", earned" : ""}).`;
-      events.push({ rank: 0, size: -(top.mark.delta || 0), line });
-    } else {
-      const why = top.source === "miss" ? "a set came up short — same weight next session, chase the number"
-        : top.source === "brake" ? "the last set was RIR 0 — it cost everything; same weight one more session"
-        : top.source === "provisional" ? "that number is new — repeat it once to confirm it before building on it"
-        : top.source === "stale" ? "the benchmark is in question — holding until it's settled"
-        : null;
-      if (!why) continue;
-      events.push({ rank: 1, size: 0, line: `${name}: holds at ${unit(top.weight)} × ${top.reps} — ${why}.` });
-    }
-  }
-  events.sort((a, b) => a.rank - b.rank || a.size - b.size);
-  return events.slice(0, max == null ? 2 : max).map((e) => e.line);
 }
 
 /* ── S85 (D-257): BENCHMARKS derives from the anchor store ─────────
@@ -21822,10 +21461,8 @@ export default function MYGFitness() {
       const vKey = variantKey(variant);
       const hist = getVariantHistory(exDef.id, vKey, workoutHistory, customExercises);
       const lastSession = hist.length ? hist[hist.length - 1] : null;
-      const anchor = (anchors || []).find((a) => a && a.exerciseId === exDef.id && a.variantKey === vKey) || null;
       const cardSets = sessionEx.sets.map((s) => ({ setType: s.type === "warmup" ? "warmup" : "working" }));
-      const resolved = overloadCardFor({ exDef, variant, sets: cardSets.filter((c) => c.setType !== "warmup").length, target: sessionEx.repTarget != null ? sessionEx.repTarget : null, history: hist, anchor, planGoal, nowIso: toISODate(now) });
-      const sets = overloadSeedSets(resolved, lastSession, cardSets);
+      const sets = overloadSeedSets(lastSession, cardSets);   // D-322 P-1: carry-forward from the most-recent log
       newExercises.push({
         uid: `e${Date.now()}_${Math.random().toString(36).slice(2, 6)}_${newExercises.length}`,
         exerciseId: exDef.id,
@@ -21833,7 +21470,7 @@ export default function MYGFitness() {
         primary: exDef.primary,
         variant,
         sets,
-        ...(resolved ? { repTarget: resolved.target } : {}),
+        ...(sessionEx.repTarget != null ? { repTarget: sessionEx.repTarget } : {}),   // D-322: the repeated session's rep number rides along
         collapsed: false,
       });
     }
@@ -21993,7 +21630,7 @@ export default function MYGFitness() {
     // and anchor moves never rewrite it). Renders instantly under the
     // header while the read streams; the night weight sets the read
     // budget the prompt enforces.
-    const debriefReport = buildDebriefReport(unanalyzed, history, world.observations || []);
+    const debriefReport = buildDebriefReport(unanalyzed, history, world.observations || [], customExercises || []);
     const nightWeight = debriefNightWeight(debriefReport);
     const packet = buildDebriefTurn(
       { userName, fitnessLevel, planGoal,
@@ -22130,12 +21767,8 @@ export default function MYGFitness() {
     const exDef = findExerciseById(ref.exerciseId, customExercises);
     if (!exDef) return null;
     const variant = exDef.variants.find((v) => v.label === ref.variant) || exDef.variants[0];
-    const vKey = variantKey(variant);
-    const anchor = (anchors || []).find((a) => a && a.exerciseId === exDef.id && a.variantKey === vKey) || null;
-    const resolved = overloadCardFor({ exDef, variant, sets: (pe.sets || []).filter((ps) => ps.setType !== "warmup").length || 1, target: overloadCardTarget(pe), history: getVariantHistory(exDef.id, vKey, workoutHistory, customExercises), anchor, planGoal, nowIso: toISODate(new Date()) });
-    if (!resolved) return null;
-    const working = resolved.asks.find((a) => !a.warmup);
-    return working ? working.reps : null;
+    const t = overloadCardTarget(pe);
+    return t != null ? t : overloadPresetFor(planGoal, exDef).target;   // D-322: the card's number, else the preset's (no engine)
   };
   const startWorkoutFromCoach = (coachWorkout) => {
     const now = new Date();
@@ -22283,7 +21916,7 @@ export default function MYGFitness() {
         exerciseId: ex.exerciseId || null,
         name: ex.name,
         variantLabel: ex.variant.label,
-        ...overloadCommitExercise(ex),   // S103 (PO-4): done sets as before + askReps per asked set + repTarget on the exercise
+        ...overloadCommitExercise(ex),   // done sets as before + repTarget on the exercise (D-322: no ask stamps)
       })).filter((ex) => ex.sets.length > 0),
     };
     // Deviation diff engine (Session 67, D-032): the receipt is written
@@ -22460,7 +22093,6 @@ export default function MYGFitness() {
           repsUserEdited: s.reps !== "" && s.reps != null,
           weightIsPlaceholder: false, repsIsPlaceholder: false,
           placeholderWeight: "", placeholderReps: "",
-          ...(s.askReps != null ? { askReps: s.askReps } : {}),   // S103: a correction keeps the ask stamp (RULED #11)
         })),
         collapsed: false,
         ...(sessionEx.repTarget != null ? { repTarget: sessionEx.repTarget } : {}),
